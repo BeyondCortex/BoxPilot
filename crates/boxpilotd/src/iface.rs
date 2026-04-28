@@ -65,9 +65,9 @@ impl Helper {
         // than a nested zbus dict so the IPC types live in one Rust type
         // hierarchy and the GUI can deserialize via serde without a
         // bespoke zvariant→TS layer.
-        Ok(serde_json::to_string(&resp).map_err(|e| {
+        serde_json::to_string(&resp).map_err(|e| {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
-        })?)
+        })
     }
 
     // ----- Stubs for the other 18 actions (filled in by plans #2-#9). -----

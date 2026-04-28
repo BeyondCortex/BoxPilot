@@ -39,6 +39,7 @@ impl ControllerState {
         }
     }
 
+    #[allow(dead_code)] // used in plan #2 (controller ownership checks)
     pub fn is_controller(&self, caller_uid: u32) -> bool {
         matches!(self, ControllerState::Set { uid, .. } if *uid == caller_uid)
     }

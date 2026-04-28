@@ -5,6 +5,7 @@ use async_trait::async_trait;
 use boxpilot_ipc::HelperError;
 use zbus::Connection;
 
+#[allow(dead_code)] // used in plan #2 (caller identity tracking)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallerIdentity {
     pub uid: u32,

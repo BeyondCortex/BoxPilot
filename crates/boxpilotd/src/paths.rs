@@ -16,6 +16,7 @@ impl Paths {
     }
 
     /// Test/dev paths rooted at an arbitrary directory.
+    #[allow(dead_code)] // used in tests and plan #2+ dev helpers
     pub fn with_root(root: impl AsRef<Path>) -> Self {
         Self { root: root.as_ref().to_path_buf() }
     }
@@ -24,6 +25,7 @@ impl Paths {
         self.root.join("etc/boxpilot/boxpilot.toml")
     }
 
+    #[allow(dead_code)] // used in plan #2+ (controller-uid file read/write)
     pub fn controller_uid_file(&self) -> PathBuf {
         self.root.join("etc/boxpilot/controller-uid")
     }
@@ -32,10 +34,12 @@ impl Paths {
         self.root.join("run/boxpilot/lock")
     }
 
+    #[allow(dead_code)] // used in plan #2+ (run directory setup)
     pub fn run_dir(&self) -> PathBuf {
         self.root.join("run/boxpilot")
     }
 
+    #[allow(dead_code)] // used in tests and plan #2+ (etc directory setup)
     pub fn etc_dir(&self) -> PathBuf {
         self.root.join("etc/boxpilot")
     }

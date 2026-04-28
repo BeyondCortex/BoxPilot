@@ -15,7 +15,9 @@ use crate::lock::{self, LockGuard};
 use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
 
 pub struct AuthorizedCall {
+    #[allow(dead_code)] // used in plan #2 (controller ownership checks)
     pub caller_uid: u32,
+    #[allow(dead_code)] // used in plan #2 (controller state propagation)
     pub controller: ControllerState,
     /// Held only when [`HelperMethod::is_mutating`] is true.
     _lock: Option<LockGuard>,
@@ -37,14 +39,12 @@ pub async fn authorize(
         }
     }
 
-    if method.is_mutating() {
-        if matches!(controller, ControllerState::Unset) {
-            // Plan #1 ships no path that would set the controller, so this
-            // branch is reachable only by a non-status mutating method
-            // (all of which return NotImplemented here). Keeping the check
-            // wired makes the dispatch contract correct for plan #2 onward.
-            return Err(HelperError::ControllerNotSet);
-        }
+    if method.is_mutating() && matches!(controller, ControllerState::Unset) {
+        // Plan #1 ships no path that would set the controller, so this
+        // branch is reachable only by a non-status mutating method
+        // (all of which return NotImplemented here). Keeping the check
+        // wired makes the dispatch contract correct for plan #2 onward.
+        return Err(HelperError::ControllerNotSet);
     }
 
     let action_id = method.polkit_action_id();
