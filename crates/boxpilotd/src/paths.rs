@@ -29,16 +29,18 @@ impl Paths {
         self.root.join("etc/boxpilot/boxpilot.toml")
     }
 
-    #[allow(dead_code)] // used in plan #2+ (controller-uid file read/write)
-    pub fn controller_uid_file(&self) -> PathBuf {
-        // Plain-text integer file consumed by the polkit JS rule
-        // (49-boxpilot.rules). Plan #2's controller-claim flow MUST write
-        // both this file and boxpilot.toml's controller_uid atomically
-        // under the same /run/boxpilot/lock acquisition — if only the toml
-        // is updated, the polkit rule keeps using the stale UID until the
-        // file is rewritten or the system reboots, silently failing
-        // authorization for the new controller.
-        self.root.join("etc/boxpilot/controller-uid")
+    #[allow(dead_code)] // used in plan #2+ (controller-name file read/write)
+    pub fn controller_name_file(&self) -> PathBuf {
+        // Plain-text username file consumed by the polkit JS rule
+        // (49-boxpilot.rules). The rule reads it via `polkit.spawn(["cat",
+        // …])` and compares against `subject.user`, which is itself the
+        // caller's username string (NOT a UID). Plan #2's controller-claim
+        // flow MUST write this file and boxpilot.toml's `controller_uid`
+        // atomically under the same /run/boxpilot/lock acquisition — if
+        // only the toml is updated, polkit keeps using the stale name
+        // until the file is rewritten or the system reboots, silently
+        // failing authorization for the new controller.
+        self.root.join("etc/boxpilot/controller-name")
     }
 
     pub fn run_lock(&self) -> PathBuf {

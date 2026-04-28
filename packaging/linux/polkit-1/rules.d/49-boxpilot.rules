@@ -3,43 +3,42 @@
 //   - service.status (the highest-frequency call) has allow_any=yes
 //     in the XML and never reaches this rule.
 //   - Mutating actions are user-initiated; spawn latency is invisible.
-// Replace with a faster mechanism in plan #3 (e.g. read controller_uid
-// from polkit's subject metadata after the daemon writes a per-user
-// drop-in, or precompute it into the daemon's polkit subject claim).
+// Replace with a faster mechanism in plan #3 (e.g. cache the controller
+// name via a per-user polkit drop-in that the daemon writes alongside
+// boxpilot.toml).
 
 // 49-boxpilot.rules — promote the BoxPilot controller user to less-prompting
-// auth tiers (spec §6.3). The controller UID lives in
-// /etc/boxpilot/controller-uid (a single integer). When the file is missing
-// or unparseable, this rule defers to the XML defaults — i.e. all callers
-// are treated as non-controllers, which is the safe direction.
+// auth tiers (spec §6.3). The controller's username lives in
+// /etc/boxpilot/controller-name (a single line, plain text). polkit's
+// `subject.user` is the caller's username string (NOT an object with a
+// `.uid` field), so we compare username-to-username here. The numeric UID
+// is in boxpilot.toml for the daemon's internal use; the polkit rule only
+// needs the name. When controller-name is missing, this rule returns
+// without action and the XML defaults apply — the safe direction.
 
 polkit.addRule(function(action, subject) {
     if (action.id.indexOf("app.boxpilot.helper.") !== 0) {
         return;
     }
 
-    var controllerUid = null;
+    var controllerName = null;
     try {
         // polkit.spawn is synchronous and blocks the polkit daemon, so we
-        // keep the spawned command minimal: `cat` of a small integer file.
-        var raw = polkit.spawn(["/usr/bin/cat", "/etc/boxpilot/controller-uid"]);
-        var trimmed = raw.replace(/[^0-9]/g, "");
-        if (trimmed.length > 0) {
-            controllerUid = parseInt(trimmed, 10);
+        // keep the spawned command minimal: `cat` of a small text file.
+        var raw = polkit.spawn(["/usr/bin/cat", "/etc/boxpilot/controller-name"]);
+        controllerName = raw.replace(/[\r\n]+$/, "");
+        if (controllerName.length === 0) {
+            controllerName = null;
         }
     } catch (e) {
         // File missing or cat failed — fall through to XML defaults.
         return;
     }
 
-    if (controllerUid === null || isNaN(controllerUid)) {
+    if (controllerName === null) {
         return;
     }
-    if (subject.user === undefined || subject.user === null) {
-        return;
-    }
-
-    if (subject.user.uid !== controllerUid) {
+    if (subject.user !== controllerName) {
         // Non-controller: keep XML defaults.
         return;
     }

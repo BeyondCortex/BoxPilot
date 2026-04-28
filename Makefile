@@ -28,7 +28,7 @@ install-helper: build-helper
 	$(INSTALL) -D -m 0644 packaging/linux/polkit-1/rules.d/49-boxpilot.rules \
 	    $(POLKIT_DIR)/rules.d/49-boxpilot.rules
 	$(INSTALL) -d -m 0755 $(ETC_DIR)
-	# /etc/boxpilot/controller-uid is left absent on dev installs; the polkit
+	# /etc/boxpilot/controller-name is left absent on dev installs; the polkit
 	# JS rule treats absence as "no controller, fall through to defaults".
 	systemctl reload dbus.service || systemctl restart dbus.service
 
