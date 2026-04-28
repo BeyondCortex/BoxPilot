@@ -9,7 +9,6 @@ use crate::paths::Paths;
 use crate::systemd::SystemdQuery;
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 
 pub struct HelperContext {
     pub paths: Paths,
@@ -17,9 +16,12 @@ pub struct HelperContext {
     pub authority: Arc<dyn Authority>,
     pub systemd: Arc<dyn SystemdQuery>,
     pub user_lookup: Arc<dyn UserLookup>,
-    /// Cached parsed config; reloaded on demand. Held inside an RwLock so a
-    /// future "reload-on-SIGHUP" task can swap the config atomically.
-    config: RwLock<Option<BoxpilotConfig>>,
+    // Cache is intentionally absent. `load_config` reads the file each call;
+    // call sites are infrequent (one disk read per `service.status` poll, or
+    // per privileged action). When SIGHUP-style reload lands in a later
+    // plan, reintroduce a cache here alongside the signal-handling path
+    // that invalidates it. A dead `RwLock<Option<BoxpilotConfig>>` field
+    // would otherwise mislead readers about caching that never happens.
 }
 
 impl HelperContext {
@@ -36,21 +38,16 @@ impl HelperContext {
             authority,
             systemd,
             user_lookup,
-            config: RwLock::new(None),
         }
     }
 
-    /// Read or re-read `boxpilot.toml`. Missing file → returns a freshly
-    /// minted v1 config with no fields populated, so the helper still
-    /// answers `service.status` on a fresh box (controller is `Unset`).
+    /// Read `boxpilot.toml`. Missing file → returns a freshly minted v1
+    /// config with no fields populated, so the helper still answers
+    /// `service.status` on a fresh box (controller is `Unset`).
     pub async fn load_config(&self) -> HelperResult<BoxpilotConfig> {
         let path = self.paths.boxpilot_toml();
         match tokio::fs::read_to_string(&path).await {
-            Ok(text) => {
-                let cfg = BoxpilotConfig::parse(&text)?;
-                *self.config.write().await = Some(cfg.clone());
-                Ok(cfg)
-            }
+            Ok(text) => BoxpilotConfig::parse(&text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BoxpilotConfig {
                 schema_version: boxpilot_ipc::CURRENT_SCHEMA_VERSION,
                 target_service: "boxpilot-sing-box.service".into(),
