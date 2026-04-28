@@ -10,6 +10,12 @@ pub use response::{ControllerStatus, ServiceStatusResponse, UnitState};
 pub mod config;
 pub use config::{BoxpilotConfig, CoreState, CURRENT_SCHEMA_VERSION};
 
+pub mod core;
+pub use core::{
+    ArchRequest, CoreAdoptRequest, CoreDiscoverResponse, CoreInstallRequest, CoreInstallResponse,
+    CoreKind, CoreRollbackRequest, CoreSource, DiscoveredCore, InstallSourceJson, VersionRequest,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]
