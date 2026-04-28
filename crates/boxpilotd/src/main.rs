@@ -1,6 +1,7 @@
 //! `boxpilotd` — privileged helper for BoxPilot. Activated on the system bus
 //! by D-Bus; always runs as root. See spec §6.
 
+mod authority;
 mod controller;
 mod credentials;
 mod lock;
