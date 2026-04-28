@@ -6,6 +6,7 @@
 #![allow(dead_code)]
 
 mod authority;
+mod context;
 mod controller;
 mod credentials;
 mod lock;
