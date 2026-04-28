@@ -16,10 +16,16 @@ impl<E: std::fmt::Display> From<E> for CommandError {
         // Split "app.boxpilot.Helper1.X: msg" into code/message if present.
         if let Some(rest) = s.strip_prefix("app.boxpilot.Helper1.") {
             if let Some((code, msg)) = rest.split_once(": ") {
-                return CommandError { code: code.into(), message: msg.into() };
+                return CommandError {
+                    code: code.into(),
+                    message: msg.into(),
+                };
             }
         }
-        CommandError { code: "ipc".into(), message: s }
+        CommandError {
+            code: "ipc".into(),
+            message: s,
+        }
     }
 }
 

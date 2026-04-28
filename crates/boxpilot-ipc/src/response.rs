@@ -8,9 +8,9 @@ pub enum UnitState {
     /// `systemctl` doesn't know about `boxpilot-sing-box.service` at all.
     NotFound,
     Known {
-        active_state: String,    // active | inactive | failed | activating | reloading | deactivating
-        sub_state: String,       // running | dead | start-pre | failed | …
-        load_state: String,      // loaded | not-found | error | masked | …
+        active_state: String, // active | inactive | failed | activating | reloading | deactivating
+        sub_state: String,    // running | dead | start-pre | failed | …
+        load_state: String,   // loaded | not-found | error | masked | …
         n_restarts: u32,
         exec_main_status: i32,
     },
@@ -18,7 +18,7 @@ pub enum UnitState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceStatusResponse {
-    pub unit_name: String,             // "boxpilot-sing-box.service"
+    pub unit_name: String, // "boxpilot-sing-box.service"
     pub unit_state: UnitState,
     /// Snapshot of `controller_uid` resolution at call time. Useful for the
     /// Home page to surface `controller_orphaned` (§6.6) without a second RTT.

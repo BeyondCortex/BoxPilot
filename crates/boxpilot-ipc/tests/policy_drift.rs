@@ -3,9 +3,10 @@ use std::collections::HashSet;
 
 #[test]
 fn every_helper_method_has_a_polkit_action_id_in_the_xml() {
-    let xml = std::fs::read_to_string(
-        concat!(env!("CARGO_MANIFEST_DIR"), "/../../packaging/linux/polkit-1/actions/app.boxpilot.helper.policy"),
-    )
+    let xml = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../packaging/linux/polkit-1/actions/app.boxpilot.helper.policy"
+    ))
     .expect("read policy XML");
 
     let mut declared: HashSet<String> = HashSet::new();
@@ -25,5 +26,9 @@ fn every_helper_method_has_a_polkit_action_id_in_the_xml() {
             "polkit policy XML is missing action {id} (HelperMethod::{m:?})"
         );
     }
-    assert_eq!(declared.len(), HelperMethod::ALL.len(), "extra action IDs in policy XML");
+    assert_eq!(
+        declared.len(),
+        HelperMethod::ALL.len(),
+        "extra action IDs in policy XML"
+    );
 }

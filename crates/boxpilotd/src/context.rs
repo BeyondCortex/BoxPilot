@@ -51,20 +51,18 @@ impl HelperContext {
                 *self.config.write().await = Some(cfg.clone());
                 Ok(cfg)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(BoxpilotConfig {
-                    schema_version: boxpilot_ipc::CURRENT_SCHEMA_VERSION,
-                    target_service: "boxpilot-sing-box.service".into(),
-                    core_path: None,
-                    core_state: None,
-                    controller_uid: None,
-                    active_profile_id: None,
-                    active_profile_name: None,
-                    active_profile_sha256: None,
-                    active_release_id: None,
-                    activated_at: None,
-                })
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BoxpilotConfig {
+                schema_version: boxpilot_ipc::CURRENT_SCHEMA_VERSION,
+                target_service: "boxpilot-sing-box.service".into(),
+                core_path: None,
+                core_state: None,
+                controller_uid: None,
+                active_profile_id: None,
+                active_profile_name: None,
+                active_profile_sha256: None,
+                active_release_id: None,
+                activated_at: None,
+            }),
             Err(e) => Err(HelperError::Ipc {
                 message: format!("read {path:?}: {e}"),
             }),
@@ -73,7 +71,10 @@ impl HelperContext {
 
     pub async fn controller_state(&self) -> HelperResult<ControllerState> {
         let cfg = self.load_config().await?;
-        Ok(ControllerState::from_uid(cfg.controller_uid, &*self.user_lookup))
+        Ok(ControllerState::from_uid(
+            cfg.controller_uid,
+            &*self.user_lookup,
+        ))
     }
 }
 
@@ -103,7 +104,9 @@ pub mod testing {
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
-            Arc::new(FixedSystemd { answer: systemd_answer }),
+            Arc::new(FixedSystemd {
+                answer: systemd_answer,
+            }),
             Arc::new(PasswdLookup),
         )
     }
@@ -148,6 +151,9 @@ pub mod testing {
             &[],
         );
         let r = ctx.load_config().await;
-        assert!(matches!(r, Err(HelperError::UnsupportedSchemaVersion { got: 2 })));
+        assert!(matches!(
+            r,
+            Err(HelperError::UnsupportedSchemaVersion { got: 2 })
+        ));
     }
 }

@@ -47,9 +47,10 @@ impl ControllerState {
     pub fn to_status(&self) -> ControllerStatus {
         match self {
             ControllerState::Unset => ControllerStatus::Unset,
-            ControllerState::Set { uid, username } => {
-                ControllerStatus::Set { uid: *uid, username: username.clone() }
-            }
+            ControllerState::Set { uid, username } => ControllerStatus::Set {
+                uid: *uid,
+                username: username.clone(),
+            },
             ControllerState::Orphaned { uid } => ControllerStatus::Orphaned { uid: *uid },
         }
     }
@@ -64,7 +65,9 @@ mod tests {
     struct Fixed(Mutex<HashMap<u32, String>>);
     impl Fixed {
         fn new(rows: &[(u32, &str)]) -> Self {
-            Self(Mutex::new(rows.iter().map(|(u, n)| (*u, n.to_string())).collect()))
+            Self(Mutex::new(
+                rows.iter().map(|(u, n)| (*u, n.to_string())).collect(),
+            ))
         }
     }
     impl UserLookup for Fixed {
@@ -76,14 +79,23 @@ mod tests {
     #[test]
     fn no_uid_is_unset() {
         let lookup = Fixed::new(&[]);
-        assert_eq!(ControllerState::from_uid(None, &lookup), ControllerState::Unset);
+        assert_eq!(
+            ControllerState::from_uid(None, &lookup),
+            ControllerState::Unset
+        );
     }
 
     #[test]
     fn live_uid_is_set() {
         let lookup = Fixed::new(&[(1000, "alice")]);
         let s = ControllerState::from_uid(Some(1000), &lookup);
-        assert_eq!(s, ControllerState::Set { uid: 1000, username: "alice".into() });
+        assert_eq!(
+            s,
+            ControllerState::Set {
+                uid: 1000,
+                username: "alice".into()
+            }
+        );
     }
 
     #[test]

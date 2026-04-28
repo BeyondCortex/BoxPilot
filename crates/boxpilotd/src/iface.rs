@@ -60,7 +60,10 @@ impl Helper {
                 "app.boxpilot.Helper1.Ipc: missing sender on incoming message".into(),
             )
         })?;
-        let resp = self.do_service_status(&sender.to_string()).await.map_err(to_zbus_err)?;
+        let resp = self
+            .do_service_status(&sender.to_string())
+            .await
+            .map_err(to_zbus_err)?;
         // Wire format on D-Bus is a single JSON string. We use JSON rather
         // than a nested zbus dict so the IPC types live in one Rust type
         // hierarchy and the GUI can deserialize via serde without a
@@ -71,24 +74,60 @@ impl Helper {
     }
 
     // ----- Stubs for the other 18 actions (filled in by plans #2-#9). -----
-    async fn service_start(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn service_stop(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn service_restart(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn service_enable(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn service_disable(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn service_install_managed(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn service_logs(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn profile_activate_bundle(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn profile_rollback_release(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn core_discover(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn core_install_managed(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn core_upgrade_managed(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn core_rollback_managed(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn core_adopt(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn legacy_observe_service(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn legacy_migrate_service(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn controller_transfer(&self) -> zbus::fdo::Result<String> { stub() }
-    async fn diagnostics_export_redacted(&self) -> zbus::fdo::Result<String> { stub() }
+    async fn service_start(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn service_stop(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn service_restart(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn service_enable(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn service_disable(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn service_install_managed(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn service_logs(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn profile_activate_bundle(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn profile_rollback_release(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn core_discover(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn core_install_managed(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn core_upgrade_managed(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn core_rollback_managed(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn core_adopt(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn legacy_observe_service(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn legacy_migrate_service(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn controller_transfer(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
+    async fn diagnostics_export_redacted(&self) -> zbus::fdo::Result<String> {
+        stub()
+    }
 }
 
 fn stub() -> zbus::fdo::Result<String> {
@@ -101,12 +140,17 @@ impl Helper {
         &self,
         sender_bus_name: &str,
     ) -> Result<ServiceStatusResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender_bus_name, HelperMethod::ServiceStatus).await?;
+        let _call =
+            dispatch::authorize(&self.ctx, sender_bus_name, HelperMethod::ServiceStatus).await?;
         let cfg = self.ctx.load_config().await?;
         let unit_name = cfg.target_service.clone();
         let unit_state = self.ctx.systemd.unit_state(&unit_name).await?;
         let controller = self.ctx.controller_state().await?.to_status();
-        Ok(ServiceStatusResponse { unit_name, unit_state, controller })
+        Ok(ServiceStatusResponse {
+            unit_name,
+            unit_state,
+            controller,
+        })
     }
 }
 

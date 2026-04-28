@@ -59,7 +59,11 @@ pub async fn authorize(
         None
     };
 
-    Ok(AuthorizedCall { caller_uid, controller, _lock: lock })
+    Ok(AuthorizedCall {
+        caller_uid,
+        controller,
+        _lock: lock,
+    })
 }
 
 #[cfg(test)]

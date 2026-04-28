@@ -50,13 +50,17 @@ impl BoxpilotConfig {
         struct Peek {
             schema_version: u32,
         }
-        let peek: Peek = toml::from_str(text)
-            .map_err(|e| HelperError::Ipc { message: format!("config parse: {e}") })?;
+        let peek: Peek = toml::from_str(text).map_err(|e| HelperError::Ipc {
+            message: format!("config parse: {e}"),
+        })?;
         if peek.schema_version != CURRENT_SCHEMA_VERSION {
-            return Err(HelperError::UnsupportedSchemaVersion { got: peek.schema_version });
+            return Err(HelperError::UnsupportedSchemaVersion {
+                got: peek.schema_version,
+            });
         }
-        let cfg: BoxpilotConfig = toml::from_str(text)
-            .map_err(|e| HelperError::Ipc { message: format!("config parse: {e}") })?;
+        let cfg: BoxpilotConfig = toml::from_str(text).map_err(|e| HelperError::Ipc {
+            message: format!("config parse: {e}"),
+        })?;
         Ok(cfg)
     }
 
@@ -98,7 +102,10 @@ controller_uid = 1000
     #[test]
     fn rejects_unknown_schema_version() {
         let r = BoxpilotConfig::parse("schema_version = 2\n");
-        assert!(matches!(r, Err(HelperError::UnsupportedSchemaVersion { got: 2 })));
+        assert!(matches!(
+            r,
+            Err(HelperError::UnsupportedSchemaVersion { got: 2 })
+        ));
     }
 
     #[test]

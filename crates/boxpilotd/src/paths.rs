@@ -12,13 +12,17 @@ pub struct Paths {
 impl Paths {
     /// Production paths rooted at `/`.
     pub fn system() -> Self {
-        Self { root: PathBuf::from("/") }
+        Self {
+            root: PathBuf::from("/"),
+        }
     }
 
     /// Test/dev paths rooted at an arbitrary directory.
     #[allow(dead_code)] // used in tests and plan #2+ dev helpers
     pub fn with_root(root: impl AsRef<Path>) -> Self {
-        Self { root: root.as_ref().to_path_buf() }
+        Self {
+            root: root.as_ref().to_path_buf(),
+        }
     }
 
     pub fn boxpilot_toml(&self) -> PathBuf {
@@ -52,13 +56,19 @@ mod tests {
     #[test]
     fn system_paths_anchor_at_root() {
         let p = Paths::system();
-        assert_eq!(p.boxpilot_toml(), PathBuf::from("/etc/boxpilot/boxpilot.toml"));
+        assert_eq!(
+            p.boxpilot_toml(),
+            PathBuf::from("/etc/boxpilot/boxpilot.toml")
+        );
         assert_eq!(p.run_lock(), PathBuf::from("/run/boxpilot/lock"));
     }
 
     #[test]
     fn with_root_relocates_everything() {
         let p = Paths::with_root("/tmp/fake");
-        assert_eq!(p.boxpilot_toml(), PathBuf::from("/tmp/fake/etc/boxpilot/boxpilot.toml"));
+        assert_eq!(
+            p.boxpilot_toml(),
+            PathBuf::from("/tmp/fake/etc/boxpilot/boxpilot.toml")
+        );
     }
 }

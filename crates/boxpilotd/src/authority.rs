@@ -53,7 +53,9 @@ impl Authority for DBusAuthority {
     async fn check(&self, action_id: &str, sender_bus_name: &str) -> Result<bool, HelperError> {
         let proxy = PolkitAuthorityProxy::new(&self.conn)
             .await
-            .map_err(|e| HelperError::Ipc { message: format!("polkit proxy: {e}") })?;
+            .map_err(|e| HelperError::Ipc {
+                message: format!("polkit proxy: {e}"),
+            })?;
 
         let mut subject_data: HashMap<&str, Value<'_>> = HashMap::new();
         let bus_name_value = Value::Str(sender_bus_name.into());
@@ -88,10 +90,14 @@ pub mod testing {
 
     impl CannedAuthority {
         pub fn allowing(actions: &[&str]) -> Self {
-            Self(Mutex::new(actions.iter().map(|a| (a.to_string(), true)).collect()))
+            Self(Mutex::new(
+                actions.iter().map(|a| (a.to_string(), true)).collect(),
+            ))
         }
         pub fn denying(actions: &[&str]) -> Self {
-            Self(Mutex::new(actions.iter().map(|a| (a.to_string(), false)).collect()))
+            Self(Mutex::new(
+                actions.iter().map(|a| (a.to_string(), false)).collect(),
+            ))
         }
     }
 
@@ -108,12 +114,18 @@ pub mod testing {
     #[tokio::test]
     async fn canned_allow() {
         let a = CannedAuthority::allowing(&["app.boxpilot.helper.service.status"]);
-        assert!(a.check("app.boxpilot.helper.service.status", ":1.5").await.unwrap());
+        assert!(a
+            .check("app.boxpilot.helper.service.status", ":1.5")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
     async fn canned_deny() {
         let a = CannedAuthority::denying(&["app.boxpilot.helper.service.start"]);
-        assert!(!a.check("app.boxpilot.helper.service.start", ":1.5").await.unwrap());
+        assert!(!a
+            .check("app.boxpilot.helper.service.start", ":1.5")
+            .await
+            .unwrap());
     }
 }

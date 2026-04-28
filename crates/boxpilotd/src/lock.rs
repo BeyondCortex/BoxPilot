@@ -38,11 +38,15 @@ pub fn try_acquire(lock_path: &Path) -> Result<LockGuard, HelperError> {
         .truncate(false)
         .mode(0o644)
         .open(lock_path)
-        .map_err(|e| HelperError::Ipc { message: format!("open lock: {e}") })?;
+        .map_err(|e| HelperError::Ipc {
+            message: format!("open lock: {e}"),
+        })?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(LockGuard { file }),
         Err(e) if e.kind() == ErrorKind::WouldBlock => Err(HelperError::Busy),
-        Err(e) => Err(HelperError::Ipc { message: format!("flock: {e}") }),
+        Err(e) => Err(HelperError::Ipc {
+            message: format!("flock: {e}"),
+        }),
     }
 }
 

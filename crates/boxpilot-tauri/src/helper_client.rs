@@ -28,7 +28,9 @@ pub struct HelperClient {
 
 impl HelperClient {
     pub async fn connect() -> Result<Self, ClientError> {
-        Ok(Self { conn: Connection::system().await? })
+        Ok(Self {
+            conn: Connection::system().await?,
+        })
     }
 
     pub async fn service_status(&self) -> Result<ServiceStatusResponse, ClientError> {

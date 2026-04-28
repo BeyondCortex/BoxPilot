@@ -34,7 +34,9 @@ impl CallerResolver for DBusCallerResolver {
     async fn resolve(&self, sender: &str) -> Result<u32, HelperError> {
         let proxy = zbus::fdo::DBusProxy::new(&self.conn)
             .await
-            .map_err(|e| HelperError::Ipc { message: format!("DBusProxy: {e}") })?;
+            .map_err(|e| HelperError::Ipc {
+                message: format!("DBusProxy: {e}"),
+            })?;
         let uid = proxy
             .get_connection_unix_user(sender.try_into().map_err(|e| HelperError::Ipc {
                 message: format!("bad sender name {sender}: {e}"),
@@ -57,7 +59,9 @@ pub mod testing {
 
     impl FixedResolver {
         pub fn with(rows: &[(&str, u32)]) -> Self {
-            Self(Mutex::new(rows.iter().map(|(s, u)| (s.to_string(), *u)).collect()))
+            Self(Mutex::new(
+                rows.iter().map(|(s, u)| (s.to_string(), *u)).collect(),
+            ))
         }
     }
 

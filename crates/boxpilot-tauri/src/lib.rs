@@ -1,5 +1,5 @@
-pub mod helper_client;
 pub mod commands;
+pub mod helper_client;
 
 pub fn run() {
     init_tracing();
@@ -14,7 +14,7 @@ pub fn run() {
 
 fn init_tracing() {
     use tracing_subscriber::{fmt, EnvFilter};
-    let filter = EnvFilter::try_from_env("BOXPILOT_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("boxpilot=info"));
+    let filter =
+        EnvFilter::try_from_env("BOXPILOT_LOG").unwrap_or_else(|_| EnvFilter::new("boxpilot=info"));
     let _ = fmt().with_env_filter(filter).with_target(false).try_init();
 }

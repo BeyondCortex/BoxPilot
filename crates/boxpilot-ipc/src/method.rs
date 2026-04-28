@@ -5,25 +5,44 @@ use serde::{Deserialize, Serialize};
 /// [`polkit_action_id`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HelperMethod {
-    #[serde(rename = "service.status")]              ServiceStatus,
-    #[serde(rename = "service.start")]               ServiceStart,
-    #[serde(rename = "service.stop")]                ServiceStop,
-    #[serde(rename = "service.restart")]             ServiceRestart,
-    #[serde(rename = "service.enable")]              ServiceEnable,
-    #[serde(rename = "service.disable")]             ServiceDisable,
-    #[serde(rename = "service.install_managed")]     ServiceInstallManaged,
-    #[serde(rename = "service.logs")]                ServiceLogs,
-    #[serde(rename = "profile.activate_bundle")]     ProfileActivateBundle,
-    #[serde(rename = "profile.rollback_release")]    ProfileRollbackRelease,
-    #[serde(rename = "core.discover")]               CoreDiscover,
-    #[serde(rename = "core.install_managed")]        CoreInstallManaged,
-    #[serde(rename = "core.upgrade_managed")]        CoreUpgradeManaged,
-    #[serde(rename = "core.rollback_managed")]       CoreRollbackManaged,
-    #[serde(rename = "core.adopt")]                  CoreAdopt,
-    #[serde(rename = "legacy.observe_service")]      LegacyObserveService,
-    #[serde(rename = "legacy.migrate_service")]      LegacyMigrateService,
-    #[serde(rename = "controller.transfer")]         ControllerTransfer,
-    #[serde(rename = "diagnostics.export_redacted")] DiagnosticsExportRedacted,
+    #[serde(rename = "service.status")]
+    ServiceStatus,
+    #[serde(rename = "service.start")]
+    ServiceStart,
+    #[serde(rename = "service.stop")]
+    ServiceStop,
+    #[serde(rename = "service.restart")]
+    ServiceRestart,
+    #[serde(rename = "service.enable")]
+    ServiceEnable,
+    #[serde(rename = "service.disable")]
+    ServiceDisable,
+    #[serde(rename = "service.install_managed")]
+    ServiceInstallManaged,
+    #[serde(rename = "service.logs")]
+    ServiceLogs,
+    #[serde(rename = "profile.activate_bundle")]
+    ProfileActivateBundle,
+    #[serde(rename = "profile.rollback_release")]
+    ProfileRollbackRelease,
+    #[serde(rename = "core.discover")]
+    CoreDiscover,
+    #[serde(rename = "core.install_managed")]
+    CoreInstallManaged,
+    #[serde(rename = "core.upgrade_managed")]
+    CoreUpgradeManaged,
+    #[serde(rename = "core.rollback_managed")]
+    CoreRollbackManaged,
+    #[serde(rename = "core.adopt")]
+    CoreAdopt,
+    #[serde(rename = "legacy.observe_service")]
+    LegacyObserveService,
+    #[serde(rename = "legacy.migrate_service")]
+    LegacyMigrateService,
+    #[serde(rename = "controller.transfer")]
+    ControllerTransfer,
+    #[serde(rename = "diagnostics.export_redacted")]
+    DiagnosticsExportRedacted,
 }
 
 impl HelperMethod {
@@ -135,23 +154,41 @@ mod auth_tests {
 
     #[test]
     fn read_only_classifications() {
-        assert_eq!(HelperMethod::ServiceStatus.auth_class(), AuthClass::ReadOnly);
+        assert_eq!(
+            HelperMethod::ServiceStatus.auth_class(),
+            AuthClass::ReadOnly
+        );
         assert_eq!(HelperMethod::ServiceLogs.auth_class(), AuthClass::ReadOnly);
         assert_eq!(HelperMethod::CoreDiscover.auth_class(), AuthClass::ReadOnly);
-        assert_eq!(HelperMethod::LegacyObserveService.auth_class(), AuthClass::ReadOnly);
+        assert_eq!(
+            HelperMethod::LegacyObserveService.auth_class(),
+            AuthClass::ReadOnly
+        );
     }
 
     #[test]
     fn high_risk_classifications() {
-        assert_eq!(HelperMethod::ControllerTransfer.auth_class(), AuthClass::HighRisk);
-        assert_eq!(HelperMethod::LegacyMigrateService.auth_class(), AuthClass::HighRisk);
+        assert_eq!(
+            HelperMethod::ControllerTransfer.auth_class(),
+            AuthClass::HighRisk
+        );
+        assert_eq!(
+            HelperMethod::LegacyMigrateService.auth_class(),
+            AuthClass::HighRisk
+        );
     }
 
     #[test]
     fn mutating_default() {
         assert_eq!(HelperMethod::ServiceStart.auth_class(), AuthClass::Mutating);
-        assert_eq!(HelperMethod::ProfileActivateBundle.auth_class(), AuthClass::Mutating);
-        assert_eq!(HelperMethod::CoreInstallManaged.auth_class(), AuthClass::Mutating);
+        assert_eq!(
+            HelperMethod::ProfileActivateBundle.auth_class(),
+            AuthClass::Mutating
+        );
+        assert_eq!(
+            HelperMethod::CoreInstallManaged.auth_class(),
+            AuthClass::Mutating
+        );
     }
 
     #[test]

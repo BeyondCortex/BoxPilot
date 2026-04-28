@@ -55,7 +55,9 @@ impl SystemdQuery for DBusSystemd {
     async fn unit_state(&self, unit_name: &str) -> Result<UnitState, HelperError> {
         let mgr = SystemdManagerProxy::new(&self.conn)
             .await
-            .map_err(|e| HelperError::Systemd { message: format!("manager proxy: {e}") })?;
+            .map_err(|e| HelperError::Systemd {
+                message: format!("manager proxy: {e}"),
+            })?;
 
         // GetUnit returns NoSuchUnit for unloaded units. We translate that
         // into UnitState::NotFound rather than bubbling up an error so the
@@ -67,29 +69,45 @@ impl SystemdQuery for DBusSystemd {
             {
                 return Ok(UnitState::NotFound);
             }
-            Err(e) => return Err(HelperError::Systemd { message: format!("GetUnit: {e}") }),
+            Err(e) => {
+                return Err(HelperError::Systemd {
+                    message: format!("GetUnit: {e}"),
+                })
+            }
         };
 
         let unit = SystemdUnitProxy::builder(&self.conn)
             .destination("org.freedesktop.systemd1")
-            .map_err(|e| HelperError::Systemd { message: e.to_string() })?
+            .map_err(|e| HelperError::Systemd {
+                message: e.to_string(),
+            })?
             .path(unit_path.clone())
-            .map_err(|e| HelperError::Systemd { message: e.to_string() })?
+            .map_err(|e| HelperError::Systemd {
+                message: e.to_string(),
+            })?
             .build()
             .await
-            .map_err(|e| HelperError::Systemd { message: e.to_string() })?;
+            .map_err(|e| HelperError::Systemd {
+                message: e.to_string(),
+            })?;
         let active_state = unit.active_state().await.map_err(systemd_err)?;
         let sub_state = unit.sub_state().await.map_err(systemd_err)?;
         let load_state = unit.load_state().await.map_err(systemd_err)?;
 
         let svc = SystemdServiceProxy::builder(&self.conn)
             .destination("org.freedesktop.systemd1")
-            .map_err(|e| HelperError::Systemd { message: e.to_string() })?
+            .map_err(|e| HelperError::Systemd {
+                message: e.to_string(),
+            })?
             .path(unit_path)
-            .map_err(|e| HelperError::Systemd { message: e.to_string() })?
+            .map_err(|e| HelperError::Systemd {
+                message: e.to_string(),
+            })?
             .build()
             .await
-            .map_err(|e| HelperError::Systemd { message: e.to_string() })?;
+            .map_err(|e| HelperError::Systemd {
+                message: e.to_string(),
+            })?;
         // For non-Service units these properties may be absent — surface 0
         // rather than failing the whole query.
         let n_restarts = svc.n_restarts().await.unwrap_or(0);
@@ -106,7 +124,9 @@ impl SystemdQuery for DBusSystemd {
 }
 
 fn systemd_err(e: zbus::Error) -> HelperError {
-    HelperError::Systemd { message: e.to_string() }
+    HelperError::Systemd {
+        message: e.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -126,7 +146,9 @@ pub mod testing {
 
     #[tokio::test]
     async fn fixed_returns_canned_state() {
-        let q = FixedSystemd { answer: UnitState::NotFound };
+        let q = FixedSystemd {
+            answer: UnitState::NotFound,
+        };
         assert_eq!(q.unit_state("anything").await.unwrap(), UnitState::NotFound);
     }
 }

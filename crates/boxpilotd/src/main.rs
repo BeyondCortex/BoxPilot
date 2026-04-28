@@ -47,7 +47,9 @@ async fn main() -> Result<()> {
         .at(OBJECT_PATH, helper)
         .await
         .context("register Helper at object path")?;
-    conn.request_name(BUS_NAME).await.context("acquire bus name")?;
+    conn.request_name(BUS_NAME)
+        .await
+        .context("acquire bus name")?;
     info!(bus = BUS_NAME, "ready");
 
     // Block until SIGTERM / SIGINT.
