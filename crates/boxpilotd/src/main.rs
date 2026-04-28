@@ -2,6 +2,7 @@
 //! by D-Bus; always runs as root. See spec §6.
 
 mod controller;
+mod credentials;
 mod lock;
 mod paths;
 
