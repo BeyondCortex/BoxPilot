@@ -1,3 +1,12 @@
+// TODO(plan #3): polkit.spawn(["/usr/bin/cat", ...]) blocks the polkit
+// daemon on every authorization. For v1.0 this is acceptable because:
+//   - service.status (the highest-frequency call) has allow_any=yes
+//     in the XML and never reaches this rule.
+//   - Mutating actions are user-initiated; spawn latency is invisible.
+// Replace with a faster mechanism in plan #3 (e.g. read controller_uid
+// from polkit's subject metadata after the daemon writes a per-user
+// drop-in, or precompute it into the daemon's polkit subject claim).
+
 // 49-boxpilot.rules — promote the BoxPilot controller user to less-prompting
 // auth tiers (spec §6.3). The controller UID lives in
 // /etc/boxpilot/controller-uid (a single integer). When the file is missing

@@ -22,7 +22,7 @@ fn every_helper_method_has_a_polkit_action_id_in_the_xml() {
     for m in HelperMethod::ALL {
         let id = m.polkit_action_id();
         assert!(
-            declared.contains(&id),
+            declared.contains(id),
             "polkit policy XML is missing action {id} (HelperMethod::{m:?})"
         );
     }

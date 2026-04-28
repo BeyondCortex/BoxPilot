@@ -140,12 +140,12 @@ impl Helper {
         &self,
         sender_bus_name: &str,
     ) -> Result<ServiceStatusResponse, HelperError> {
-        let _call =
+        let call =
             dispatch::authorize(&self.ctx, sender_bus_name, HelperMethod::ServiceStatus).await?;
         let cfg = self.ctx.load_config().await?;
         let unit_name = cfg.target_service.clone();
         let unit_state = self.ctx.systemd.unit_state(&unit_name).await?;
-        let controller = self.ctx.controller_state().await?.to_status();
+        let controller = call.controller.to_status();
         Ok(ServiceStatusResponse {
             unit_name,
             unit_state,

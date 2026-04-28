@@ -31,6 +31,13 @@ impl Paths {
 
     #[allow(dead_code)] // used in plan #2+ (controller-uid file read/write)
     pub fn controller_uid_file(&self) -> PathBuf {
+        // Plain-text integer file consumed by the polkit JS rule
+        // (49-boxpilot.rules). Plan #2's controller-claim flow MUST write
+        // both this file and boxpilot.toml's controller_uid atomically
+        // under the same /run/boxpilot/lock acquisition — if only the toml
+        // is updated, the polkit rule keeps using the stale UID until the
+        // file is rewritten or the system reboots, silently failing
+        // authorization for the new controller.
         self.root.join("etc/boxpilot/controller-uid")
     }
 

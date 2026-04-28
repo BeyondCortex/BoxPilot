@@ -17,7 +17,6 @@ use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
 pub struct AuthorizedCall {
     #[allow(dead_code)] // used in plan #2 (controller ownership checks)
     pub caller_uid: u32,
-    #[allow(dead_code)] // used in plan #2 (controller state propagation)
     pub controller: ControllerState,
     /// Held only when [`HelperMethod::is_mutating`] is true.
     _lock: Option<LockGuard>,
@@ -39,16 +38,23 @@ pub async fn authorize(
         }
     }
 
-    if method.is_mutating() && matches!(controller, ControllerState::Unset) {
-        // Plan #1 ships no path that would set the controller, so this
-        // branch is reachable only by a non-status mutating method
-        // (all of which return NotImplemented here). Keeping the check
-        // wired makes the dispatch contract correct for plan #2 onward.
-        return Err(HelperError::ControllerNotSet);
+    if matches!(controller, ControllerState::Unset) {
+        // TODO(plan #2): replace this short-circuit with
+        //   try_claim_controller_under_lock(&ctx, caller_uid)
+        // for the first authorized mutating call. The lock is acquired
+        // below; the claim must happen UNDER the same lock acquisition
+        // (§6.6) so two simultaneous first-time prompts cannot race
+        // into a split-controller state. Plan #2's first task that
+        // calls authorize() with a mutating method must use this hook
+        // rather than calling authorize and then trying to set
+        // controller_uid outside the chokepoint.
+        if method.is_mutating() {
+            return Err(HelperError::ControllerNotSet);
+        }
     }
 
     let action_id = method.polkit_action_id();
-    let allowed = ctx.authority.check(&action_id, sender_bus_name).await?;
+    let allowed = ctx.authority.check(action_id, sender_bus_name).await?;
     if !allowed {
         return Err(HelperError::NotAuthorized);
     }

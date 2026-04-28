@@ -6,11 +6,7 @@
 use async_trait::async_trait;
 use boxpilot_ipc::HelperError;
 use std::collections::HashMap;
-use zbus::{
-    proxy,
-    zvariant::{OwnedValue, Value},
-    Connection,
-};
+use zbus::{proxy, zvariant::Value, Connection};
 
 #[async_trait]
 pub trait Authority: Send + Sync {
@@ -73,9 +69,6 @@ impl Authority for DBusAuthority {
             .map_err(|e| HelperError::Ipc {
                 message: format!("polkit CheckAuthorization({action_id}): {e}"),
             })?;
-        // Reference OwnedValue to silence unused-import warnings if zbus
-        // changes its re-exports between minor versions.
-        let _ = std::marker::PhantomData::<OwnedValue>;
         Ok(is_authorized)
     }
 }

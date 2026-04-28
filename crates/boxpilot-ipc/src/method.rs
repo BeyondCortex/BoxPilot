@@ -69,10 +69,28 @@ impl HelperMethod {
     ];
 
     pub fn as_logical(&self) -> &'static str {
-        // Round-trip via serde to keep the source of truth in one place.
-        // SAFETY: enum values always serialize to a JSON string; unwrap is fine.
-        let v = serde_json::to_value(self).unwrap();
-        Box::leak(v.as_str().unwrap().to_owned().into_boxed_str())
+        use HelperMethod::*;
+        match self {
+            ServiceStatus => "service.status",
+            ServiceStart => "service.start",
+            ServiceStop => "service.stop",
+            ServiceRestart => "service.restart",
+            ServiceEnable => "service.enable",
+            ServiceDisable => "service.disable",
+            ServiceInstallManaged => "service.install_managed",
+            ServiceLogs => "service.logs",
+            ProfileActivateBundle => "profile.activate_bundle",
+            ProfileRollbackRelease => "profile.rollback_release",
+            CoreDiscover => "core.discover",
+            CoreInstallManaged => "core.install_managed",
+            CoreUpgradeManaged => "core.upgrade_managed",
+            CoreRollbackManaged => "core.rollback_managed",
+            CoreAdopt => "core.adopt",
+            LegacyObserveService => "legacy.observe_service",
+            LegacyMigrateService => "legacy.migrate_service",
+            ControllerTransfer => "controller.transfer",
+            DiagnosticsExportRedacted => "diagnostics.export_redacted",
+        }
     }
 }
 
@@ -140,10 +158,29 @@ impl HelperMethod {
     }
 
     /// `app.boxpilot.helper.<dotted-with-dashes>`
-    pub fn polkit_action_id(&self) -> String {
-        let logical = self.as_logical(); // e.g. "profile.activate_bundle"
-        let dashed = logical.replace('_', "-"); // "profile.activate-bundle"
-        format!("app.boxpilot.helper.{dashed}")
+    pub fn polkit_action_id(&self) -> &'static str {
+        use HelperMethod::*;
+        match self {
+            ServiceStatus => "app.boxpilot.helper.service.status",
+            ServiceStart => "app.boxpilot.helper.service.start",
+            ServiceStop => "app.boxpilot.helper.service.stop",
+            ServiceRestart => "app.boxpilot.helper.service.restart",
+            ServiceEnable => "app.boxpilot.helper.service.enable",
+            ServiceDisable => "app.boxpilot.helper.service.disable",
+            ServiceInstallManaged => "app.boxpilot.helper.service.install-managed",
+            ServiceLogs => "app.boxpilot.helper.service.logs",
+            ProfileActivateBundle => "app.boxpilot.helper.profile.activate-bundle",
+            ProfileRollbackRelease => "app.boxpilot.helper.profile.rollback-release",
+            CoreDiscover => "app.boxpilot.helper.core.discover",
+            CoreInstallManaged => "app.boxpilot.helper.core.install-managed",
+            CoreUpgradeManaged => "app.boxpilot.helper.core.upgrade-managed",
+            CoreRollbackManaged => "app.boxpilot.helper.core.rollback-managed",
+            CoreAdopt => "app.boxpilot.helper.core.adopt",
+            LegacyObserveService => "app.boxpilot.helper.legacy.observe-service",
+            LegacyMigrateService => "app.boxpilot.helper.legacy.migrate-service",
+            ControllerTransfer => "app.boxpilot.helper.controller.transfer",
+            DiagnosticsExportRedacted => "app.boxpilot.helper.diagnostics.export-redacted",
+        }
     }
 }
 

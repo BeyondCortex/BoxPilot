@@ -19,6 +19,10 @@ pub trait SystemdQuery: Send + Sync {
 )]
 trait SystemdManager {
     fn get_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    // Reserved for plan #3's `service.install_managed` flow, which calls
+    // LoadUnit to ensure systemd has parsed the freshly-written .service file
+    // before issuing StartUnit.
+    #[allow(dead_code)]
     fn load_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 }
 
