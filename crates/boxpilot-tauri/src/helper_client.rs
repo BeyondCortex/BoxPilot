@@ -12,6 +12,21 @@ use zbus::{proxy, Connection};
 )]
 trait Helper {
     fn service_status(&self) -> zbus::Result<String>;
+
+    #[zbus(name = "CoreDiscover")]
+    fn core_discover(&self) -> zbus::Result<String>;
+
+    #[zbus(name = "CoreInstallManaged")]
+    fn core_install_managed(&self, request_json: &str) -> zbus::Result<String>;
+
+    #[zbus(name = "CoreUpgradeManaged")]
+    fn core_upgrade_managed(&self, request_json: &str) -> zbus::Result<String>;
+
+    #[zbus(name = "CoreRollbackManaged")]
+    fn core_rollback_managed(&self, request_json: &str) -> zbus::Result<String>;
+
+    #[zbus(name = "CoreAdopt")]
+    fn core_adopt(&self, request_json: &str) -> zbus::Result<String>;
 }
 
 #[derive(Debug, Error)]
@@ -81,6 +96,56 @@ impl HelperClient {
     pub async fn service_status(&self) -> Result<ServiceStatusResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_status().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn core_discover(&self) -> Result<boxpilot_ipc::CoreDiscoverResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.core_discover().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn core_install_managed(
+        &self,
+        req: &boxpilot_ipc::CoreInstallRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy
+            .core_install_managed(&serde_json::to_string(req).unwrap())
+            .await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn core_upgrade_managed(
+        &self,
+        req: &boxpilot_ipc::CoreInstallRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy
+            .core_upgrade_managed(&serde_json::to_string(req).unwrap())
+            .await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn core_rollback_managed(
+        &self,
+        req: &boxpilot_ipc::CoreRollbackRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy
+            .core_rollback_managed(&serde_json::to_string(req).unwrap())
+            .await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn core_adopt(
+        &self,
+        req: &boxpilot_ipc::CoreAdoptRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy
+            .core_adopt(&serde_json::to_string(req).unwrap())
+            .await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 }
