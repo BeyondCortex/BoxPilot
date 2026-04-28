@@ -17,7 +17,9 @@ pub struct LockGuard {
 impl Drop for LockGuard {
     fn drop(&mut self) {
         // Best-effort unlock; if it fails the kernel will release on close.
-        let _ = self.file.unlock();
+        // Use the fully-qualified path to avoid ambiguity with the future
+        // std::fs::File::unlock() method (stabilized in Rust 1.89).
+        let _ = fs2::FileExt::unlock(&self.file);
     }
 }
 

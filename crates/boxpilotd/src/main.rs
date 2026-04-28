@@ -1,6 +1,10 @@
 //! `boxpilotd` — privileged helper for BoxPilot. Activated on the system bus
 //! by D-Bus; always runs as root. See spec §6.
 
+// Scaffold modules are declared here in order; their public items will be
+// wired together in tasks 14-18. Until then, suppress dead-code lint.
+#![allow(dead_code)]
+
 mod authority;
 mod controller;
 mod credentials;
