@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "https://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>BoxPilot</vendor>
+  <vendor_url>https://boxpilot.app/</vendor_url>
+
+  <!-- Defaults below are the *non-controller* tiers from spec §6.3.
+       The controller user is promoted to a less-prompting tier by the
+       JS rules file 49-boxpilot.rules. -->
+
+  <!-- Read-only / observation: any local user, no auth. -->
+  <action id="app.boxpilot.helper.service.status">
+    <description>View BoxPilot service status</description>
+    <message>Authentication is required to view BoxPilot service status</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+  <action id="app.boxpilot.helper.service.logs">
+    <description>Read BoxPilot service logs</description>
+    <message>Authentication is required to read BoxPilot service logs</message>
+    <defaults><allow_any>yes</allow_any><allow_inactive>yes</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.core.discover">
+    <description>Discover sing-box cores on this system</description>
+    <message>Authentication is required to discover sing-box cores</message>
+    <defaults><allow_any>yes</allow_any><allow_inactive>yes</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.legacy.observe-service">
+    <description>Observe an existing sing-box service</description>
+    <message>Authentication is required to observe an existing sing-box service</message>
+    <defaults><allow_any>yes</allow_any><allow_inactive>yes</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
+
+  <!-- Mutating: admin auth, cached for the session. -->
+  <action id="app.boxpilot.helper.service.start">
+    <description>Start the BoxPilot sing-box service</description>
+    <message>Authentication is required to start BoxPilot</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.service.stop">
+    <description>Stop the BoxPilot sing-box service</description>
+    <message>Authentication is required to stop BoxPilot</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.service.restart">
+    <description>Restart the BoxPilot sing-box service</description>
+    <message>Authentication is required to restart BoxPilot</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.service.enable">
+    <description>Enable the BoxPilot sing-box service at boot</description>
+    <message>Authentication is required to enable BoxPilot at boot</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.service.disable">
+    <description>Disable the BoxPilot sing-box service at boot</description>
+    <message>Authentication is required to disable BoxPilot at boot</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.service.install-managed">
+    <description>Install the BoxPilot-managed sing-box service unit</description>
+    <message>Authentication is required to install the BoxPilot service</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.profile.activate-bundle">
+    <description>Activate a BoxPilot profile</description>
+    <message>Authentication is required to activate this profile</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.profile.rollback-release">
+    <description>Roll back to a previous BoxPilot profile release</description>
+    <message>Authentication is required to roll back this profile</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.core.install-managed">
+    <description>Install a managed sing-box core</description>
+    <message>Authentication is required to install a sing-box core</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.core.upgrade-managed">
+    <description>Upgrade the managed sing-box core</description>
+    <message>Authentication is required to upgrade the sing-box core</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.core.rollback-managed">
+    <description>Roll back the managed sing-box core</description>
+    <message>Authentication is required to roll back the sing-box core</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.core.adopt">
+    <description>Adopt an existing sing-box binary as managed</description>
+    <message>Authentication is required to adopt this sing-box binary</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.diagnostics.export-redacted">
+    <description>Export redacted BoxPilot diagnostics</description>
+    <message>Authentication is required to export BoxPilot diagnostics</message>
+    <defaults><allow_any>auth_admin_keep</allow_any><allow_inactive>auth_admin_keep</allow_inactive><allow_active>auth_admin_keep</allow_active></defaults>
+  </action>
+
+  <!-- High-risk: admin auth, never cached (§6.3 "always re-prompt; no caching"). -->
+  <action id="app.boxpilot.helper.controller.transfer">
+    <description>Transfer the BoxPilot controller user</description>
+    <message>Authentication is required to transfer the BoxPilot controller</message>
+    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+  <action id="app.boxpilot.helper.legacy.migrate-service">
+    <description>Migrate an existing sing-box service to BoxPilot</description>
+    <message>Authentication is required to migrate the existing sing-box service</message>
+    <defaults><allow_any>auth_admin</allow_any><allow_inactive>auth_admin</allow_inactive><allow_active>auth_admin</allow_active></defaults>
+  </action>
+</policyconfig>
