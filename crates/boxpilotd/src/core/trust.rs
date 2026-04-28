@@ -298,3 +298,154 @@ mod binary_check_tests {
         let _ = FakeFs::root_bin();
     }
 }
+
+/// Allowed path prefixes per §6.5. Caller may extend with adopted core
+/// directories pulled from install-state.
+pub fn default_allowed_prefixes() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/usr/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/var/lib/boxpilot/cores"),
+    ]
+}
+
+/// Walk `path` ancestors, run binary checks, run directory checks, and
+/// confirm the resolved path lives under one of the allowed prefixes.
+///
+/// **Does not run the `sing-box version` check** — that runs at a higher
+/// layer because it requires process-spawn capability.
+pub fn verify_executable_path(
+    fs: &dyn FsMetadataProvider,
+    path: &Path,
+    allowed_prefixes: &[PathBuf],
+) -> Result<PathBuf, TrustError> {
+    let resolved = resolve_symlinks(fs, path)?;
+    let bin_stat = fs.stat(&resolved).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => TrustError::NotFound(resolved.clone()),
+        _ => TrustError::SymlinkResolution(format!("{e}")),
+    })?;
+    check_binary_stat(&resolved, &bin_stat)?;
+
+    let mut current = resolved
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("/"));
+    loop {
+        let stat = fs
+            .stat(&current)
+            .map_err(|e| TrustError::SymlinkResolution(format!("{}: {}", current.display(), e)))?;
+        check_dir_stat(&current, &stat)?;
+        if current == Path::new("/") {
+            break;
+        }
+        current = current
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("/"));
+    }
+
+    if !allowed_prefixes.iter().any(|p| resolved.starts_with(p)) {
+        return Err(TrustError::DisallowedPrefix(resolved));
+    }
+    Ok(resolved)
+}
+
+fn resolve_symlinks(fs: &dyn FsMetadataProvider, path: &Path) -> Result<PathBuf, TrustError> {
+    // Bounded resolution to defend against symlink loops.
+    const MAX_HOPS: u32 = 16;
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_HOPS {
+        let stat = fs.stat(&current);
+        match stat {
+            Ok(s) if matches!(s.kind, FileKind::Symlink) => {
+                current = fs
+                    .read_link(&current)
+                    .map_err(|e| TrustError::SymlinkResolution(format!("{e}")))?;
+            }
+            Ok(_) => return Ok(current),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return Err(TrustError::NotFound(current));
+            }
+            Err(e) => return Err(TrustError::SymlinkResolution(format!("{e}"))),
+        }
+    }
+    Err(TrustError::SymlinkResolution(
+        "symlink chain too deep".into(),
+    ))
+}
+
+#[cfg(test)]
+mod verify_tests {
+    use super::testing::FakeFs;
+    use super::*;
+
+    fn root_chain(fs: &FakeFs) {
+        fs.put("/", FakeFs::root_dir());
+        fs.put("/usr", FakeFs::root_dir());
+        fs.put("/usr/bin", FakeFs::root_dir());
+    }
+
+    #[test]
+    fn happy_path_under_usr_bin() {
+        let fs = FakeFs::default();
+        root_chain(&fs);
+        fs.put("/usr/bin/sing-box", FakeFs::root_bin());
+        let r = verify_executable_path(
+            &fs,
+            Path::new("/usr/bin/sing-box"),
+            &default_allowed_prefixes(),
+        );
+        assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn rejects_under_home() {
+        let fs = FakeFs::default();
+        fs.put("/", FakeFs::root_dir());
+        // /home owned by root but commonly group-writable on some distros; reject anyway via prefix list
+        fs.put("/home", FakeFs::root_dir());
+        fs.put(
+            "/home/alice",
+            FileStat {
+                uid: 1000,
+                gid: 1000,
+                mode: 0o755,
+                kind: FileKind::Directory,
+            },
+        );
+        fs.put("/home/alice/sing-box", FakeFs::root_bin());
+        let r = verify_executable_path(
+            &fs,
+            Path::new("/home/alice/sing-box"),
+            &default_allowed_prefixes(),
+        );
+        // Either NotRootOwned on a parent or DisallowedPrefix — both acceptable rejections.
+        assert!(matches!(
+            r,
+            Err(TrustError::NotRootOwned { .. }) | Err(TrustError::DisallowedPrefix(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_disallowed_prefix() {
+        let fs = FakeFs::default();
+        fs.put("/", FakeFs::root_dir());
+        fs.put("/opt", FakeFs::root_dir());
+        fs.put("/opt/sing-box", FakeFs::root_bin());
+        let r =
+            verify_executable_path(&fs, Path::new("/opt/sing-box"), &default_allowed_prefixes());
+        assert!(matches!(r, Err(TrustError::DisallowedPrefix(_))));
+    }
+
+    #[test]
+    fn allows_extended_prefix() {
+        let fs = FakeFs::default();
+        fs.put("/", FakeFs::root_dir());
+        fs.put("/opt", FakeFs::root_dir());
+        fs.put("/opt/sing-box", FakeFs::root_bin());
+        let mut prefixes = default_allowed_prefixes();
+        prefixes.push(PathBuf::from("/opt"));
+        let r = verify_executable_path(&fs, Path::new("/opt/sing-box"), &prefixes);
+        assert!(r.is_ok(), "{r:?}");
+    }
+}
