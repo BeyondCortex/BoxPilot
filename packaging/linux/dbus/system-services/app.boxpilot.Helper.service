@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=app.boxpilot.Helper
+Exec=/usr/lib/boxpilot/boxpilotd
+User=root
+SystemdService=boxpilotd.service
