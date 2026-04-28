@@ -1,0 +1,110 @@
+//! §6.5 trust checks. Used before promoting any binary to be invoked by
+//! the privileged daemon (downloaded sing-box, adopted external binaries).
+#![allow(dead_code)] // scaffolding-only: tasks 5-7 add callers and remove this
+
+use std::io;
+use std::path::{Path, PathBuf};
+use thiserror::Error;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileStat {
+    pub uid: u32,
+    pub gid: u32,
+    /// Lowest 12 bits of st_mode (permission + special bits).
+    pub mode: u32,
+    pub kind: FileKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileKind {
+    Regular,
+    Directory,
+    Symlink,
+    Other,
+}
+
+pub trait FsMetadataProvider: Send + Sync {
+    fn stat(&self, path: &Path) -> io::Result<FileStat>;
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf>;
+}
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum TrustError {
+    #[error("file does not exist: {0}")]
+    NotFound(PathBuf),
+    #[error("not a regular file: {0}")]
+    NotRegular(PathBuf),
+    #[error("not owned by root (uid={uid}, gid={gid}): {path}")]
+    NotRootOwned { path: PathBuf, uid: u32, gid: u32 },
+    #[error("group/world writable: {path} (mode={mode:o})")]
+    Writable { path: PathBuf, mode: u32 },
+    #[error("setuid/setgid/sticky bit set: {path} (mode={mode:o})")]
+    SpecialBits { path: PathBuf, mode: u32 },
+    #[error("path outside allowed prefixes: {0}")]
+    DisallowedPrefix(PathBuf),
+    #[error("symlink resolution failed: {0}")]
+    SymlinkResolution(String),
+    #[error("sing-box version self-check failed: {0}")]
+    VersionCheckFailed(String),
+}
+
+#[cfg(test)]
+pub mod testing {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    #[allow(dead_code)]
+    pub struct FakeFs {
+        pub stats: Mutex<HashMap<PathBuf, FileStat>>,
+        pub links: Mutex<HashMap<PathBuf, PathBuf>>,
+    }
+
+    impl FakeFs {
+        #[allow(dead_code)]
+        pub fn root_dir() -> FileStat {
+            FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Directory,
+            }
+        }
+        #[allow(dead_code)]
+        pub fn root_bin() -> FileStat {
+            FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Regular,
+            }
+        }
+        #[allow(dead_code)]
+        pub fn put(&self, path: impl AsRef<Path>, stat: FileStat) {
+            self.stats
+                .lock()
+                .unwrap()
+                .insert(path.as_ref().to_path_buf(), stat);
+        }
+    }
+
+    impl FsMetadataProvider for FakeFs {
+        fn stat(&self, path: &Path) -> io::Result<FileStat> {
+            self.stats
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, path.display().to_string()))
+        }
+        fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+            self.links
+                .lock()
+                .unwrap()
+                .get(path)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a symlink"))
+        }
+    }
+}

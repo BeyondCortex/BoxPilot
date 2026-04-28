@@ -4,6 +4,7 @@
 mod authority;
 mod context;
 mod controller;
+mod core;
 mod credentials;
 mod dispatch;
 mod iface;
