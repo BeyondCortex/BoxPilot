@@ -3,6 +3,10 @@
 **/*.rs.bk
 /frontend/node_modules/
 /frontend/dist/
+/frontend/*.tsbuildinfo
+/frontend/vite.config.js
+/frontend/vite.config.d.ts
+/frontend/src/**/*.js
 /crates/boxpilot-tauri/target/
 .env
 .DS_Store
