@@ -4,6 +4,7 @@
 
 pub mod adopt;
 pub mod commit;
+pub mod discover;
 pub mod download;
 pub mod github;
 pub mod install;
