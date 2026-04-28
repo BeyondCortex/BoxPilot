@@ -1,1 +1,9 @@
 .worktrees/
+/target/
+**/*.rs.bk
+/frontend/node_modules/
+/frontend/dist/
+/crates/boxpilot-tauri/target/
+.env
+.DS_Store
+*.log
