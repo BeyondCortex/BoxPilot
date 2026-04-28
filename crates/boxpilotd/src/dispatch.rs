@@ -16,7 +16,7 @@ use crate::lock::{self, LockGuard};
 use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
 
 pub struct AuthorizedCall {
-    #[allow(dead_code)] // used in plan #2 (controller ownership checks)
+    #[allow(dead_code)] // read in Task 20 (wire caller_uid → maybe_claim_controller)
     pub caller_uid: u32,
     pub controller: ControllerState,
     /// True when the body should atomically claim the controller under the
@@ -65,6 +65,34 @@ pub async fn authorize(
         will_claim_controller,
         _lock: lock,
     })
+}
+
+#[allow(dead_code)] // consumed in Task 20 (iface.rs wires maybe_claim_controller)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerWrites {
+    pub uid: u32,
+    pub username: String,
+}
+
+/// If `will_claim` is true, look up the caller's username and produce the
+/// payload the body needs to write atomically (boxpilot.toml's
+/// controller_uid + /etc/boxpilot/controller-name).
+#[allow(dead_code)] // called in Task 20 (iface.rs wires maybe_claim_controller)
+pub fn maybe_claim_controller(
+    will_claim: bool,
+    caller_uid: u32,
+    user_lookup: &dyn crate::controller::UserLookup,
+) -> HelperResult<Option<ControllerWrites>> {
+    if !will_claim {
+        return Ok(None);
+    }
+    match user_lookup.lookup_username(caller_uid) {
+        Some(username) => Ok(Some(ControllerWrites {
+            uid: caller_uid,
+            username,
+        })),
+        None => Err(HelperError::ControllerOrphaned),
+    }
 }
 
 #[cfg(test)]
@@ -146,5 +174,35 @@ mod tests {
         );
         let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStatus).await;
         assert!(r.is_ok());
+    }
+
+    #[test]
+    fn no_claim_returns_none() {
+        use crate::controller::testing::Fixed;
+        let lookup = Fixed::new(&[(1000, "alice")]);
+        let r = maybe_claim_controller(false, 1000, &lookup).unwrap();
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn claim_with_known_user_returns_writes() {
+        use crate::controller::testing::Fixed;
+        let lookup = Fixed::new(&[(1000, "alice")]);
+        let r = maybe_claim_controller(true, 1000, &lookup).unwrap();
+        assert_eq!(
+            r.unwrap(),
+            ControllerWrites {
+                uid: 1000,
+                username: "alice".into()
+            }
+        );
+    }
+
+    #[test]
+    fn claim_with_unknown_user_errors_orphaned() {
+        use crate::controller::testing::Fixed;
+        let lookup = Fixed::new(&[]);
+        let r = maybe_claim_controller(true, 1000, &lookup);
+        assert!(matches!(r, Err(HelperError::ControllerOrphaned)));
     }
 }

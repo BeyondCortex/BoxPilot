@@ -57,24 +57,32 @@ impl ControllerState {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+pub mod testing {
+    use super::UserLookup;
     use std::collections::HashMap;
     use std::sync::Mutex;
 
-    struct Fixed(Mutex<HashMap<u32, String>>);
+    pub struct Fixed(Mutex<HashMap<u32, String>>);
+
     impl Fixed {
-        fn new(rows: &[(u32, &str)]) -> Self {
+        pub fn new(rows: &[(u32, &str)]) -> Self {
             Self(Mutex::new(
                 rows.iter().map(|(u, n)| (*u, n.to_string())).collect(),
             ))
         }
     }
+
     impl UserLookup for Fixed {
         fn lookup_username(&self, uid: u32) -> Option<String> {
             self.0.lock().unwrap().get(&uid).cloned()
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::Fixed;
+    use super::*;
 
     #[test]
     fn no_uid_is_unset() {
