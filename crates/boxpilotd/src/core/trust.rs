@@ -108,3 +108,193 @@ pub mod testing {
         }
     }
 }
+
+const SPECIAL_BITS_MASK: u32 = 0o7000;
+const GROUP_WORLD_WRITE: u32 = 0o022;
+
+/// Apply the §6.5 binary-level checks to `path`'s stat result.
+pub(crate) fn check_binary_stat(path: &Path, stat: &FileStat) -> Result<(), TrustError> {
+    if !matches!(stat.kind, FileKind::Regular) {
+        return Err(TrustError::NotRegular(path.to_path_buf()));
+    }
+    if stat.uid != 0 || stat.gid != 0 {
+        return Err(TrustError::NotRootOwned {
+            path: path.to_path_buf(),
+            uid: stat.uid,
+            gid: stat.gid,
+        });
+    }
+    if stat.mode & GROUP_WORLD_WRITE != 0 {
+        return Err(TrustError::Writable {
+            path: path.to_path_buf(),
+            mode: stat.mode,
+        });
+    }
+    if stat.mode & SPECIAL_BITS_MASK != 0 {
+        return Err(TrustError::SpecialBits {
+            path: path.to_path_buf(),
+            mode: stat.mode,
+        });
+    }
+    Ok(())
+}
+
+/// Apply the §6.5 directory-level checks (used for parent walks).
+pub(crate) fn check_dir_stat(path: &Path, stat: &FileStat) -> Result<(), TrustError> {
+    if !matches!(stat.kind, FileKind::Directory) {
+        return Err(TrustError::SymlinkResolution(format!(
+            "{path:?} is not a directory"
+        )));
+    }
+    if stat.uid != 0 {
+        return Err(TrustError::NotRootOwned {
+            path: path.to_path_buf(),
+            uid: stat.uid,
+            gid: stat.gid,
+        });
+    }
+    if stat.mode & GROUP_WORLD_WRITE != 0 {
+        return Err(TrustError::Writable {
+            path: path.to_path_buf(),
+            mode: stat.mode,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod binary_check_tests {
+    use super::testing::FakeFs;
+    use super::*;
+
+    #[test]
+    fn rejects_non_root_uid() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 1000,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Regular,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::NotRootOwned { uid: 1000, .. })));
+    }
+
+    #[test]
+    fn rejects_group_writable() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o775,
+                kind: FileKind::Regular,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::Writable { mode: 0o775, .. })));
+    }
+
+    #[test]
+    fn rejects_world_writable() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o757,
+                kind: FileKind::Regular,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::Writable { mode: 0o757, .. })));
+    }
+
+    #[test]
+    fn rejects_setuid() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o4755,
+                kind: FileKind::Regular,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::SpecialBits { .. })));
+    }
+
+    #[test]
+    fn rejects_setgid() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o2755,
+                kind: FileKind::Regular,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::SpecialBits { .. })));
+    }
+
+    #[test]
+    fn rejects_sticky() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o1755,
+                kind: FileKind::Regular,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::SpecialBits { .. })));
+    }
+
+    #[test]
+    fn rejects_directory_as_binary() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Directory,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::NotRegular(_))));
+    }
+
+    #[test]
+    fn happy_path_accepts_root_owned_0755() {
+        let r = check_binary_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Regular,
+            },
+        );
+        assert!(r.is_ok());
+    }
+
+    #[test]
+    fn dir_check_rejects_group_writable_parent() {
+        let r = check_dir_stat(
+            Path::new("/x"),
+            &FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o775,
+                kind: FileKind::Directory,
+            },
+        );
+        assert!(matches!(r, Err(TrustError::Writable { .. })));
+    }
+
+    #[test]
+    fn _suppress_unused_warning_fakefs() {
+        let _ = FakeFs::root_bin();
+    }
+}
