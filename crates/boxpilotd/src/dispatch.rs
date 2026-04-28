@@ -1,13 +1,14 @@
 //! Single chokepoint every interface method passes through:
 //! 1. resolve caller UID from D-Bus connection credentials
 //! 2. compute controller status, surface `controller_orphaned` (§6.6)
-//! 3. for mutating calls without a controller, refuse (`ControllerNotSet`)
-//! 4. ask polkit for authorization
-//! 5. for mutating calls, acquire `/run/boxpilot/lock`
-//! 6. invoke the action body
+//! 3. ask polkit for authorization
+//! 4. for mutating calls, acquire `/run/boxpilot/lock`
+//! 5. invoke the action body
 //!
-//! Step 6 is generic over the action body so each interface method stays
-//! a 1-2 line wrapper.
+//! Step 5 is generic over the action body so each interface method stays
+//! a 1-2 line wrapper. When `controller == Unset` and the call is mutating
+//! and polkit allowed it, `AuthorizedCall::will_claim_controller` is set
+//! so the body can atomically claim the controller under the acquired lock.
 
 use crate::context::HelperContext;
 use crate::controller::ControllerState;
@@ -18,6 +19,11 @@ pub struct AuthorizedCall {
     #[allow(dead_code)] // used in plan #2 (controller ownership checks)
     pub caller_uid: u32,
     pub controller: ControllerState,
+    /// True when the body should atomically claim the controller under the
+    /// lock it holds.  Set only when `controller == Unset`, the call is
+    /// mutating, and polkit allowed it.  Wired in Task 13 (`maybe_claim_controller`).
+    #[allow(dead_code)] // read in Task 13 (maybe_claim_controller)
+    pub will_claim_controller: bool,
     /// Held only when [`HelperMethod::is_mutating`] is true.
     _lock: Option<LockGuard>,
 }
@@ -38,26 +44,14 @@ pub async fn authorize(
         }
     }
 
-    if matches!(controller, ControllerState::Unset) {
-        // TODO(plan #2): replace this short-circuit with
-        //   try_claim_controller_under_lock(&ctx, caller_uid)
-        // for the first authorized mutating call. The lock is acquired
-        // below; the claim must happen UNDER the same lock acquisition
-        // (§6.6) so two simultaneous first-time prompts cannot race
-        // into a split-controller state. Plan #2's first task that
-        // calls authorize() with a mutating method must use this hook
-        // rather than calling authorize and then trying to set
-        // controller_uid outside the chokepoint.
-        if method.is_mutating() {
-            return Err(HelperError::ControllerNotSet);
-        }
-    }
-
     let action_id = method.polkit_action_id();
     let allowed = ctx.authority.check(action_id, sender_bus_name).await?;
     if !allowed {
         return Err(HelperError::NotAuthorized);
     }
+
+    let will_claim_controller =
+        matches!(controller, ControllerState::Unset) && method.is_mutating() && allowed;
 
     let lock = if method.is_mutating() {
         Some(lock::try_acquire(&ctx.paths.run_lock())?)
@@ -68,6 +62,7 @@ pub async fn authorize(
     Ok(AuthorizedCall {
         caller_uid,
         controller,
+        will_claim_controller,
         _lock: lock,
     })
 }
@@ -109,7 +104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mutating_call_without_controller_returns_controller_not_set() {
+    async fn mutating_call_without_controller_signals_will_claim() {
         let tmp = tempdir().unwrap();
         let ctx = ctx_with(
             &tmp,
@@ -118,8 +113,10 @@ mod tests {
             UnitState::NotFound,
             &[(":1.42", 1000)],
         );
-        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStart).await;
-        assert!(matches!(r, Err(HelperError::ControllerNotSet)));
+        let call = authorize(&ctx, ":1.42", HelperMethod::ServiceStart)
+            .await
+            .unwrap();
+        assert!(call.will_claim_controller);
     }
 
     #[tokio::test]
