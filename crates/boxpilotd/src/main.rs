@@ -10,6 +10,7 @@ mod context;
 mod controller;
 mod credentials;
 mod dispatch;
+mod iface;
 mod lock;
 mod paths;
 mod systemd;
