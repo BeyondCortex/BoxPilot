@@ -15,6 +15,44 @@ pub async fn read_state(path: &Path) -> HelperResult<InstallState> {
     }
 }
 
+#[allow(dead_code)]
+pub async fn write_state(path: &Path, state: &InstallState) -> HelperResult<()> {
+    let parent = path.parent().ok_or_else(|| HelperError::Ipc {
+        message: format!("no parent: {path:?}"),
+    })?;
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("mkdir {parent:?}: {e}"),
+        })?;
+    let tmp = path.with_extension("json.new");
+    let bytes = state.to_json();
+    tokio::fs::write(&tmp, &bytes)
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("write {tmp:?}: {e}"),
+        })?;
+    // fsync the file before rename to ensure the bytes hit disk before
+    // a concurrent crash exposes the new inode.
+    let f = tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(&tmp)
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("open for fsync {tmp:?}: {e}"),
+        })?;
+    f.sync_all().await.map_err(|e| HelperError::Ipc {
+        message: format!("fsync {tmp:?}: {e}"),
+    })?;
+    drop(f);
+    tokio::fs::rename(&tmp, path)
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("rename {tmp:?} -> {path:?}: {e}"),
+        })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -52,5 +90,34 @@ mod tests {
             r,
             Err(HelperError::UnsupportedSchemaVersion { got: 99 })
         ));
+    }
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn round_trip() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("install-state.json");
+        let mut s = InstallState::empty();
+        s.current_managed_core = Some("1.10.0".into());
+        write_state(&p, &s).await.unwrap();
+        let back = read_state(&p).await.unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[tokio::test]
+    async fn no_temp_left_after_success() {
+        let dir = tempdir().unwrap();
+        let p = dir.path().join("install-state.json");
+        write_state(&p, &InstallState::empty()).await.unwrap();
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(entries, vec!["install-state.json".to_string()]);
     }
 }
