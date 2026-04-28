@@ -1,6 +1,5 @@
 //! GitHub API client for SagerNet/sing-box releases. Used by core::install
 //! to resolve "latest" → version and to fetch sha256sum.txt.
-#![allow(dead_code)] // scaffolding-only: tasks 15-16/20 add callers
 
 use async_trait::async_trait;
 use boxpilot_ipc::{HelperError, HelperResult};

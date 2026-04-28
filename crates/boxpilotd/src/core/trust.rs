@@ -1,6 +1,5 @@
 //! §6.5 trust checks. Used before promoting any binary to be invoked by
 //! the privileged daemon (downloaded sing-box, adopted external binaries).
-#![allow(dead_code)] // scaffolding-only: tasks 5-7 add callers and remove this
 
 use std::io;
 use std::path::{Path, PathBuf};

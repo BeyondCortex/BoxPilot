@@ -1,7 +1,6 @@
 //! Install / upgrade pipeline. Single function, branches on whether
 //! `current` exists. The caller (iface.rs) already holds the global lock
 //! via `dispatch::authorize`'s AuthorizedCall.
-#![allow(dead_code)] // task 16 appends install_or_upgrade and adds callers
 
 use boxpilot_ipc::{ArchRequest, HelperError, HelperResult, VersionRequest};
 

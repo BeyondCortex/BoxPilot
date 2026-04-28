@@ -3,7 +3,6 @@
 //! Bundles boxpilot.toml + controller-name + install-state.json +
 //! cores/current symlink updates so any mid-crash interleaving leaves a
 //! consistent or self-recoverable state.
-#![allow(dead_code)] // wired by tasks 16/17/18
 
 use crate::dispatch::ControllerWrites;
 use crate::paths::Paths;

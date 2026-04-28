@@ -1,6 +1,5 @@
 //! Adopt an existing root-owned sing-box binary into BoxPilot's managed
 //! tree. Does NOT swing `current` (spec §5.2).
-#![allow(dead_code)] // wired by task 20
 
 use crate::core::commit::{StateCommit, TomlUpdates};
 use crate::core::install::{parse_singbox_version_pub, sha256_file_pub};

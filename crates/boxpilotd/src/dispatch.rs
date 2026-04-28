@@ -16,13 +16,11 @@ use crate::lock::{self, LockGuard};
 use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
 
 pub struct AuthorizedCall {
-    #[allow(dead_code)] // read in Task 20 (wire caller_uid → maybe_claim_controller)
     pub caller_uid: u32,
     pub controller: ControllerState,
     /// True when the body should atomically claim the controller under the
     /// lock it holds.  Set only when `controller == Unset`, the call is
     /// mutating, and polkit allowed it.  Wired in Task 13 (`maybe_claim_controller`).
-    #[allow(dead_code)] // read in Task 13 (maybe_claim_controller)
     pub will_claim_controller: bool,
     /// Held only when [`HelperMethod::is_mutating`] is true.
     _lock: Option<LockGuard>,
@@ -67,7 +65,6 @@ pub async fn authorize(
     })
 }
 
-#[allow(dead_code)] // consumed in Task 20 (iface.rs wires maybe_claim_controller)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControllerWrites {
     pub uid: u32,
@@ -77,7 +74,6 @@ pub struct ControllerWrites {
 /// If `will_claim` is true, look up the caller's username and produce the
 /// payload the body needs to write atomically (boxpilot.toml's
 /// controller_uid + /etc/boxpilot/controller-name).
-#[allow(dead_code)] // called in Task 20 (iface.rs wires maybe_claim_controller)
 pub fn maybe_claim_controller(
     will_claim: bool,
     caller_uid: u32,

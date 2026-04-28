@@ -4,6 +4,9 @@
 
 use crate::authority::Authority;
 use crate::controller::{ControllerState, UserLookup};
+use crate::core::download::Downloader;
+use crate::core::github::GithubClient;
+use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use crate::paths::Paths;
 use crate::systemd::SystemdQuery;
@@ -16,6 +19,10 @@ pub struct HelperContext {
     pub authority: Arc<dyn Authority>,
     pub systemd: Arc<dyn SystemdQuery>,
     pub user_lookup: Arc<dyn UserLookup>,
+    pub github: Arc<dyn GithubClient>,
+    pub downloader: Arc<dyn Downloader>,
+    pub fs_meta: Arc<dyn FsMetadataProvider>,
+    pub version_checker: Arc<dyn VersionChecker>,
     // Cache is intentionally absent. `load_config` reads the file each call;
     // call sites are infrequent (one disk read per `service.status` poll, or
     // per privileged action). When SIGHUP-style reload lands in a later
@@ -25,12 +32,17 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
+    #[allow(clippy::too_many_arguments)] // all 9 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
         authority: Arc<dyn Authority>,
         systemd: Arc<dyn SystemdQuery>,
         user_lookup: Arc<dyn UserLookup>,
+        github: Arc<dyn GithubClient>,
+        downloader: Arc<dyn Downloader>,
+        fs_meta: Arc<dyn FsMetadataProvider>,
+        version_checker: Arc<dyn VersionChecker>,
     ) -> Self {
         Self {
             paths,
@@ -38,6 +50,10 @@ impl HelperContext {
             authority,
             systemd,
             user_lookup,
+            github,
+            downloader,
+            fs_meta,
+            version_checker,
         }
     }
 
@@ -97,6 +113,17 @@ pub mod testing {
         if let Some(text) = config {
             std::fs::write(paths.boxpilot_toml(), text).unwrap();
         }
+        let github = Arc::new(crate::core::github::testing::CannedGithubClient {
+            latest: Ok("1.10.0".into()),
+            sha256sums: Ok(None),
+        });
+        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(
+            Vec::new(),
+        ));
+        let fs_meta = Arc::new(PermissiveTestFs);
+        let version_checker = Arc::new(
+            crate::core::trust::version_testing::FixedVersionChecker::ok("sing-box version 1.10.0"),
+        );
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -105,7 +132,27 @@ pub mod testing {
                 answer: systemd_answer,
             }),
             Arc::new(PasswdLookup),
+            github,
+            downloader,
+            fs_meta,
+            version_checker,
         )
+    }
+
+    /// A permissive test `FsMetadataProvider` that returns `NotFound` for all
+    /// paths. This is sufficient for tests that never exercise trust checks.
+    struct PermissiveTestFs;
+
+    impl crate::core::trust::FsMetadataProvider for PermissiveTestFs {
+        fn stat(&self, _path: &std::path::Path) -> std::io::Result<crate::core::trust::FileStat> {
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "test"))
+        }
+        fn read_link(&self, _path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "test",
+            ))
+        }
     }
 
     #[tokio::test]

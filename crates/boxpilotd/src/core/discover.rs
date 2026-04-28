@@ -1,6 +1,5 @@
 //! Read-only enumeration of installed managed cores, adopted cores, and
 //! external cores under a fixed list of canonical paths.
-#![allow(dead_code)] // wired by task 20
 
 use crate::core::state::read_state;
 use crate::core::trust::{

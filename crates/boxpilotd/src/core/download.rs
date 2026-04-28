@@ -1,6 +1,5 @@
 //! Streaming download from GitHub releases. Writes to a tempfile while
 //! computing SHA256 in a single pass.
-#![allow(dead_code)] // scaffolding-only: task 16 adds callers
 
 use async_trait::async_trait;
 use boxpilot_ipc::{HelperError, HelperResult};

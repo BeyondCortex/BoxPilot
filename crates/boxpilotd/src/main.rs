@@ -16,6 +16,10 @@ use anyhow::{Context, Result};
 use std::sync::Arc;
 use tracing::{error, info};
 
+use crate::core::download::ReqwestDownloader;
+use crate::core::github::ReqwestGithubClient;
+use crate::core::trust::{ProcessVersionChecker, StdFsMetadataProvider};
+
 const BUS_NAME: &str = "app.boxpilot.Helper";
 const OBJECT_PATH: &str = "/app/boxpilot/Helper";
 
@@ -35,12 +39,23 @@ async fn main() -> Result<()> {
         .await
         .context("system bus build")?;
 
+    let github =
+        Arc::new(ReqwestGithubClient::new().map_err(|e| anyhow::anyhow!("github client: {e}"))?);
+    let downloader =
+        Arc::new(ReqwestDownloader::new().map_err(|e| anyhow::anyhow!("downloader: {e}"))?);
+    let fs_meta = Arc::new(StdFsMetadataProvider);
+    let version_checker = Arc::new(ProcessVersionChecker);
+
     let ctx = Arc::new(context::HelperContext::new(
         paths::Paths::system(),
         Arc::new(credentials::DBusCallerResolver::new(conn.clone())),
         Arc::new(authority::DBusAuthority::new(conn.clone())),
         Arc::new(systemd::DBusSystemd::new(conn.clone())),
         Arc::new(controller::PasswdLookup),
+        github,
+        downloader,
+        fs_meta,
+        version_checker,
     ));
 
     let helper = iface::Helper::new(ctx);
