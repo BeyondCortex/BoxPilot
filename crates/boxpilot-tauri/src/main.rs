@@ -1,0 +1,3 @@
+fn main() {
+    boxpilot::run();
+}

@@ -1,0 +1,8 @@
+# Plan #9 will reintroduce `SystemdService=boxpilotd.service` alongside a
+# real unit file. Until then, dbus-daemon activates the helper directly via
+# the Exec= line; mixing SystemdService= with a missing unit file makes
+# dbus-daemon's systemd path fail without falling back to Exec=.
+[D-BUS Service]
+Name=app.boxpilot.Helper
+Exec=/usr/lib/boxpilot/boxpilotd
+User=root

@@ -1,0 +1,68 @@
+// TODO(plan #3): polkit.spawn(["/usr/bin/cat", ...]) blocks the polkit
+// daemon on every authorization. For v1.0 this is acceptable because:
+//   - service.status (the highest-frequency call) has allow_any=yes
+//     in the XML and never reaches this rule.
+//   - Mutating actions are user-initiated; spawn latency is invisible.
+// Replace with a faster mechanism in plan #3 (e.g. cache the controller
+// name via a per-user polkit drop-in that the daemon writes alongside
+// boxpilot.toml).
+
+// 49-boxpilot.rules — promote the BoxPilot controller user to less-prompting
+// auth tiers (spec §6.3). The controller's username lives in
+// /etc/boxpilot/controller-name (a single line, plain text). polkit's
+// `subject.user` is the caller's username string (NOT an object with a
+// `.uid` field), so we compare username-to-username here. The numeric UID
+// is in boxpilot.toml for the daemon's internal use; the polkit rule only
+// needs the name. When controller-name is missing, this rule returns
+// without action and the XML defaults apply — the safe direction.
+
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("app.boxpilot.helper.") !== 0) {
+        return;
+    }
+
+    var controllerName = null;
+    try {
+        // polkit.spawn is synchronous and blocks the polkit daemon, so we
+        // keep the spawned command minimal: `cat` of a small text file.
+        var raw = polkit.spawn(["/usr/bin/cat", "/etc/boxpilot/controller-name"]);
+        controllerName = raw.replace(/[\r\n]+$/, "");
+        if (controllerName.length === 0) {
+            controllerName = null;
+        }
+    } catch (e) {
+        // File missing or cat failed — fall through to XML defaults.
+        return;
+    }
+
+    if (controllerName === null) {
+        return;
+    }
+    if (subject.user !== controllerName) {
+        // Non-controller: keep XML defaults.
+        return;
+    }
+
+    // Controller path. Map the action's authorization class:
+    //   read-only → YES (no prompt)
+    //   high-risk → AUTH_ADMIN (always prompt; no cache)
+    //   mutating  → AUTH_SELF_KEEP (controller proves identity, cached)
+    var id = action.id;
+
+    // Read-only set
+    if (id === "app.boxpilot.helper.service.status" ||
+        id === "app.boxpilot.helper.service.logs" ||
+        id === "app.boxpilot.helper.core.discover" ||
+        id === "app.boxpilot.helper.legacy.observe-service") {
+        return polkit.Result.YES;
+    }
+
+    // High-risk set
+    if (id === "app.boxpilot.helper.controller.transfer" ||
+        id === "app.boxpilot.helper.legacy.migrate-service") {
+        return polkit.Result.AUTH_ADMIN;
+    }
+
+    // Everything else under our namespace is mutating.
+    return polkit.Result.AUTH_SELF_KEEP;
+});
