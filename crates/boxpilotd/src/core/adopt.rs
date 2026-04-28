@@ -66,6 +66,18 @@ pub async fn adopt(
         .map_err(|e| HelperError::Ipc {
             message: format!("chmod: {e}"),
         })?;
+
+    // §7.3 step 5 defense-in-depth: re-verify the staged binary now that
+    // the kernel has it under a path we control. Closes the TOCTTOU
+    // window between the source-path check above and the copy.
+    let mut staging_prefixes = default_allowed_prefixes();
+    staging_prefixes.push(deps.paths.cores_staging_dir());
+    verify_executable_path(deps.fs, &bin_dest, &staging_prefixes).map_err(|e| {
+        HelperError::Ipc {
+            message: format!("staged trust check failed: {e}"),
+        }
+    })?;
+
     let bin_sha = sha256_file_pub(&bin_dest).await?;
 
     let install_source = InstallSourceJson {

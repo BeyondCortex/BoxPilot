@@ -45,6 +45,7 @@ impl StateCommit {
             .map_err(|e| HelperError::Ipc {
                 message: format!("stage install-state: {e}"),
             })?;
+        fsync_path(&install_state_tmp).await?;
 
         // 1b. current.new (if changing)
         let current_tmp = if let Some(target) = &self.current_symlink_target {
@@ -82,6 +83,7 @@ impl StateCommit {
                 .map_err(|e| HelperError::Ipc {
                     message: format!("stage controller-name: {e}"),
                 })?;
+            fsync_path(&tmp).await?;
             Some(tmp)
         } else {
             None
@@ -130,6 +132,7 @@ impl StateCommit {
             .map_err(|e| HelperError::Ipc {
                 message: format!("stage toml: {e}"),
             })?;
+        fsync_path(&toml_tmp).await?;
 
         // 2. Commit in spec §7.2 step 14e order.
         // 2a. install-state.json
@@ -163,6 +166,23 @@ impl StateCommit {
 
         Ok(())
     }
+}
+
+/// Open and fsync a path so the bytes hit disk before a rename(2) makes
+/// the new inode visible. Required so a crash mid-commit cannot leave a
+/// renamed file pointing at zero/truncated content (spec §7.2 step 14e).
+async fn fsync_path(path: &std::path::Path) -> HelperResult<()> {
+    let f = tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("open for fsync {path:?}: {e}"),
+        })?;
+    f.sync_all().await.map_err(|e| HelperError::Ipc {
+        message: format!("fsync {path:?}: {e}"),
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]
