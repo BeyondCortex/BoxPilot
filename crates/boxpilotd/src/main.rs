@@ -9,6 +9,7 @@ mod authority;
 mod context;
 mod controller;
 mod credentials;
+mod dispatch;
 mod lock;
 mod paths;
 mod systemd;
