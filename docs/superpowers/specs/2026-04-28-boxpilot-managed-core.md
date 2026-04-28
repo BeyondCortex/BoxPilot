@@ -301,10 +301,27 @@ Entry: `core::install::run(req, ctx, authorized)`.
        entry appended and `current_managed_core` updated.
     d. Atomic-write a sibling `current.new` symlink pointing at
        `cores/<version>/`.
-    e. Issue rename(2) calls in this order: `current.new` → `current`,
-       `install-state.json.new` → `install-state.json`,
-       `controller-name.new` → `controller-name` (if applicable),
-       `boxpilot.toml.new` → `boxpilot.toml`.
+    e. Issue rename(2) calls in this order (chosen so any mid-crash
+       interleaving leaves a consistent or self-recoverable state):
+       1. `install-state.json.new` → `install-state.json` — the ledger
+          first, so observers always see the new version recorded
+          before `current` may flip to it.
+       2. `current.new` → `current` — activation point.
+       3. `controller-name.new` → `controller-name` (if claiming) —
+          before toml so polkit's controller-relaxation path is
+          visible by the time dispatch's next call reads
+          `controller_uid` from toml.
+       4. `boxpilot.toml.new` → `boxpilot.toml` — last, because
+          dispatch's controller-state read pulls from here on every
+          subsequent call. Crashing between steps 3 and 4 leaves
+          the system "claim half-applied" but polkit's JS rule sees
+          no controller-name file yet (since the .new write went into
+          a sibling, not the live name); falls through to XML
+          defaults until the next successful action retries the
+          claim. Crashing between steps 1 and 2 leaves
+          `install-state.json` showing a version that `current` does
+          not yet activate — a benign drift the next discover or
+          rollback resolves.
 15. Release the lock (RAII).
 
 If steps 1-13 fail, staging directory is left for daemon startup to
