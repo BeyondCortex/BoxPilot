@@ -1,0 +1,60 @@
+// 49-boxpilot.rules — promote the BoxPilot controller user to less-prompting
+// auth tiers (spec §6.3). The controller UID lives in
+// /etc/boxpilot/controller-uid (a single integer). When the file is missing
+// or unparseable, this rule defers to the XML defaults — i.e. all callers
+// are treated as non-controllers, which is the safe direction.
+
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("app.boxpilot.helper.") !== 0) {
+        return;
+    }
+
+    var controllerUid = null;
+    try {
+        // polkit.spawn is synchronous and blocks the polkit daemon, so we
+        // keep the spawned command minimal: `cat` of a small integer file.
+        var raw = polkit.spawn(["/usr/bin/cat", "/etc/boxpilot/controller-uid"]);
+        var trimmed = raw.replace(/[^0-9]/g, "");
+        if (trimmed.length > 0) {
+            controllerUid = parseInt(trimmed, 10);
+        }
+    } catch (e) {
+        // File missing or cat failed — fall through to XML defaults.
+        return;
+    }
+
+    if (controllerUid === null || isNaN(controllerUid)) {
+        return;
+    }
+    if (subject.user === undefined || subject.user === null) {
+        return;
+    }
+
+    if (subject.user.uid !== controllerUid) {
+        // Non-controller: keep XML defaults.
+        return;
+    }
+
+    // Controller path. Map the action's authorization class:
+    //   read-only → YES (no prompt)
+    //   high-risk → AUTH_ADMIN (always prompt; no cache)
+    //   mutating  → AUTH_SELF_KEEP (controller proves identity, cached)
+    var id = action.id;
+
+    // Read-only set
+    if (id === "app.boxpilot.helper.service.status" ||
+        id === "app.boxpilot.helper.service.logs" ||
+        id === "app.boxpilot.helper.core.discover" ||
+        id === "app.boxpilot.helper.legacy.observe-service") {
+        return polkit.Result.YES;
+    }
+
+    // High-risk set
+    if (id === "app.boxpilot.helper.controller.transfer" ||
+        id === "app.boxpilot.helper.legacy.migrate-service") {
+        return polkit.Result.AUTH_ADMIN;
+    }
+
+    // Everything else under our namespace is mutating.
+    return polkit.Result.AUTH_SELF_KEEP;
+});
