@@ -7,5 +7,6 @@ pub mod commit;
 pub mod download;
 pub mod github;
 pub mod install;
+pub mod rollback;
 pub mod state;
 pub mod trust;
