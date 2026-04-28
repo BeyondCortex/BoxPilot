@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/boxpilot-ipc"]
+members = ["crates/boxpilot-ipc", "crates/boxpilotd"]
 
 [workspace.package]
 edition = "2021"

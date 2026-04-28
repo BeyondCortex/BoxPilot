@@ -1,0 +1,60 @@
+//! Canonical filesystem paths used by the helper. Tests construct
+//! `Paths::with_root(tmpdir)` so unit tests can run as a normal user without
+//! touching real `/etc` or `/run`.
+
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct Paths {
+    root: PathBuf,
+}
+
+impl Paths {
+    /// Production paths rooted at `/`.
+    pub fn system() -> Self {
+        Self { root: PathBuf::from("/") }
+    }
+
+    /// Test/dev paths rooted at an arbitrary directory.
+    pub fn with_root(root: impl AsRef<Path>) -> Self {
+        Self { root: root.as_ref().to_path_buf() }
+    }
+
+    pub fn boxpilot_toml(&self) -> PathBuf {
+        self.root.join("etc/boxpilot/boxpilot.toml")
+    }
+
+    pub fn controller_uid_file(&self) -> PathBuf {
+        self.root.join("etc/boxpilot/controller-uid")
+    }
+
+    pub fn run_lock(&self) -> PathBuf {
+        self.root.join("run/boxpilot/lock")
+    }
+
+    pub fn run_dir(&self) -> PathBuf {
+        self.root.join("run/boxpilot")
+    }
+
+    pub fn etc_dir(&self) -> PathBuf {
+        self.root.join("etc/boxpilot")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_paths_anchor_at_root() {
+        let p = Paths::system();
+        assert_eq!(p.boxpilot_toml(), PathBuf::from("/etc/boxpilot/boxpilot.toml"));
+        assert_eq!(p.run_lock(), PathBuf::from("/run/boxpilot/lock"));
+    }
+
+    #[test]
+    fn with_root_relocates_everything() {
+        let p = Paths::with_root("/tmp/fake");
+        assert_eq!(p.boxpilot_toml(), PathBuf::from("/tmp/fake/etc/boxpilot/boxpilot.toml"));
+    }
+}
