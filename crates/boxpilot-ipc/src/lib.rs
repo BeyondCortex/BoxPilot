@@ -16,6 +16,11 @@ pub use core::{
     CoreKind, CoreRollbackRequest, CoreSource, DiscoveredCore, InstallSourceJson, VersionRequest,
 };
 
+pub mod install_state;
+pub use install_state::{
+    AdoptedCoreEntry, InstallState, ManagedCoreEntry, INSTALL_STATE_SCHEMA_VERSION,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]
