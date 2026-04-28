@@ -56,6 +56,26 @@ impl Paths {
     pub fn etc_dir(&self) -> PathBuf {
         self.root.join("etc/boxpilot")
     }
+
+    #[allow(dead_code)] // used in plan #2+ (install-state ledger read/write)
+    pub fn install_state_json(&self) -> PathBuf {
+        self.root.join("var/lib/boxpilot/install-state.json")
+    }
+
+    #[allow(dead_code)] // used in plan #2+ (cores tree management)
+    pub fn cores_dir(&self) -> PathBuf {
+        self.root.join("var/lib/boxpilot/cores")
+    }
+
+    #[allow(dead_code)] // used in plan #2+ (current symlink atomic swap)
+    pub fn cores_current_symlink(&self) -> PathBuf {
+        self.cores_dir().join("current")
+    }
+
+    #[allow(dead_code)] // used in plan #2+ (core download staging)
+    pub fn cores_staging_dir(&self) -> PathBuf {
+        self.root.join("var/lib/boxpilot/.staging-cores")
+    }
 }
 
 #[cfg(test)]
