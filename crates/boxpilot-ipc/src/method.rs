@@ -92,3 +92,90 @@ mod tests {
         assert!(r.is_err());
     }
 }
+
+/// Authorization class per spec §6.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthClass {
+    /// Read-only status: `auth_self_keep` for controller, `yes` for non-controllers.
+    ReadOnly,
+    /// Mutating: `auth_admin_keep` for non-controllers, `auth_self_keep` for controller.
+    Mutating,
+    /// High-risk: always `auth_admin` (no caching).
+    HighRisk,
+}
+
+impl HelperMethod {
+    pub fn auth_class(&self) -> AuthClass {
+        use HelperMethod::*;
+        match self {
+            ServiceStatus | ServiceLogs | CoreDiscover | LegacyObserveService => {
+                AuthClass::ReadOnly
+            }
+            ControllerTransfer | LegacyMigrateService => AuthClass::HighRisk,
+            _ => AuthClass::Mutating,
+        }
+    }
+
+    pub fn is_mutating(&self) -> bool {
+        !matches!(self.auth_class(), AuthClass::ReadOnly)
+    }
+
+    /// `app.boxpilot.helper.<dotted-with-dashes>`
+    pub fn polkit_action_id(&self) -> String {
+        let logical = self.as_logical(); // e.g. "profile.activate_bundle"
+        let dashed = logical.replace('_', "-"); // "profile.activate-bundle"
+        format!("app.boxpilot.helper.{dashed}")
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn read_only_classifications() {
+        assert_eq!(HelperMethod::ServiceStatus.auth_class(), AuthClass::ReadOnly);
+        assert_eq!(HelperMethod::ServiceLogs.auth_class(), AuthClass::ReadOnly);
+        assert_eq!(HelperMethod::CoreDiscover.auth_class(), AuthClass::ReadOnly);
+        assert_eq!(HelperMethod::LegacyObserveService.auth_class(), AuthClass::ReadOnly);
+    }
+
+    #[test]
+    fn high_risk_classifications() {
+        assert_eq!(HelperMethod::ControllerTransfer.auth_class(), AuthClass::HighRisk);
+        assert_eq!(HelperMethod::LegacyMigrateService.auth_class(), AuthClass::HighRisk);
+    }
+
+    #[test]
+    fn mutating_default() {
+        assert_eq!(HelperMethod::ServiceStart.auth_class(), AuthClass::Mutating);
+        assert_eq!(HelperMethod::ProfileActivateBundle.auth_class(), AuthClass::Mutating);
+        assert_eq!(HelperMethod::CoreInstallManaged.auth_class(), AuthClass::Mutating);
+    }
+
+    #[test]
+    fn polkit_action_id_uses_dashes_not_underscores() {
+        assert_eq!(
+            HelperMethod::ProfileActivateBundle.polkit_action_id(),
+            "app.boxpilot.helper.profile.activate-bundle"
+        );
+        assert_eq!(
+            HelperMethod::ServiceStatus.polkit_action_id(),
+            "app.boxpilot.helper.service.status"
+        );
+        assert_eq!(
+            HelperMethod::CoreInstallManaged.polkit_action_id(),
+            "app.boxpilot.helper.core.install-managed"
+        );
+    }
+
+    #[test]
+    fn every_action_has_a_polkit_id() {
+        for m in HelperMethod::ALL {
+            let id = m.polkit_action_id();
+            assert!(id.starts_with("app.boxpilot.helper."));
+            assert!(!id.contains('_'), "polkit IDs use dashes, got {id}");
+        }
+    }
+}
