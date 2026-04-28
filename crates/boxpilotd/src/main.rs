@@ -6,6 +6,7 @@ mod controller;
 mod credentials;
 mod lock;
 mod paths;
+mod systemd;
 
 use anyhow::Result;
 use tracing::info;
