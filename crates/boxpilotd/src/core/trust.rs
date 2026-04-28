@@ -449,3 +449,109 @@ mod verify_tests {
         assert!(r.is_ok(), "{r:?}");
     }
 }
+
+pub trait VersionChecker: Send + Sync {
+    /// Run `<binary> version` (or equivalent) and return the trimmed
+    /// stdout, expected to begin with `"sing-box version"`.
+    fn check(&self, binary: &Path) -> Result<String, TrustError>;
+}
+
+pub struct ProcessVersionChecker;
+
+impl VersionChecker for ProcessVersionChecker {
+    fn check(&self, binary: &Path) -> Result<String, TrustError> {
+        let out = std::process::Command::new(binary)
+            .arg("version")
+            .output()
+            .map_err(|e| TrustError::VersionCheckFailed(format!("spawn: {e}")))?;
+        if !out.status.success() {
+            return Err(TrustError::VersionCheckFailed(format!(
+                "exit {:?}: {}",
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        if !stdout.contains("sing-box version") {
+            return Err(TrustError::VersionCheckFailed(format!(
+                "unexpected stdout: {}",
+                stdout.lines().next().unwrap_or("")
+            )));
+        }
+        Ok(stdout)
+    }
+}
+
+#[cfg(test)]
+pub mod version_testing {
+    use super::*;
+    use std::sync::Mutex;
+
+    pub struct FixedVersionChecker {
+        pub stdout: Mutex<Result<String, String>>,
+    }
+
+    impl FixedVersionChecker {
+        pub fn ok(s: impl Into<String>) -> Self {
+            Self {
+                stdout: Mutex::new(Ok(s.into())),
+            }
+        }
+        pub fn err(s: impl Into<String>) -> Self {
+            Self {
+                stdout: Mutex::new(Err(s.into())),
+            }
+        }
+    }
+
+    impl VersionChecker for FixedVersionChecker {
+        fn check(&self, _binary: &Path) -> Result<String, TrustError> {
+            self.stdout
+                .lock()
+                .unwrap()
+                .clone()
+                .map_err(TrustError::VersionCheckFailed)
+        }
+    }
+
+    #[test]
+    fn fixed_ok_returns_stdout() {
+        let v = FixedVersionChecker::ok("sing-box version 1.10.0");
+        assert!(v.check(Path::new("/x")).unwrap().starts_with("sing-box"));
+    }
+
+    #[test]
+    fn fixed_err_returns_version_check_failed() {
+        let v = FixedVersionChecker::err("crashed");
+        let r = v.check(Path::new("/x"));
+        assert!(matches!(r, Err(TrustError::VersionCheckFailed(_))));
+    }
+}
+
+pub struct StdFsMetadataProvider;
+
+impl FsMetadataProvider for StdFsMetadataProvider {
+    fn stat(&self, path: &Path) -> io::Result<FileStat> {
+        use std::os::unix::fs::MetadataExt;
+        let md = std::fs::symlink_metadata(path)?;
+        let ft = md.file_type();
+        let kind = if ft.is_symlink() {
+            FileKind::Symlink
+        } else if ft.is_dir() {
+            FileKind::Directory
+        } else if ft.is_file() {
+            FileKind::Regular
+        } else {
+            FileKind::Other
+        };
+        Ok(FileStat {
+            uid: md.uid(),
+            gid: md.gid(),
+            mode: md.mode() & 0o7777,
+            kind,
+        })
+    }
+    fn read_link(&self, path: &Path) -> io::Result<PathBuf> {
+        std::fs::read_link(path)
+    }
+}
