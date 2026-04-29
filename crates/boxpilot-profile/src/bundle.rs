@@ -83,13 +83,9 @@ pub fn prepare_bundle(
     let assets_src = store.paths().profile_assets_dir(profile_id);
     let mut total: u64 = config_bytes.len() as u64;
     let mut file_count: u32 = 1;
-    let mut max_depth: u32 = 0;
     let mut entries: Vec<AssetEntry> = Vec::new();
     if assets_src.exists() {
-        copy_assets_into(&assets_src, &assets_dst, 0, &mut total, &mut file_count, &mut max_depth, &mut entries)?;
-    }
-    if max_depth > BUNDLE_MAX_NESTING_DEPTH {
-        return Err(BundleError::TooDeep { depth: max_depth, limit: BUNDLE_MAX_NESTING_DEPTH });
+        copy_assets_into(&assets_src, &assets_dst, &assets_dst, 0, &mut total, &mut file_count, &mut entries)?;
     }
 
     // Write config.json
@@ -164,13 +160,12 @@ pub fn prepare_bundle(
 fn copy_assets_into(
     src: &Path,
     dst: &Path,
+    assets_root: &Path,
     depth: u32,
     total: &mut u64,
     file_count: &mut u32,
-    max_depth: &mut u32,
     entries: &mut Vec<AssetEntry>,
 ) -> Result<(), BundleError> {
-    *max_depth = (*max_depth).max(depth);
     if depth > BUNDLE_MAX_NESTING_DEPTH {
         return Err(BundleError::TooDeep { depth, limit: BUNDLE_MAX_NESTING_DEPTH });
     }
@@ -189,7 +184,7 @@ fn copy_assets_into(
         let dst_child = dst.join(&rel);
         if ft.is_dir() {
             ensure_dir_0700(&dst_child)?;
-            copy_assets_into(&p, &dst_child, depth + 1, total, file_count, max_depth, entries)?;
+            copy_assets_into(&p, &dst_child, assets_root, depth + 1, total, file_count, entries)?;
             continue;
         }
         if !ft.is_file() {
@@ -212,38 +207,26 @@ fn copy_assets_into(
             return Err(BundleError::TooManyFiles { count: *file_count, limit: BUNDLE_MAX_FILE_COUNT });
         }
         std::fs::write(&dst_child, &bytes)?;
-        let rel_str = dst_child.strip_prefix(dst.ancestors().last().unwrap_or(dst))
-            .unwrap_or(&dst_child)
+
+        let rel_path = dst_child.strip_prefix(assets_root)
+            .map_err(|_| BundleError::Io(std::io::Error::other(
+                format!("internal: asset {} is not under assets root {}",
+                    dst_child.display(), assets_root.display()),
+            )))?
             .to_string_lossy()
-            .to_string();
+            .replace('\\', "/");
+
         let mut h = Sha256::new();
         h.update(&bytes);
         let sha = hex::encode(h.finalize());
-        // The path inside the manifest must be relative to the bundle's
-        // `assets/` directory. Compute that explicitly.
-        // (Walk uses dst as the real assets root passed in by caller.)
-        // We re-derive rel from `dst` here:
-        let rel_from_assets_root = strip_to_assets_root(&dst_child, dst);
+
         entries.push(AssetEntry {
-            path: rel_from_assets_root.unwrap_or(rel_str),
+            path: rel_path,
             sha256: sha,
             size,
         });
     }
     Ok(())
-}
-
-fn strip_to_assets_root(dst_child: &Path, _initial_dst: &Path) -> Option<String> {
-    // Walk parents until we find a component named "assets" and return
-    // everything below it, slash-joined.
-    let mut found = false;
-    let mut parts: Vec<String> = Vec::new();
-    for c in dst_child.components() {
-        let s = c.as_os_str().to_string_lossy().to_string();
-        if found { parts.push(s); continue; }
-        if s == "assets" { found = true; }
-    }
-    if found && !parts.is_empty() { Some(parts.join("/")) } else { None }
 }
 
 #[cfg(test)]

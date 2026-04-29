@@ -20,7 +20,11 @@ pub enum SnapshotError {
 /// post-rename release contents (plan #5 reads them back from
 /// `/etc/boxpilot/active/...` via `boxpilotd` and forwards the bytes).
 ///
-/// In plan #4 unit tests we copy directly from the staging tempdir.
+/// **Not atomic with the metadata update.** If the process crashes
+/// between the file copy and `write_metadata`, the snapshot files exist
+/// but `metadata.last_valid_activation_id` is not yet bumped. This is
+/// acceptable because `last-valid/` is a recovery aid, not a transaction
+/// boundary — the next successful activation will overwrite it.
 pub fn record_last_valid(
     store: &ProfileStore,
     profile_id: &str,

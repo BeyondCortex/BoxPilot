@@ -100,4 +100,21 @@ mod tests {
         let err = run_singbox_check(&tmp.path().join("nope"), tmp.path()).unwrap_err();
         assert!(matches!(err, CheckError::Spawn(..)));
     }
+
+    #[test]
+    fn timeout_kills_hung_process_and_returns_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_core = tmp.path().join("hung-core");
+        write_executable(&fake_core, "#!/bin/sh\nsleep 30\n");
+        let start = std::time::Instant::now();
+        let err = run_singbox_check(&fake_core, tmp.path()).unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(matches!(err, CheckError::Timeout(_)));
+        // We must have killed it inside CHECK_TIMEOUT (with a small slack).
+        assert!(
+            elapsed < CHECK_TIMEOUT + std::time::Duration::from_secs(2),
+            "timeout took {:?}, expected near {CHECK_TIMEOUT:?}",
+            elapsed,
+        );
+    }
 }
