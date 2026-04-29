@@ -76,9 +76,14 @@ mod tests {
         assert_eq!(back, r);
     }
 
+    // Compile-time check: the default is at or below the cap. Clippy's
+    // `assertions_on_constants` lint correctly flags a runtime `assert!`
+    // here as wasted work, so we hoist it into a `const _` block where
+    // it's evaluated by rustc before the test ever runs.
+    const _: () = assert!(SERVICE_LOGS_DEFAULT_LINES <= SERVICE_LOGS_MAX_LINES);
+
     #[test]
     fn cap_constants_match_spec() {
         assert_eq!(SERVICE_LOGS_MAX_LINES, 1000);
-        assert!(SERVICE_LOGS_DEFAULT_LINES <= SERVICE_LOGS_MAX_LINES);
     }
 }

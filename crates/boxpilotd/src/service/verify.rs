@@ -10,13 +10,20 @@ use crate::systemd::Systemd;
 use boxpilot_ipc::{HelperResult, UnitState};
 use std::time::{Duration, Instant};
 
+// Plan #3 ships this helper; plan #5 wires it into the activation
+// transaction. The dead-code allows are removed when plan #5 lands.
+
 /// Default per spec §7.2: 5 seconds.
+#[allow(dead_code)]
 pub const DEFAULT_WINDOW: Duration = Duration::from_secs(5);
 /// Spec §7.2 cap.
+#[allow(dead_code)]
 pub const MAX_WINDOW: Duration = Duration::from_secs(30);
 /// Polling cadence inside the window.
+#[allow(dead_code)]
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifyOutcome {
     Running,
@@ -24,6 +31,7 @@ pub enum VerifyOutcome {
     NotFound,
 }
 
+#[allow(dead_code)]
 pub async fn wait_for_running(
     unit_name: &str,
     pre_n_restarts: u32,
