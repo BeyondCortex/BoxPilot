@@ -49,8 +49,7 @@ mod tests {
     fn round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("ui-state.json");
-        let mut s = UiState::default();
-        s.selected_profile_id = Some("p1".into());
+        let s = UiState { selected_profile_id: Some("p1".into()), ..UiState::default() };
         write_ui_state(&path, &s).unwrap();
         assert_eq!(read_ui_state(&path).unwrap(), s);
     }
