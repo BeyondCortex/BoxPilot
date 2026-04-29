@@ -21,6 +21,11 @@ pub use ui_state::{read_ui_state, write_ui_state, UiState, UI_STATE_SCHEMA_VERSI
 pub mod redact;
 pub use redact::{redact_url_for_display, redact_url_strict};
 
+pub mod import;
+pub use import::{
+    import_local_file, new_profile_id, sha256_hex, slugify, ImportError, SINGLE_JSON_MAX_BYTES,
+};
+
 #[cfg(test)]
 mod sanity {
     #[test]
