@@ -181,6 +181,7 @@ name = "boxpilot"
 version = "0.1.0"
 dependencies = [
  "boxpilot-ipc",
+ "boxpilot-profile",
  "serde",
  "serde_json",
  "tauri",
@@ -201,6 +202,28 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "toml 0.8.23",
+]
+
+[[package]]
+name = "boxpilot-profile"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "boxpilot-ipc",
+ "chrono",
+ "hex",
+ "libc",
+ "nix",
+ "pretty_assertions",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

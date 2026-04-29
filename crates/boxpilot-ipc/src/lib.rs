@@ -27,6 +27,13 @@ pub use service::{
     ServiceLogsResponse, SERVICE_LOGS_DEFAULT_LINES, SERVICE_LOGS_MAX_LINES,
 };
 
+pub mod profile;
+pub use profile::{
+    ActivationManifest, AssetEntry, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION,
+    BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT, BUNDLE_MAX_NESTING_DEPTH,
+    BUNDLE_MAX_TOTAL_BYTES,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]

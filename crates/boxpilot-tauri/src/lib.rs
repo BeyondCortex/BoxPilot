@@ -1,9 +1,24 @@
 pub mod commands;
 pub mod helper_client;
+pub mod profile_cmds;
+
+use std::sync::Arc;
 
 pub fn run() {
     init_tracing();
+
+    let store = boxpilot_profile::ProfileStore::new(
+        boxpilot_profile::ProfileStorePaths::from_env()
+            .expect("could not resolve profile store path"),
+    );
+    let profile_state = profile_cmds::ProfileState {
+        store: Arc::new(store),
+        fetcher: Arc::new(boxpilot_profile::ReqwestFetcher::default()),
+        last_bundle: tokio::sync::Mutex::new(None),
+    };
+
     tauri::Builder::default()
+        .manage(profile_state)
         .invoke_handler(tauri::generate_handler![
             commands::helper_service_status,
             commands::helper_ping,
@@ -19,6 +34,17 @@ pub fn run() {
             commands::helper_service_disable,
             commands::helper_service_install_managed,
             commands::helper_service_logs,
+            profile_cmds::profile_list,
+            profile_cmds::profile_get_source,
+            profile_cmds::profile_import_file,
+            profile_cmds::profile_import_dir,
+            profile_cmds::profile_import_remote,
+            profile_cmds::profile_refresh_remote,
+            profile_cmds::profile_save_source,
+            profile_cmds::profile_apply_patch_json,
+            profile_cmds::profile_revert,
+            profile_cmds::profile_prepare_bundle,
+            profile_cmds::profile_check,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

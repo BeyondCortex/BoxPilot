@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/boxpilot-ipc", "crates/boxpilotd", "crates/boxpilot-tauri"]
+members = [
+    "crates/boxpilot-ipc",
+    "crates/boxpilotd",
+    "crates/boxpilot-tauri",
+    "crates/boxpilot-profile",
+]
 
 [workspace.package]
 edition = "2021"
@@ -16,9 +21,11 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs", "sync"] }
+url = "2"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 fs2 = "0.4"
-nix = { version = "0.29", features = ["user", "fs"] }
+nix = { version = "0.29", features = ["user", "fs", "signal", "process"] }
+libc = "0.2"
 tempfile = "3"
 pretty_assertions = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }

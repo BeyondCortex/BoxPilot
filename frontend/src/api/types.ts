@@ -80,3 +80,51 @@ export interface ServiceLogsResponse {
   lines: string[];
   truncated: boolean;
 }
+
+export type SourceKind = "local" | "local-dir" | "remote";
+
+export interface ProfileSummary {
+  id: string;
+  name: string;
+  source_kind: SourceKind;
+  remote_id: string | null;
+  created_at: string;
+  updated_at: string;
+  last_valid_activation_id: string | null;
+  config_sha256: string;
+  remote_url_redacted: string | null;
+}
+
+export interface AssetEntry {
+  path: string;
+  sha256: string;
+  size: number;
+}
+
+export interface ActivationManifest {
+  schema_version: number;
+  activation_id: string;
+  profile_id: string;
+  profile_sha256: string;
+  config_sha256: string;
+  source_kind: SourceKind;
+  source_url_redacted: string | null;
+  core_path_at_activation: string;
+  core_version_at_activation: string;
+  created_at: string;
+  assets: AssetEntry[];
+}
+
+export interface PrepareBundleRequest {
+  profile_id: string;
+  core_path: string;
+  core_version: string;
+}
+
+export interface PrepareBundleResponse {
+  staging_path: string;
+  manifest: ActivationManifest;
+}
+
+export interface CheckRequest { profile_id: string; core_path: string; }
+export interface CheckResponse { success: boolean; stdout: string; stderr: string; }
