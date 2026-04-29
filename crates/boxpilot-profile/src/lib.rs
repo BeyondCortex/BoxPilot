@@ -46,6 +46,9 @@ pub use check::{run_singbox_check, CheckError, CheckOutput, CHECK_TIMEOUT};
 pub mod bundle;
 pub use bundle::{prepare_bundle, BundleError, PreparedBundle};
 
+pub mod snapshot;
+pub use snapshot::{record_last_valid, revert_to_last_valid, SnapshotError};
+
 #[cfg(test)]
 mod sanity {
     #[test]
