@@ -18,6 +18,9 @@ pub use remotes::{
 pub mod ui_state;
 pub use ui_state::{read_ui_state, write_ui_state, UiState, UI_STATE_SCHEMA_VERSION};
 
+pub mod redact;
+pub use redact::{redact_url_for_display, redact_url_strict};
+
 #[cfg(test)]
 mod sanity {
     #[test]
