@@ -15,6 +15,9 @@ pub use remotes::{
     REMOTES_SCHEMA_VERSION,
 };
 
+pub mod ui_state;
+pub use ui_state::{read_ui_state, write_ui_state, UiState, UI_STATE_SCHEMA_VERSION};
+
 #[cfg(test)]
 mod sanity {
     #[test]
