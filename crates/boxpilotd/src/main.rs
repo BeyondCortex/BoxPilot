@@ -10,6 +10,7 @@ mod dispatch;
 mod iface;
 mod lock;
 mod paths;
+mod profile;
 mod service;
 mod systemd;
 
