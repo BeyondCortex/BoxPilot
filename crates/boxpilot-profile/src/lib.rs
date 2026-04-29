@@ -9,6 +9,12 @@ pub use meta::{read_metadata, write_metadata, ProfileMetadata, METADATA_SCHEMA_V
 pub mod list;
 pub use list::{ProfileStore, StoreError};
 
+pub mod remotes;
+pub use remotes::{
+    read_remotes, remote_id_for_url, write_remotes, RemoteEntry, RemotesFile,
+    REMOTES_SCHEMA_VERSION,
+};
+
 #[cfg(test)]
 mod sanity {
     #[test]
