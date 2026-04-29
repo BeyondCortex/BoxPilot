@@ -86,31 +86,55 @@ impl Helper {
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ServiceStart).await
+        let sender = extract_sender(&header)?;
+        let resp = self.do_service_start(&sender).await.map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn service_stop(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ServiceStop).await
+        let sender = extract_sender(&header)?;
+        let resp = self.do_service_stop(&sender).await.map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn service_restart(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ServiceRestart).await
+        let sender = extract_sender(&header)?;
+        let resp = self.do_service_restart(&sender).await.map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn service_enable(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ServiceEnable).await
+        let sender = extract_sender(&header)?;
+        let resp = self.do_service_enable(&sender).await.map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn service_disable(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ServiceDisable).await
+        let sender = extract_sender(&header)?;
+        let resp = self.do_service_disable(&sender).await.map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn service_install_managed(
         &self,
@@ -273,6 +297,76 @@ impl Helper {
         })
     }
 
+    async fn do_service_start(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
+        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceStart).await?;
+        let cfg = self.ctx.load_config().await?;
+        crate::service::control::run(
+            crate::service::control::Verb::Start,
+            &cfg.target_service,
+            &*self.ctx.systemd,
+        )
+        .await
+    }
+
+    async fn do_service_stop(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
+        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceStop).await?;
+        let cfg = self.ctx.load_config().await?;
+        crate::service::control::run(
+            crate::service::control::Verb::Stop,
+            &cfg.target_service,
+            &*self.ctx.systemd,
+        )
+        .await
+    }
+
+    async fn do_service_restart(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
+        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceRestart).await?;
+        let cfg = self.ctx.load_config().await?;
+        crate::service::control::run(
+            crate::service::control::Verb::Restart,
+            &cfg.target_service,
+            &*self.ctx.systemd,
+        )
+        .await
+    }
+
+    async fn do_service_enable(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
+        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceEnable).await?;
+        let cfg = self.ctx.load_config().await?;
+        crate::service::control::run(
+            crate::service::control::Verb::Enable,
+            &cfg.target_service,
+            &*self.ctx.systemd,
+        )
+        .await
+    }
+
+    async fn do_service_disable(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
+        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceDisable).await?;
+        let cfg = self.ctx.load_config().await?;
+        crate::service::control::run(
+            crate::service::control::Verb::Disable,
+            &cfg.target_service,
+            &*self.ctx.systemd,
+        )
+        .await
+    }
+
     /// Run the §6 dispatch contract (caller-uid → controller → polkit →
     /// optional lock) for a method whose body isn't implemented yet, then
     /// return `NotImplemented`. Unauthorized callers see `NotAuthorized`
@@ -394,6 +488,8 @@ mod tests {
     use super::*;
     use crate::authority::testing::CannedAuthority;
     use crate::context::testing::ctx_with;
+    use crate::context::testing::ctx_with_recording;
+    use crate::systemd::testing::{RecordedCall, RecordingSystemd};
     use boxpilot_ipc::UnitState;
     use tempfile::tempdir;
 
@@ -519,5 +615,85 @@ mod tests {
             c.kind,
             boxpilot_ipc::CoreKind::ManagedInstalled | boxpilot_ipc::CoreKind::ManagedAdopted
         )));
+    }
+
+    #[tokio::test]
+    async fn service_start_calls_systemd_start_unit() {
+        let tmp = tempdir().unwrap();
+        let rec = Arc::new(RecordingSystemd::new(UnitState::NotFound));
+        let ctx = Arc::new(ctx_with_recording(
+            &tmp,
+            Some("schema_version = 1\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.start"]),
+            rec.clone(),
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        h.do_service_start(":1.42").await.unwrap();
+        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::StartUnit(_))));
+    }
+
+    #[tokio::test]
+    async fn service_stop_calls_systemd_stop_unit() {
+        let tmp = tempdir().unwrap();
+        let rec = Arc::new(RecordingSystemd::new(UnitState::NotFound));
+        let ctx = Arc::new(ctx_with_recording(
+            &tmp,
+            Some("schema_version = 1\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.stop"]),
+            rec.clone(),
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        h.do_service_stop(":1.42").await.unwrap();
+        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::StopUnit(_))));
+    }
+
+    #[tokio::test]
+    async fn service_restart_calls_systemd_restart_unit() {
+        let tmp = tempdir().unwrap();
+        let rec = Arc::new(RecordingSystemd::new(UnitState::NotFound));
+        let ctx = Arc::new(ctx_with_recording(
+            &tmp,
+            Some("schema_version = 1\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.restart"]),
+            rec.clone(),
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        h.do_service_restart(":1.42").await.unwrap();
+        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::RestartUnit(_))));
+    }
+
+    #[tokio::test]
+    async fn service_enable_calls_systemd_enable_unit_files() {
+        let tmp = tempdir().unwrap();
+        let rec = Arc::new(RecordingSystemd::new(UnitState::NotFound));
+        let ctx = Arc::new(ctx_with_recording(
+            &tmp,
+            Some("schema_version = 1\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.enable"]),
+            rec.clone(),
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        h.do_service_enable(":1.42").await.unwrap();
+        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::EnableUnitFiles(_))));
+    }
+
+    #[tokio::test]
+    async fn service_disable_calls_systemd_disable_unit_files() {
+        let tmp = tempdir().unwrap();
+        let rec = Arc::new(RecordingSystemd::new(UnitState::NotFound));
+        let ctx = Arc::new(ctx_with_recording(
+            &tmp,
+            Some("schema_version = 1\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.disable"]),
+            rec.clone(),
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        h.do_service_disable(":1.42").await.unwrap();
+        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::DisableUnitFiles(_))));
     }
 }
