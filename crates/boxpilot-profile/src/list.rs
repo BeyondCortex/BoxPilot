@@ -39,22 +39,32 @@ impl ProfileStore {
                 Err(e) => tracing::warn!(profile_id = %id, error = %e, "skipping profile with unreadable metadata"),
             }
         }
+        // Lexicographic sort assumes timestamps are RFC3339 normalised to a
+        // consistent timezone (UTC); enforced by the importers in Tasks 9 and 11.
         out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         Ok(out)
     }
 
     pub fn get(&self, id: &str) -> Result<ProfileMetadata, StoreError> {
         let meta_path = self.paths.profile_metadata(id);
-        if !meta_path.exists() {
-            return Err(StoreError::NotFound(id.to_string()));
+        match read_metadata(&meta_path) {
+            Ok(m) => Ok(m),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(StoreError::NotFound(id.to_string()))
+            }
+            Err(e) => Err(StoreError::Io(e)),
         }
-        Ok(read_metadata(&meta_path)?)
     }
 
     pub fn read_source_bytes(&self, id: &str) -> Result<Vec<u8>, StoreError> {
         let p = self.paths.profile_source(id);
-        if !p.exists() { return Err(StoreError::NotFound(id.to_string())); }
-        Ok(std::fs::read(&p)?)
+        match std::fs::read(&p) {
+            Ok(bytes) => Ok(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(StoreError::NotFound(id.to_string()))
+            }
+            Err(e) => Err(StoreError::Io(e)),
+        }
     }
 }
 

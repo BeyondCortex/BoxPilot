@@ -7,6 +7,7 @@ use crate::store::write_file_0600_atomic;
 pub const METADATA_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProfileMetadata {
     pub schema_version: u32,
     pub id: String,

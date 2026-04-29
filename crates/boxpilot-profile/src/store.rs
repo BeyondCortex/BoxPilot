@@ -40,33 +40,34 @@ impl ProfileStorePaths {
     pub fn ui_state_json(&self) -> PathBuf { self.root.join("ui-state.json") }
 }
 
-/// Idempotent: creates `path` (and parents) if missing, then forces `0700`.
+/// Idempotent: creates `path` (and parents via `create_dir_all`) if missing,
+/// then forces **the leaf** to `0700`. Intermediate directories created by
+/// `create_dir_all` are NOT chmod'd — callers must call this helper on each
+/// path component they own (e.g. root, then `profiles/`, then a profile's
+/// own dir) if they need every level forced to `0700`.
 pub fn ensure_dir_0700(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-/// Atomic write with `0600` mode. Writes to `path.tmp`, fsyncs, renames.
+/// Atomic write with `0600` mode. Writes to a uniquely-named temp file
+/// in the destination's parent directory, fsyncs, and renames into
+/// place. Concurrent writers cannot collide on the temp file.
 pub fn write_file_0600_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)?;
-        }
-    }
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)?;
-        f.write_all(contents)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(parent)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    // Set 0600 BEFORE writing so even partial bytes are unreadable to others.
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))?;
+    tmp.write_all(contents)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path)
+        .map_err(|e| std::io::Error::other(format!("persist temp file: {}", e.error)))?;
+    Ok(())
 }
 
 #[cfg(test)]
