@@ -212,6 +212,7 @@ dependencies = [
  "boxpilot-ipc",
  "chrono",
  "hex",
+ "libc",
  "nix",
  "pretty_assertions",
  "reqwest 0.12.28",

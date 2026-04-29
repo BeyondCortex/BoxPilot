@@ -27,41 +27,71 @@ pub const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// expected to be world-executable (managed cores live under
 /// `/var/lib/boxpilot/cores/` with `0755`).
 pub fn run_singbox_check(core_path: &Path, working_dir: &Path) -> Result<CheckOutput, CheckError> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
+    use std::thread;
+
     let mut child = Command::new(core_path)
         .args(["check", "-c", "config.json"])
         .current_dir(working_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Place the child in its own process group (pgid = child pid). This
+        // lets us SIGKILL the entire group (child + any grandchildren it
+        // spawns, e.g. a shell script forking `sleep`) in one call, which
+        // ensures the pipe write-ends are closed promptly on timeout.
+        .process_group(0)
         .spawn()
         .map_err(|e| CheckError::Spawn(core_path.to_path_buf(), e))?;
 
+    let pgid = child.id() as i32;
+
+    // Drain pipes concurrently to avoid deadlock when output exceeds
+    // the pipe buffer (~64 KiB on Linux). Threads exit when the child
+    // closes its end of the pipe.
+    let stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let stdout_handle = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::BufReader::new(stdout_pipe).read_to_end(&mut buf);
+        buf
+    });
+    let stderr_handle = thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::BufReader::new(stderr_pipe).read_to_end(&mut buf);
+        buf
+    });
+
     let start = std::time::Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait()? {
-            Some(status) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut s) = child.stdout.take() {
-                    use std::io::Read;
-                    let _ = s.read_to_string(&mut stdout);
-                }
-                if let Some(mut s) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = s.read_to_string(&mut stderr);
-                }
-                return Ok(CheckOutput { success: status.success(), stdout, stderr });
-            }
+            Some(s) => break s,
             None => {
                 if start.elapsed() >= CHECK_TIMEOUT {
-                    let _ = child.kill();
+                    // Kill the entire process group so that any grandchildren
+                    // (e.g. a shell script forking a subprocess) are also
+                    // terminated. This closes all write-ends of the pipes,
+                    // allowing the drain threads to finish promptly.
+                    unsafe { libc::kill(-pgid, libc::SIGKILL) };
                     let _ = child.wait();
+                    let _ = stdout_handle.join();
+                    let _ = stderr_handle.join();
                     return Err(CheckError::Timeout(CHECK_TIMEOUT));
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
         }
-    }
+    };
+
+    let stdout_bytes = stdout_handle.join().unwrap_or_default();
+    let stderr_bytes = stderr_handle.join().unwrap_or_default();
+
+    Ok(CheckOutput {
+        success: status.success(),
+        stdout: String::from_utf8_lossy(&stdout_bytes).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr_bytes).into_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -99,6 +129,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let err = run_singbox_check(&tmp.path().join("nope"), tmp.path()).unwrap_err();
         assert!(matches!(err, CheckError::Spawn(..)));
+    }
+
+    #[test]
+    fn handles_large_stdout_without_deadlock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake_core = tmp.path().join("noisy-core");
+        // ~600 KiB on stdout, well past 64 KiB pipe buffer.
+        write_executable(&fake_core, "#!/bin/sh\nseq 1 100000\nexit 0\n");
+        let out = run_singbox_check(&fake_core, tmp.path()).unwrap();
+        assert!(out.success);
+        // Each line of seq 1..=100000 contributes 1-6 bytes + newline; 600KB+ guaranteed.
+        assert!(out.stdout.len() > 64 * 1024,
+            "expected stdout > 64 KiB, got {} bytes", out.stdout.len());
     }
 
     #[test]

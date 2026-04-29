@@ -20,6 +20,8 @@ pub struct FetchedRemote {
 pub enum FetchError {
     #[error("transport: {0}")]
     Transport(String),
+    #[error("HTTP {status}: {message}")]
+    Http { status: u16, message: String },
     #[error("body too large: {size} > {limit}")]
     TooLarge { size: u64, limit: u64 },
     #[error("body is not JSON: {0}")]
@@ -53,6 +55,13 @@ impl RemoteFetcher for ReqwestFetcher {
     async fn fetch(&self, url: &str) -> Result<FetchedRemote, FetchError> {
         let resp = self.client.get(url).send().await
             .map_err(|e| FetchError::Transport(e.to_string()))?;
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(FetchError::Http {
+                status: status.as_u16(),
+                message: status.canonical_reason().unwrap_or("").to_string(),
+            });
+        }
         let etag = resp.headers().get(reqwest::header::ETAG)
             .and_then(|v| v.to_str().ok()).map(str::to_string);
         if let Some(len) = resp.content_length() {
@@ -216,6 +225,23 @@ mod tests {
         };
         let err = import_remote(&s, &f, "Bad", "https://h/p").await.unwrap_err();
         assert!(matches!(err, FetchError::InvalidJson(_)));
+    }
+
+    struct Http4xxFetcher;
+    #[async_trait]
+    impl RemoteFetcher for Http4xxFetcher {
+        async fn fetch(&self, _url: &str) -> Result<FetchedRemote, FetchError> {
+            Err(FetchError::Http { status: 401, message: "Unauthorized".into() })
+        }
+    }
+
+    #[tokio::test]
+    async fn import_remote_rejects_http_error_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let s = store_in(&tmp);
+        let f = Http4xxFetcher;
+        let err = import_remote(&s, &f, "Bad", "https://h/p").await.unwrap_err();
+        assert!(matches!(err, FetchError::Http { status: 401, .. }));
     }
 
     #[tokio::test]

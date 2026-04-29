@@ -143,10 +143,24 @@ pub fn import_local_dir(
     serde_json::from_slice::<serde_json::Value>(&config_bytes)
         .map_err(DirImportError::InvalidJson)?;
 
+    let config_size = config_bytes.len() as u64;
+    if config_size > BUNDLE_MAX_FILE_BYTES {
+        return Err(DirImportError::FileTooLarge {
+            path: config_path.clone(),
+            size: config_size,
+            limit: BUNDLE_MAX_FILE_BYTES,
+        });
+    }
+
     // Walk to enumerate assets (every regular file in src_dir except the chosen config).
     struct WalkEntry { rel: std::path::PathBuf, abs: std::path::PathBuf }
     let mut entries: Vec<WalkEntry> = Vec::new();
-    let mut total_bytes: u64 = config_bytes.len() as u64;
+    let mut total_bytes: u64 = config_size;
+    if total_bytes > BUNDLE_MAX_TOTAL_BYTES {
+        return Err(DirImportError::TotalTooLarge {
+            total: total_bytes, limit: BUNDLE_MAX_TOTAL_BYTES,
+        });
+    }
     let mut file_count: u32 = 1;
     let mut max_depth: u32 = 0;
     let mut queue: VecDeque<(std::path::PathBuf, u32)> = VecDeque::new();
@@ -345,6 +359,22 @@ mod tests {
         let m = import_local_dir(&s, &src, "B").unwrap();
         let saved = std::fs::read(s.paths().profile_source(&m.id)).unwrap();
         assert!(String::from_utf8_lossy(&saved).contains("\"chosen\":true"));
+    }
+
+    #[test]
+    fn import_local_dir_rejects_oversized_config_with_no_assets() {
+        use boxpilot_ipc::BUNDLE_MAX_FILE_BYTES;
+        let (tmp, s) = fixture();
+        let src = tmp.path().join("bundle");
+        std::fs::create_dir_all(&src).unwrap();
+        // Build a JSON document larger than the per-file limit.
+        let mut payload = String::from("{\"junk\":\"");
+        // 17 MiB of 'a's; total file size ends up > 16 MiB.
+        payload.push_str(&"a".repeat((BUNDLE_MAX_FILE_BYTES + 1024 * 1024) as usize));
+        payload.push_str("\"}");
+        std::fs::write(src.join("config.json"), payload).unwrap();
+        let err = import_local_dir(&s, &src, "Big").unwrap_err();
+        assert!(matches!(err, DirImportError::FileTooLarge { .. }));
     }
 
     #[test]
