@@ -40,6 +40,9 @@ pub use asset_check::{
     detect_absolute_paths, extract_asset_refs, verify_asset_refs, AssetCheckError,
 };
 
+pub mod check;
+pub use check::{run_singbox_check, CheckError, CheckOutput, CHECK_TIMEOUT};
+
 #[cfg(test)]
 mod sanity {
     #[test]
