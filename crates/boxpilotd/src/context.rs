@@ -9,7 +9,7 @@ use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use crate::paths::Paths;
-use crate::systemd::SystemdQuery;
+use crate::systemd::Systemd;
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult};
 use std::sync::Arc;
 
@@ -17,7 +17,7 @@ pub struct HelperContext {
     pub paths: Paths,
     pub callers: Arc<dyn CallerResolver>,
     pub authority: Arc<dyn Authority>,
-    pub systemd: Arc<dyn SystemdQuery>,
+    pub systemd: Arc<dyn Systemd>,
     pub user_lookup: Arc<dyn UserLookup>,
     pub github: Arc<dyn GithubClient>,
     pub downloader: Arc<dyn Downloader>,
@@ -37,7 +37,7 @@ impl HelperContext {
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
         authority: Arc<dyn Authority>,
-        systemd: Arc<dyn SystemdQuery>,
+        systemd: Arc<dyn Systemd>,
         user_lookup: Arc<dyn UserLookup>,
         github: Arc<dyn GithubClient>,
         downloader: Arc<dyn Downloader>,

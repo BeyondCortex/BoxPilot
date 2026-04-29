@@ -1,15 +1,22 @@
-//! systemd query layer. We only need read access in this plan
-//! (`Manager.GetUnit` + `Properties.Get`), which is unauthenticated on the
-//! system bus when the daemon runs as root. Service-control verbs come in
-//! plan #3.
+//! systemd query and control layer.  Read access (`GetUnit` + `Properties.Get`)
+//! is unauthenticated on the system bus when the daemon runs as root.
+//! Service-control verbs (`StartUnit`, `StopUnit`, …) are added in plan #3.
 
 use async_trait::async_trait;
 use boxpilot_ipc::{HelperError, UnitState};
 use zbus::{proxy, Connection};
 
 #[async_trait]
-pub trait SystemdQuery: Send + Sync {
+pub trait Systemd: Send + Sync {
     async fn unit_state(&self, unit_name: &str) -> Result<UnitState, HelperError>;
+    async fn start_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn stop_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn restart_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn enable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError>;
+    async fn disable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError>;
+    /// Equivalent to `systemctl daemon-reload`. Required after writing a
+    /// new unit file so systemd parses it before the next StartUnit.
+    async fn reload(&self) -> Result<(), HelperError>;
 }
 
 #[proxy(
@@ -55,7 +62,7 @@ impl DBusSystemd {
 }
 
 #[async_trait]
-impl SystemdQuery for DBusSystemd {
+impl Systemd for DBusSystemd {
     async fn unit_state(&self, unit_name: &str) -> Result<UnitState, HelperError> {
         let mgr = SystemdManagerProxy::new(&self.conn)
             .await
@@ -125,6 +132,30 @@ impl SystemdQuery for DBusSystemd {
             exec_main_status,
         })
     }
+
+    async fn start_unit(&self, _unit_name: &str) -> Result<(), HelperError> {
+        unimplemented!("T3")
+    }
+
+    async fn stop_unit(&self, _unit_name: &str) -> Result<(), HelperError> {
+        unimplemented!("T3")
+    }
+
+    async fn restart_unit(&self, _unit_name: &str) -> Result<(), HelperError> {
+        unimplemented!("T3")
+    }
+
+    async fn enable_unit_files(&self, _unit_names: &[String]) -> Result<(), HelperError> {
+        unimplemented!("T3")
+    }
+
+    async fn disable_unit_files(&self, _unit_names: &[String]) -> Result<(), HelperError> {
+        unimplemented!("T3")
+    }
+
+    async fn reload(&self) -> Result<(), HelperError> {
+        unimplemented!("T3")
+    }
 }
 
 fn systemd_err(e: zbus::Error) -> HelperError {
@@ -136,15 +167,80 @@ fn systemd_err(e: zbus::Error) -> HelperError {
 #[cfg(test)]
 pub mod testing {
     use super::*;
+    use std::sync::Mutex;
 
     pub struct FixedSystemd {
         pub answer: UnitState,
     }
 
     #[async_trait]
-    impl SystemdQuery for FixedSystemd {
-        async fn unit_state(&self, _unit_name: &str) -> Result<UnitState, HelperError> {
+    impl Systemd for FixedSystemd {
+        async fn unit_state(&self, _: &str) -> Result<UnitState, HelperError> {
             Ok(self.answer.clone())
+        }
+        async fn start_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
+        async fn stop_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
+        async fn restart_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
+        async fn enable_unit_files(&self, _: &[String]) -> Result<(), HelperError> { Ok(()) }
+        async fn disable_unit_files(&self, _: &[String]) -> Result<(), HelperError> { Ok(()) }
+        async fn reload(&self) -> Result<(), HelperError> { Ok(()) }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum RecordedCall {
+        StartUnit(String),
+        StopUnit(String),
+        RestartUnit(String),
+        EnableUnitFiles(Vec<String>),
+        DisableUnitFiles(Vec<String>),
+        Reload,
+    }
+
+    pub struct RecordingSystemd {
+        pub answer: UnitState,
+        pub calls: Mutex<Vec<RecordedCall>>,
+    }
+
+    impl RecordingSystemd {
+        pub fn new(answer: UnitState) -> Self {
+            Self {
+                answer,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        pub fn calls(&self) -> Vec<RecordedCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Systemd for RecordingSystemd {
+        async fn unit_state(&self, _: &str) -> Result<UnitState, HelperError> {
+            Ok(self.answer.clone())
+        }
+        async fn start_unit(&self, name: &str) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::StartUnit(name.into()));
+            Ok(())
+        }
+        async fn stop_unit(&self, name: &str) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::StopUnit(name.into()));
+            Ok(())
+        }
+        async fn restart_unit(&self, name: &str) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::RestartUnit(name.into()));
+            Ok(())
+        }
+        async fn enable_unit_files(&self, names: &[String]) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::EnableUnitFiles(names.to_vec()));
+            Ok(())
+        }
+        async fn disable_unit_files(&self, names: &[String]) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::DisableUnitFiles(names.to_vec()));
+            Ok(())
+        }
+        async fn reload(&self) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::Reload);
+            Ok(())
         }
     }
 
@@ -154,5 +250,15 @@ pub mod testing {
             answer: UnitState::NotFound,
         };
         assert_eq!(q.unit_state("anything").await.unwrap(), UnitState::NotFound);
+    }
+
+    #[tokio::test]
+    async fn recording_systemd_records_start_unit() {
+        let s = RecordingSystemd::new(UnitState::NotFound);
+        s.start_unit("boxpilot-sing-box.service").await.unwrap();
+        assert_eq!(
+            s.calls(),
+            vec![RecordedCall::StartUnit("boxpilot-sing-box.service".into())]
+        );
     }
 }
