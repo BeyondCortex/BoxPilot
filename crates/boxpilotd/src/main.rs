@@ -4,6 +4,7 @@
 mod authority;
 mod context;
 mod controller;
+mod core;
 mod credentials;
 mod dispatch;
 mod iface;
@@ -13,10 +14,44 @@ mod systemd;
 
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::{error, info, warn};
+
+use crate::core::download::ReqwestDownloader;
+use crate::core::github::ReqwestGithubClient;
+use crate::core::trust::{ProcessVersionChecker, StdFsMetadataProvider};
 
 const BUS_NAME: &str = "app.boxpilot.Helper";
 const OBJECT_PATH: &str = "/app/boxpilot/Helper";
+
+async fn run_startup_recovery(paths: &paths::Paths) -> anyhow::Result<()> {
+    let staging = paths.cores_staging_dir();
+    if staging.exists() {
+        match tokio::fs::read_dir(&staging).await {
+            Ok(mut entries) => {
+                while let Some(e) = entries.next_entry().await? {
+                    let p = e.path();
+                    let _ = tokio::fs::remove_dir_all(&p).await;
+                    info!(path = %p.display(), "swept stale staging dir");
+                }
+            }
+            Err(e) => warn!("read_dir staging: {e}"),
+        }
+    }
+
+    let current = paths.cores_current_symlink();
+    if current.exists() {
+        let target = tokio::fs::read_link(&current).await?;
+        let resolved = if target.is_absolute() {
+            target.clone()
+        } else {
+            paths.cores_dir().join(&target)
+        };
+        if !resolved.exists() {
+            warn!(target = %resolved.display(), "current symlink target is missing");
+        }
+    }
+    Ok(())
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -28,18 +63,34 @@ async fn main() -> Result<()> {
         std::process::exit(2);
     }
 
+    let paths = paths::Paths::system();
+    if let Err(e) = run_startup_recovery(&paths).await {
+        error!("startup recovery failed: {e}");
+    }
+
     let conn = zbus::connection::Builder::system()
         .context("connect to system bus")?
         .build()
         .await
         .context("system bus build")?;
 
+    let github =
+        Arc::new(ReqwestGithubClient::new().map_err(|e| anyhow::anyhow!("github client: {e}"))?);
+    let downloader =
+        Arc::new(ReqwestDownloader::new().map_err(|e| anyhow::anyhow!("downloader: {e}"))?);
+    let fs_meta = Arc::new(StdFsMetadataProvider);
+    let version_checker = Arc::new(ProcessVersionChecker);
+
     let ctx = Arc::new(context::HelperContext::new(
-        paths::Paths::system(),
+        paths,
         Arc::new(credentials::DBusCallerResolver::new(conn.clone())),
         Arc::new(authority::DBusAuthority::new(conn.clone())),
         Arc::new(systemd::DBusSystemd::new(conn.clone())),
         Arc::new(controller::PasswdLookup),
+        github,
+        downloader,
+        fs_meta,
+        version_checker,
     ));
 
     let helper = iface::Helper::new(ctx);

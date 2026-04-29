@@ -37,3 +37,41 @@ pub async fn helper_ping() -> Result<&'static str, CommandError> {
     let _client = HelperClient::connect().await?;
     Ok("ok")
 }
+
+#[tauri::command]
+pub async fn helper_core_discover() -> Result<boxpilot_ipc::CoreDiscoverResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    Ok(c.core_discover().await?)
+}
+
+#[tauri::command]
+pub async fn helper_core_install_managed(
+    request: boxpilot_ipc::CoreInstallRequest,
+) -> Result<boxpilot_ipc::CoreInstallResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    Ok(c.core_install_managed(&request).await?)
+}
+
+#[tauri::command]
+pub async fn helper_core_upgrade_managed(
+    request: boxpilot_ipc::CoreInstallRequest,
+) -> Result<boxpilot_ipc::CoreInstallResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    Ok(c.core_upgrade_managed(&request).await?)
+}
+
+#[tauri::command]
+pub async fn helper_core_rollback_managed(
+    request: boxpilot_ipc::CoreRollbackRequest,
+) -> Result<boxpilot_ipc::CoreInstallResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    Ok(c.core_rollback_managed(&request).await?)
+}
+
+#[tauri::command]
+pub async fn helper_core_adopt(
+    request: boxpilot_ipc::CoreAdoptRequest,
+) -> Result<boxpilot_ipc::CoreInstallResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    Ok(c.core_adopt(&request).await?)
+}

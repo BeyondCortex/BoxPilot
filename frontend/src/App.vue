@@ -1,23 +1,22 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import { serviceStatus, isCommandError } from "./api/helper";
+import CoresPanel from "./components/CoresPanel.vue";
+import { serviceStatus } from "./api/helper";
 import type { ServiceStatusResponse } from "./api/types";
 
-const loading = ref(false);
+type Tab = "home" | "cores";
+const tab = ref<Tab>("home");
 const status = ref<ServiceStatusResponse | null>(null);
-const error = ref<{ code: string; message: string } | null>(null);
+const error = ref<string | null>(null);
+const loading = ref(false);
 
 async function check() {
   loading.value = true;
   error.value = null;
   try {
     status.value = await serviceStatus();
-  } catch (e) {
-    if (isCommandError(e)) {
-      error.value = e;
-    } else {
-      error.value = { code: "unknown", message: String(e) };
-    }
+  } catch (e: any) {
+    error.value = e?.message ?? String(e);
     status.value = null;
   } finally {
     loading.value = false;
@@ -28,28 +27,25 @@ async function check() {
 <template>
   <main>
     <h1>BoxPilot</h1>
-    <p>Plan #1 — helper round-trip smoke test.</p>
-    <button :disabled="loading" @click="check">
-      {{ loading ? "Checking..." : "Check service.status" }}
-    </button>
-
-    <section v-if="error" class="err">
-      <h2>Error</h2>
-      <code>{{ error.code }}</code>
-      <p>{{ error.message }}</p>
+    <nav>
+      <button :class="{ active: tab === 'home' }" @click="tab = 'home'">Home</button>
+      <button :class="{ active: tab === 'cores' }" @click="tab = 'cores'">Settings → Cores</button>
+    </nav>
+    <section v-if="tab === 'home'">
+      <button :disabled="loading" @click="check">
+        {{ loading ? "Checking..." : "Check service.status" }}
+      </button>
+      <pre v-if="status">{{ JSON.stringify(status, null, 2) }}</pre>
+      <p v-if="error" class="err">{{ error }}</p>
     </section>
-
-    <section v-if="status" class="ok">
-      <h2>Service: {{ status.unit_name }}</h2>
-      <pre>{{ JSON.stringify(status, null, 2) }}</pre>
-    </section>
+    <CoresPanel v-else-if="tab === 'cores'" />
   </main>
 </template>
 
 <style>
 body { font-family: system-ui, sans-serif; padding: 2rem; max-width: 60rem; margin: auto; }
-button { padding: 0.5rem 1rem; font-size: 1rem; }
-section.err { margin-top: 1.5rem; padding: 1rem; background: #fee; border-radius: 0.5rem; }
-section.ok { margin-top: 1.5rem; padding: 1rem; background: #efe; border-radius: 0.5rem; }
-pre { white-space: pre-wrap; }
+nav { display: flex; gap: 0.5rem; margin: 1rem 0; }
+nav button { padding: 0.5rem 1rem; }
+nav button.active { background: #333; color: #fff; }
+.err { color: #c00; }
 </style>

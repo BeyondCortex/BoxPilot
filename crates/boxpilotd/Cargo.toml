@@ -22,7 +22,14 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "
 zbus.workspace = true
 fs2.workspace = true
 nix.workspace = true
-async-trait = "0.1"
+async-trait.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
+flate2.workspace = true
+tar.workspace = true
+hex.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

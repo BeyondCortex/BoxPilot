@@ -143,34 +143,87 @@ impl Helper {
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::CoreDiscover).await
+        let sender = extract_sender(&header)?;
+        let resp = self.do_core_discover(&sender).await.map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn core_install_managed(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::CoreInstallManaged)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::CoreInstallRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_core_install_managed(&sender, req)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn core_upgrade_managed(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::CoreUpgradeManaged)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::CoreInstallRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_core_upgrade_managed(&sender, req)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn core_rollback_managed(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::CoreRollbackManaged)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::CoreRollbackRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_core_rollback_managed(&sender, req)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn core_adopt(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::CoreAdopt).await
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::CoreAdoptRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_core_adopt(&sender, req)
+            .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn legacy_observe_service(
         &self,
@@ -239,6 +292,100 @@ impl Helper {
             "called a not-yet-implemented helper method"
         );
         Err(to_zbus_err(HelperError::NotImplemented))
+    }
+
+    async fn do_core_discover(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
+        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreDiscover).await?;
+        let deps = crate::core::discover::DiscoverDeps {
+            paths: self.ctx.paths.clone(),
+            fs: &*self.ctx.fs_meta,
+            version_checker: &*self.ctx.version_checker,
+        };
+        crate::core::discover::discover(&deps).await
+    }
+
+    async fn do_core_install_managed(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::CoreInstallRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
+        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreInstallManaged).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
+        let deps = crate::core::install::InstallDeps {
+            paths: self.ctx.paths.clone(),
+            github: &*self.ctx.github,
+            downloader: &*self.ctx.downloader,
+            fs: &*self.ctx.fs_meta,
+            version_checker: &*self.ctx.version_checker,
+        };
+        crate::core::install::install_or_upgrade(&req, &deps, controller).await
+    }
+
+    async fn do_core_upgrade_managed(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::CoreInstallRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
+        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreUpgradeManaged).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
+        let deps = crate::core::install::InstallDeps {
+            paths: self.ctx.paths.clone(),
+            github: &*self.ctx.github,
+            downloader: &*self.ctx.downloader,
+            fs: &*self.ctx.fs_meta,
+            version_checker: &*self.ctx.version_checker,
+        };
+        crate::core::install::install_or_upgrade(&req, &deps, controller).await
+    }
+
+    async fn do_core_rollback_managed(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::CoreRollbackRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
+        let call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::CoreRollbackManaged).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
+        let deps = crate::core::rollback::RollbackDeps {
+            paths: self.ctx.paths.clone(),
+            fs: &*self.ctx.fs_meta,
+            version_checker: &*self.ctx.version_checker,
+        };
+        crate::core::rollback::rollback(&req, &deps, controller).await
+    }
+
+    async fn do_core_adopt(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::CoreAdoptRequest,
+    ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
+        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreAdopt).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
+        let deps = crate::core::adopt::AdoptDeps {
+            paths: self.ctx.paths.clone(),
+            fs: &*self.ctx.fs_meta,
+            version_checker: &*self.ctx.version_checker,
+        };
+        crate::core::adopt::adopt(&req, &deps, controller).await
     }
 }
 
@@ -354,5 +501,23 @@ mod tests {
             r.is_ok(),
             "authorized read-only stub call should pass dispatch: {r_dbg:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn core_discover_returns_ok_on_empty_tempdir() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::allowing(&["app.boxpilot.helper.core.discover"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let resp = h.do_core_discover(":1.42").await.unwrap();
+        assert!(resp.cores.iter().all(|c| !matches!(
+            c.kind,
+            boxpilot_ipc::CoreKind::ManagedInstalled | boxpilot_ipc::CoreKind::ManagedAdopted
+        )));
     }
 }
