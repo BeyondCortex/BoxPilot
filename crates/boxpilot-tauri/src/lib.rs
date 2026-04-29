@@ -12,6 +12,13 @@ pub fn run() {
             commands::helper_core_upgrade_managed,
             commands::helper_core_rollback_managed,
             commands::helper_core_adopt,
+            commands::helper_service_start,
+            commands::helper_service_stop,
+            commands::helper_service_restart,
+            commands::helper_service_enable,
+            commands::helper_service_disable,
+            commands::helper_service_install_managed,
+            commands::helper_service_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
