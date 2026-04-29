@@ -66,3 +66,17 @@ export interface CoreInstallResponse {
 
 export interface CoreRollbackRequest { to_label: string; }
 export interface CoreAdoptRequest { source_path: string; }
+
+export interface ServiceControlResponse { unit_state: UnitState; }
+
+export interface ServiceInstallManagedResponse {
+  unit_state: UnitState;
+  generated_unit_path: string;
+  claimed_controller: boolean;
+}
+
+export interface ServiceLogsRequest { lines: number; }
+export interface ServiceLogsResponse {
+  lines: string[];
+  truncated: boolean;
+}
