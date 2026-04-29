@@ -9,6 +9,8 @@ use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use crate::paths::Paths;
+use crate::profile::checker::SingboxChecker;
+use crate::profile::verifier::ServiceVerifier;
 use crate::systemd::{JournalReader, Systemd};
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult};
 use std::sync::Arc;
@@ -24,6 +26,8 @@ pub struct HelperContext {
     pub downloader: Arc<dyn Downloader>,
     pub fs_meta: Arc<dyn FsMetadataProvider>,
     pub version_checker: Arc<dyn VersionChecker>,
+    pub checker: Arc<dyn SingboxChecker>,
+    pub verifier: Arc<dyn ServiceVerifier>,
     // Cache is intentionally absent. `load_config` reads the file each call;
     // call sites are infrequent (one disk read per `service.status` poll, or
     // per privileged action). When SIGHUP-style reload lands in a later
@@ -33,7 +37,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 10 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 12 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -45,6 +49,8 @@ impl HelperContext {
         downloader: Arc<dyn Downloader>,
         fs_meta: Arc<dyn FsMetadataProvider>,
         version_checker: Arc<dyn VersionChecker>,
+        checker: Arc<dyn SingboxChecker>,
+        verifier: Arc<dyn ServiceVerifier>,
     ) -> Self {
         Self {
             paths,
@@ -57,6 +63,8 @@ impl HelperContext {
             downloader,
             fs_meta,
             version_checker,
+            checker,
+            verifier,
         }
     }
 
@@ -145,6 +153,10 @@ pub mod testing {
             downloader,
             fs_meta,
             version_checker,
+            Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
+                vec![],
+            )),
         )
     }
 
@@ -182,6 +194,10 @@ pub mod testing {
             Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
                 "sing-box version 1.10.0",
             )),
+            Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
+                vec![],
+            )),
         )
     }
 
@@ -218,6 +234,10 @@ pub mod testing {
             Arc::new(PermissiveTestFs),
             Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
                 "sing-box version 1.10.0",
+            )),
+            Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
+                vec![],
             )),
         )
     }

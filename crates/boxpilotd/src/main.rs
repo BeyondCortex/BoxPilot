@@ -123,6 +123,8 @@ async fn main() -> Result<()> {
         downloader,
         fs_meta,
         version_checker,
+        Arc::new(crate::profile::checker::ProcessChecker),
+        Arc::new(crate::profile::verifier::DefaultVerifier),
     ));
 
     let helper = iface::Helper::new(ctx);

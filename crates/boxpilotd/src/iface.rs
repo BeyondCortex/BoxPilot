@@ -181,16 +181,39 @@ impl Helper {
     async fn profile_activate_bundle(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
+        bundle_fd: zbus::zvariant::OwnedFd,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ProfileActivateBundle)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::ActivateBundleRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_profile_activate_bundle(&sender, req, bundle_fd.into())
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn profile_rollback_release(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ProfileRollbackRelease)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::RollbackRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_profile_rollback_release(&sender, req)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn core_discover(
         &self,
@@ -562,6 +585,38 @@ impl Helper {
             version_checker: &*self.ctx.version_checker,
         };
         crate::core::adopt::adopt(&req, &deps, controller).await
+    }
+
+    async fn do_profile_activate_bundle(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::ActivateBundleRequest,
+        fd: std::os::fd::OwnedFd,
+    ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
+        let _call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileActivateBundle).await?;
+        let deps = crate::profile::activate::ActivateDeps {
+            paths: self.ctx.paths.clone(),
+            systemd: &*self.ctx.systemd,
+            verifier: &*self.ctx.verifier,
+            checker: &*self.ctx.checker,
+        };
+        crate::profile::activate::activate_bundle(req, fd, &deps).await
+    }
+
+    async fn do_profile_rollback_release(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::RollbackRequest,
+    ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
+        let _call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileRollbackRelease).await?;
+        let deps = crate::profile::rollback::RollbackDeps {
+            paths: self.ctx.paths.clone(),
+            systemd: &*self.ctx.systemd,
+            verifier: &*self.ctx.verifier,
+        };
+        crate::profile::rollback::rollback_release(req, &deps).await
     }
 }
 
