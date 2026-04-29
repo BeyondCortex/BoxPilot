@@ -17,7 +17,7 @@ fn walk_refs(v: &Value, out: &mut BTreeSet<String>) {
     match v {
         Value::Object(map) => {
             for (k, child) in map {
-                if ASSET_PATH_KEYS.iter().any(|target| *target == k.as_str()) {
+                if ASSET_PATH_KEYS.contains(&k.as_str()) {
                     if let Value::String(s) = child {
                         if !s.is_empty() && !is_absolute_or_url(s) {
                             out.insert(s.clone());
@@ -53,7 +53,7 @@ fn walk_abs(v: &Value, out: &mut Vec<String>) {
     match v {
         Value::Object(map) => {
             for (k, child) in map {
-                if ASSET_PATH_KEYS.iter().any(|t| *t == k.as_str()) {
+                if ASSET_PATH_KEYS.contains(&k.as_str()) {
                     if let Value::String(s) = child {
                         if s.starts_with('/') {
                             out.push(s.clone());

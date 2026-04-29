@@ -43,6 +43,9 @@ pub use asset_check::{
 pub mod check;
 pub use check::{run_singbox_check, CheckError, CheckOutput, CHECK_TIMEOUT};
 
+pub mod bundle;
+pub use bundle::{prepare_bundle, BundleError, PreparedBundle};
+
 #[cfg(test)]
 mod sanity {
     #[test]
