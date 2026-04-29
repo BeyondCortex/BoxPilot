@@ -1,5 +1,6 @@
 use chrono::Utc;
 use sha2::{Digest, Sha256};
+use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use boxpilot_ipc::{
@@ -18,6 +19,8 @@ use crate::store::ensure_dir_0700;
 pub struct PreparedBundle {
     pub staging: tempfile::TempDir,
     pub manifest: ActivationManifest,
+    pub memfd: std::os::fd::OwnedFd,
+    pub tar_size: u64,
 }
 
 impl PreparedBundle {
@@ -154,7 +157,81 @@ pub fn prepare_bundle(
     std::fs::write(staging_path.join("manifest.json"), &manifest_bytes)?;
 
     let _ = (total, file_count); // already enforced inside copy_assets_into
-    Ok(PreparedBundle { staging, manifest })
+
+    // Tar the staging directory into a sealed memfd. boxpilotd consumes
+    // this fd as the §9.2 transport; the staging TempDir stays only for
+    // tests and debugging.
+    let memfd = create_sealed_bundle_memfd(&staging_path)
+        .map_err(|e| BundleError::Io(std::io::Error::other(format!("memfd build: {e}"))))?;
+    let tar_size = nix::sys::stat::fstat(memfd.as_raw_fd())
+        .map_err(|e| BundleError::Io(std::io::Error::other(format!("fstat memfd: {e}"))))?
+        .st_size as u64;
+
+    Ok(PreparedBundle { staging, manifest, memfd, tar_size })
+}
+
+fn create_sealed_bundle_memfd(staging_root: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
+    use std::ffi::CString;
+    let fd = nix::sys::memfd::memfd_create(
+        CString::new("boxpilot-bundle").unwrap().as_c_str(),
+        nix::sys::memfd::MemFdCreateFlag::MFD_CLOEXEC
+            | nix::sys::memfd::MemFdCreateFlag::MFD_ALLOW_SEALING,
+    )
+    .map_err(std::io::Error::from)?;
+
+    {
+        let mut file = std::fs::File::from(fd.try_clone()?);
+        let mut builder = tar::Builder::new(&mut file);
+        builder.mode(tar::HeaderMode::Deterministic);
+        append_dir_sorted(&mut builder, staging_root, Path::new(""))?;
+        builder.finish()?;
+    }
+
+    let seals = nix::fcntl::SealFlag::F_SEAL_WRITE
+        | nix::fcntl::SealFlag::F_SEAL_GROW
+        | nix::fcntl::SealFlag::F_SEAL_SHRINK
+        | nix::fcntl::SealFlag::F_SEAL_SEAL;
+    nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_ADD_SEALS(seals))
+        .map_err(std::io::Error::from)?;
+    Ok(fd)
+}
+
+fn append_dir_sorted(
+    b: &mut tar::Builder<&mut std::fs::File>,
+    abs_root: &Path,
+    rel: &Path,
+) -> std::io::Result<()> {
+    let abs = abs_root.join(rel);
+    let mut entries: Vec<_> = std::fs::read_dir(&abs)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    for e in entries {
+        let path = e.path();
+        let name = e.file_name();
+        let rel_child = if rel.as_os_str().is_empty() {
+            PathBuf::from(&name)
+        } else {
+            rel.join(&name)
+        };
+        let ft = std::fs::metadata(&path)?.file_type();
+        if ft.is_dir() {
+            let mut h = tar::Header::new_ustar();
+            h.set_size(0);
+            h.set_mode(0o700);
+            h.set_entry_type(tar::EntryType::Directory);
+            h.set_cksum();
+            b.append_data(&mut h, &rel_child, std::io::empty())?;
+            append_dir_sorted(b, abs_root, &rel_child)?;
+        } else if ft.is_file() {
+            let bytes = std::fs::read(&path)?;
+            let mut h = tar::Header::new_ustar();
+            h.set_size(bytes.len() as u64);
+            h.set_mode(0o600);
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_cksum();
+            b.append_data(&mut h, &rel_child, bytes.as_slice())?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_assets_into(
@@ -294,5 +371,47 @@ mod tests {
         let m = import_local_file(&s, &src, "P").unwrap();
         let err = prepare_bundle(&s, &m.id, "/p/sb", "1.10.0").unwrap_err();
         assert!(matches!(err, BundleError::AssetCheck(AssetCheckError::AbsolutePathRefused(_))));
+    }
+
+    #[test]
+    fn prepare_bundle_returns_sealed_memfd_with_tar_layout() {
+        let (tmp, s) = fixture();
+        let src = tmp.path().join("in.json");
+        std::fs::write(&src, br#"{"log":{"level":"info"}}"#).unwrap();
+        let m = import_local_file(&s, &src, "P").unwrap();
+        let b = prepare_bundle(&s, &m.id, "/p/sing-box", "1.10.0").unwrap();
+
+        // All four seals must be set.
+        let seals = nix::fcntl::fcntl(b.memfd.as_raw_fd(), nix::fcntl::FcntlArg::F_GET_SEALS)
+            .unwrap();
+        let mask =
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+        assert_eq!(seals & mask, mask, "all four seals must be set");
+
+        // Tar must contain config.json + manifest.json.
+        let mut file = std::fs::File::from(b.memfd.try_clone().unwrap());
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut archive = tar::Archive::new(&mut file);
+        let names: Vec<String> = archive
+            .entries()
+            .unwrap()
+            .filter_map(|e| {
+                e.ok().and_then(|e| {
+                    e.path()
+                        .ok()
+                        .map(|p| p.to_string_lossy().into_owned())
+                })
+            })
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "config.json"),
+            "tar must contain config.json; got {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n == "manifest.json"),
+            "tar must contain manifest.json; got {names:?}"
+        );
+        assert!(b.tar_size > 0);
     }
 }
