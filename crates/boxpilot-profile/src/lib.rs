@@ -35,6 +35,11 @@ pub use remote::{
 pub mod editor;
 pub use editor::{apply_patch, patch_in_place, save_edits, EditError};
 
+pub mod asset_check;
+pub use asset_check::{
+    detect_absolute_paths, extract_asset_refs, verify_asset_refs, AssetCheckError,
+};
+
 #[cfg(test)]
 mod sanity {
     #[test]
