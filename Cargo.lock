@@ -181,6 +181,7 @@ name = "boxpilot"
 version = "0.1.0"
 dependencies = [
  "boxpilot-ipc",
+ "boxpilot-profile",
  "serde",
  "serde_json",
  "tauri",
