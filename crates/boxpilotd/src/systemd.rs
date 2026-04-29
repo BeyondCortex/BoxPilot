@@ -31,6 +31,33 @@ trait SystemdManager {
     // before issuing StartUnit.
     #[allow(dead_code)]
     fn load_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+
+    /// `mode` is one of "replace" / "fail" / "isolate" / "ignore-dependencies"
+    /// / "ignore-requirements". We always pass "replace".
+    fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn restart_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+
+    /// Returns `(carries_install_info, changes)`. We ignore the changes vec
+    /// — systemd has already applied them; we just want the success/error
+    /// surface. `runtime=false` writes to `/etc/systemd/system/`; `force=true`
+    /// overwrites pre-existing symlinks.
+    #[zbus(name = "EnableUnitFiles")]
+    fn enable_unit_files(
+        &self,
+        files: &[&str],
+        runtime: bool,
+        force: bool,
+    ) -> zbus::Result<(bool, Vec<(String, String, String)>)>;
+
+    #[zbus(name = "DisableUnitFiles")]
+    fn disable_unit_files(
+        &self,
+        files: &[&str],
+        runtime: bool,
+    ) -> zbus::Result<Vec<(String, String, String)>>;
+
+    fn reload(&self) -> zbus::Result<()>;
 }
 
 #[proxy(interface = "org.freedesktop.systemd1.Unit")]
@@ -133,28 +160,63 @@ impl Systemd for DBusSystemd {
         })
     }
 
-    async fn start_unit(&self, _unit_name: &str) -> Result<(), HelperError> {
-        unimplemented!("T3")
+    async fn start_unit(&self, unit_name: &str) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.start_unit(unit_name, "replace")
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
     }
 
-    async fn stop_unit(&self, _unit_name: &str) -> Result<(), HelperError> {
-        unimplemented!("T3")
+    async fn stop_unit(&self, unit_name: &str) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.stop_unit(unit_name, "replace")
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
     }
 
-    async fn restart_unit(&self, _unit_name: &str) -> Result<(), HelperError> {
-        unimplemented!("T3")
+    async fn restart_unit(&self, unit_name: &str) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.restart_unit(unit_name, "replace")
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
     }
 
-    async fn enable_unit_files(&self, _unit_names: &[String]) -> Result<(), HelperError> {
-        unimplemented!("T3")
+    async fn enable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        let refs: Vec<&str> = unit_names.iter().map(|s| s.as_str()).collect();
+        mgr.enable_unit_files(&refs, false, true)
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
     }
 
-    async fn disable_unit_files(&self, _unit_names: &[String]) -> Result<(), HelperError> {
-        unimplemented!("T3")
+    async fn disable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        let refs: Vec<&str> = unit_names.iter().map(|s| s.as_str()).collect();
+        mgr.disable_unit_files(&refs, false)
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
     }
 
     async fn reload(&self) -> Result<(), HelperError> {
-        unimplemented!("T3")
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.reload().await.map_err(systemd_err)
     }
 }
 
