@@ -3,6 +3,9 @@
 pub mod store;
 pub use store::{ensure_dir_0700, write_file_0600_atomic, ProfileStorePaths};
 
+pub mod meta;
+pub use meta::{read_metadata, write_metadata, ProfileMetadata, METADATA_SCHEMA_VERSION};
+
 #[cfg(test)]
 mod sanity {
     #[test]
