@@ -36,11 +36,11 @@ pub async fn install_managed(
     verify_executable_path(deps.fs, &core_path, &prefixes).map_err(map_trust_err)?;
 
     let unit_text = unit::render(&core_path);
-    let target = deps.paths.systemd_unit_path();
+    let target = deps.paths.systemd_unit_path(&cfg.target_service);
     write_unit_atomic(&target, &unit_text).await?;
 
     deps.systemd.reload().await?;
-    let unit_state = deps.systemd.unit_state("boxpilot-sing-box.service").await?;
+    let unit_state = deps.systemd.unit_state(&cfg.target_service).await?;
 
     Ok(ServiceInstallManagedResponse {
         unit_state,
@@ -151,7 +151,7 @@ mod tests {
 
         let resp = install_managed(&cfg, &deps).await.unwrap();
 
-        let written = tokio::fs::read_to_string(paths.systemd_unit_path()).await.unwrap();
+        let written = tokio::fs::read_to_string(paths.systemd_unit_path("boxpilot-sing-box.service")).await.unwrap();
         assert!(written.contains("ExecStart=/usr/bin/sing-box run -c config.json"));
         assert!(matches!(resp.unit_state, UnitState::Known { .. }));
         let calls = systemd.calls();
@@ -195,6 +195,6 @@ mod tests {
         let r = install_managed(&cfg, &deps).await;
         assert!(matches!(r, Err(HelperError::Ipc { .. })));
         // Critical: the unit file must NOT have been written.
-        assert!(!paths.systemd_unit_path().exists());
+        assert!(!paths.systemd_unit_path("boxpilot-sing-box.service").exists());
     }
 }

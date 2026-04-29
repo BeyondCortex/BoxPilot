@@ -25,7 +25,7 @@ pub struct StateCommit {
 
 /// Render the polkit drop-in body. Username is JSON-escaped so a hostile
 /// (or just unusual) username cannot inject additional polkit JS.
-fn render_polkit_dropin(username: &str) -> String {
+pub fn render_polkit_dropin(username: &str) -> String {
     // serde_json::to_string adds the surrounding quotes and escapes \ and ".
     let escaped = serde_json::to_string(username).expect("string serializes");
     format!(
@@ -33,6 +33,56 @@ fn render_polkit_dropin(username: &str) -> String {
          // Do not edit — it is overwritten on every controller claim/transfer.\n\
          var BOXPILOT_CONTROLLER = {escaped};\n"
     )
+}
+
+/// Backfill `/etc/polkit-1/rules.d/48-boxpilot-controller.rules` from the
+/// `controller_uid` recorded in `boxpilot.toml` when the drop-in is missing
+/// — e.g. an in-place upgrade from a build that didn't write the drop-in.
+/// Plan #1/#2 daemons claimed the controller without writing the drop-in;
+/// without this backfill the controller would silently lose the reduced-
+/// prompt auth tier the polkit JS rule grants when the global is set.
+///
+/// Returns `true` when a write happened, `false` for any of the legitimate
+/// no-op cases (drop-in already present, no toml, no controller_uid, uid
+/// not resolvable). Errors are reserved for filesystem/parse failures.
+pub async fn backfill_polkit_dropin(
+    paths: &Paths,
+    user_lookup: &dyn crate::controller::UserLookup,
+) -> HelperResult<bool> {
+    let dropin_path = paths.polkit_controller_dropin_path();
+    if dropin_path.exists() {
+        return Ok(false);
+    }
+    let toml_path = paths.boxpilot_toml();
+    let text = match tokio::fs::read_to_string(&toml_path).await {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => {
+            return Err(HelperError::Ipc {
+                message: format!("read toml for backfill: {e}"),
+            })
+        }
+    };
+    let cfg = BoxpilotConfig::parse(&text)?;
+    let Some(uid) = cfg.controller_uid else {
+        return Ok(false);
+    };
+    let Some(username) = user_lookup.lookup_username(uid) else {
+        return Ok(false);
+    };
+    if let Some(parent) = dropin_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("mkdir polkit rules.d for backfill: {e}"),
+            })?;
+    }
+    tokio::fs::write(&dropin_path, render_polkit_dropin(&username))
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("write polkit drop-in for backfill: {e}"),
+        })?;
+    Ok(true)
 }
 
 impl StateCommit {
@@ -396,5 +446,80 @@ mod tests {
         let after = crate::core::state::read_state(&paths.install_state_json()).await.unwrap();
         assert_eq!(after.managed_cores.len(), 1);
         assert_eq!(after.current_managed_core.as_deref(), Some("1.10.0"));
+    }
+
+    #[tokio::test]
+    async fn backfill_writes_dropin_when_missing_and_controller_known() {
+        let tmp = tempdir().unwrap();
+        let paths = paths_for(&tmp);
+        std::fs::write(
+            paths.boxpilot_toml(),
+            "schema_version = 1\ncontroller_uid = 1000\n",
+        )
+        .unwrap();
+        let lookup = crate::controller::testing::Fixed::new(&[(1000, "alice")]);
+        let wrote = backfill_polkit_dropin(&paths, &lookup).await.unwrap();
+        assert!(wrote);
+        let body = tokio::fs::read_to_string(paths.polkit_controller_dropin_path())
+            .await
+            .unwrap();
+        assert!(body.contains(r#"var BOXPILOT_CONTROLLER = "alice";"#));
+    }
+
+    #[tokio::test]
+    async fn backfill_is_noop_when_dropin_already_present() {
+        let tmp = tempdir().unwrap();
+        let paths = paths_for(&tmp);
+        std::fs::write(
+            paths.boxpilot_toml(),
+            "schema_version = 1\ncontroller_uid = 1000\n",
+        )
+        .unwrap();
+        let dropin = paths.polkit_controller_dropin_path();
+        std::fs::create_dir_all(dropin.parent().unwrap()).unwrap();
+        std::fs::write(&dropin, "// pre-existing\n").unwrap();
+        let lookup = crate::controller::testing::Fixed::new(&[(1000, "alice")]);
+        let wrote = backfill_polkit_dropin(&paths, &lookup).await.unwrap();
+        assert!(!wrote);
+        // Existing file untouched.
+        let body = std::fs::read_to_string(&dropin).unwrap();
+        assert_eq!(body, "// pre-existing\n");
+    }
+
+    #[tokio::test]
+    async fn backfill_is_noop_when_no_controller_uid() {
+        let tmp = tempdir().unwrap();
+        let paths = paths_for(&tmp);
+        std::fs::write(paths.boxpilot_toml(), "schema_version = 1\n").unwrap();
+        let lookup = crate::controller::testing::Fixed::new(&[]);
+        let wrote = backfill_polkit_dropin(&paths, &lookup).await.unwrap();
+        assert!(!wrote);
+        assert!(!paths.polkit_controller_dropin_path().exists());
+    }
+
+    #[tokio::test]
+    async fn backfill_is_noop_when_uid_not_resolvable() {
+        let tmp = tempdir().unwrap();
+        let paths = paths_for(&tmp);
+        std::fs::write(
+            paths.boxpilot_toml(),
+            "schema_version = 1\ncontroller_uid = 1000\n",
+        )
+        .unwrap();
+        let lookup = crate::controller::testing::Fixed::new(&[]); // 1000 not in map
+        let wrote = backfill_polkit_dropin(&paths, &lookup).await.unwrap();
+        assert!(!wrote);
+        assert!(!paths.polkit_controller_dropin_path().exists());
+    }
+
+    #[tokio::test]
+    async fn backfill_is_noop_when_no_toml_at_all() {
+        let tmp = tempdir().unwrap();
+        let paths = paths_for(&tmp);
+        // No boxpilot.toml — fresh-install path.
+        let lookup = crate::controller::testing::Fixed::new(&[(1000, "alice")]);
+        let wrote = backfill_polkit_dropin(&paths, &lookup).await.unwrap();
+        assert!(!wrote);
+        assert!(!paths.polkit_controller_dropin_path().exists());
     }
 }

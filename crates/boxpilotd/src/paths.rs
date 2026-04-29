@@ -77,11 +77,11 @@ impl Paths {
         self.root.join("var/lib/boxpilot/.staging-cores")
     }
 
-    /// `/etc/systemd/system/boxpilot-sing-box.service`. Written by
-    /// `service.install_managed`. Plan #3 keeps the unit name hard-coded
-    /// because it must match `BoxpilotConfig::target_service`'s default.
-    pub fn systemd_unit_path(&self) -> PathBuf {
-        self.root.join("etc/systemd/system/boxpilot-sing-box.service")
+    /// `/etc/systemd/system/<unit_name>`. Written by `service.install_managed`.
+    /// The unit name comes from `BoxpilotConfig::target_service` so a
+    /// non-default `boxpilot.toml` controls the same unit it installs.
+    pub fn systemd_unit_path(&self, unit_name: &str) -> PathBuf {
+        self.root.join("etc/systemd/system").join(unit_name)
     }
 
     /// `/etc/polkit-1/rules.d/48-boxpilot-controller.rules`. The daemon
@@ -120,11 +120,16 @@ mod tests {
     }
 
     #[test]
-    fn systemd_unit_path_under_etc_systemd_system() {
+    fn systemd_unit_path_joins_unit_name_under_etc_systemd_system() {
         let p = Paths::system();
         assert_eq!(
-            p.systemd_unit_path(),
+            p.systemd_unit_path("boxpilot-sing-box.service"),
             PathBuf::from("/etc/systemd/system/boxpilot-sing-box.service")
+        );
+        // Non-default name is honored, not silently rewritten.
+        assert_eq!(
+            p.systemd_unit_path("custom.service"),
+            PathBuf::from("/etc/systemd/system/custom.service")
         );
     }
 

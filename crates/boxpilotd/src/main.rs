@@ -51,6 +51,19 @@ async fn run_startup_recovery(paths: &paths::Paths) -> anyhow::Result<()> {
             warn!(target = %resolved.display(), "current symlink target is missing");
         }
     }
+
+    // Upgrade-path backfill: pre-T8 builds claimed the controller without
+    // writing the polkit drop-in, so an existing install whose controller
+    // was claimed before this version starts up with the drop-in missing.
+    // 49-boxpilot.rules then falls through to XML defaults until the next
+    // controller transfer rewrites everything. Backfill on startup fixes
+    // it without requiring any user action.
+    let lookup = controller::PasswdLookup;
+    match crate::core::commit::backfill_polkit_dropin(paths, &lookup).await {
+        Ok(true) => info!("backfilled polkit controller drop-in"),
+        Ok(false) => {} // already present, nothing to backfill, etc.
+        Err(e) => warn!("polkit drop-in backfill failed: {e}"),
+    }
     Ok(())
 }
 
