@@ -232,3 +232,136 @@ pub async fn profile_check(
         .map_err(|e| e.to_cmd())?;
     Ok(CheckResponse { success: out.success, stdout: out.stdout, stderr: out.stderr })
 }
+
+#[derive(Debug, Deserialize)]
+pub struct ActivateRequest {
+    pub profile_id: String,
+    pub core_path: String,
+    pub core_version: String,
+    #[serde(default)]
+    pub verify_window_secs: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActivateResponse {
+    pub outcome: String,
+    pub activation_id: String,
+    pub previous_activation_id: Option<String>,
+    pub n_restarts_pre: u32,
+    pub n_restarts_post: u32,
+    pub window_used_ms: u64,
+}
+
+#[tauri::command]
+pub async fn profile_activate(
+    state: State<'_, ProfileState>,
+    request: ActivateRequest,
+) -> Result<ActivateResponse, CommandError> {
+    let ActivateRequest {
+        profile_id,
+        core_path,
+        core_version,
+        verify_window_secs,
+    } = request;
+    let store = state.store.clone();
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        prepare_bundle(&store, &profile_id, &core_path, &core_version)
+    })
+    .await
+    .map_err(|e| CommandError { code: "join".into(), message: e.to_string() })?
+    .map_err(|e| e.to_cmd())?;
+
+    let req = boxpilot_ipc::ActivateBundleRequest {
+        verify_window_secs,
+        expected_total_bytes: Some(prepared.tar_size),
+    };
+    let req_json = serde_json::to_string(&req)
+        .map_err(|e| CommandError { code: "encode".into(), message: e.to_string() })?;
+
+    let conn = zbus::Connection::system()
+        .await
+        .map_err(|e| CommandError { code: "dbus_connect".into(), message: e.to_string() })?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "app.boxpilot.Helper",
+        "/app/boxpilot/Helper",
+        "app.boxpilot.Helper1",
+    )
+    .await
+    .map_err(|e| CommandError { code: "dbus_proxy".into(), message: e.to_string() })?;
+
+    let fd_z: zbus::zvariant::OwnedFd = prepared.memfd.into();
+    let resp_json: String = proxy
+        .call("ProfileActivateBundle", &(req_json, fd_z))
+        .await
+        .map_err(|e| CommandError { code: "dbus_call".into(), message: e.to_string() })?;
+    let resp: boxpilot_ipc::ActivateBundleResponse = serde_json::from_str(&resp_json)
+        .map_err(|e| CommandError { code: "decode".into(), message: e.to_string() })?;
+    let outcome = match resp.outcome {
+        boxpilot_ipc::ActivateOutcome::Active => "active",
+        boxpilot_ipc::ActivateOutcome::RolledBack => "rolled_back",
+        boxpilot_ipc::ActivateOutcome::RollbackTargetMissing => "rollback_target_missing",
+        boxpilot_ipc::ActivateOutcome::RollbackUnstartable => "rollback_unstartable",
+    }
+    .to_string();
+    Ok(ActivateResponse {
+        outcome,
+        activation_id: resp.activation_id,
+        previous_activation_id: resp.previous_activation_id,
+        n_restarts_pre: resp.verify.n_restarts_pre,
+        n_restarts_post: resp.verify.n_restarts_post,
+        window_used_ms: resp.verify.window_used_ms,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RollbackArgs {
+    pub target_activation_id: String,
+    #[serde(default)]
+    pub verify_window_secs: Option<u32>,
+}
+
+#[tauri::command]
+pub async fn profile_rollback(
+    request: RollbackArgs,
+) -> Result<ActivateResponse, CommandError> {
+    let req = boxpilot_ipc::RollbackRequest {
+        target_activation_id: request.target_activation_id,
+        verify_window_secs: request.verify_window_secs,
+    };
+    let req_json = serde_json::to_string(&req)
+        .map_err(|e| CommandError { code: "encode".into(), message: e.to_string() })?;
+
+    let conn = zbus::Connection::system()
+        .await
+        .map_err(|e| CommandError { code: "dbus_connect".into(), message: e.to_string() })?;
+    let proxy = zbus::Proxy::new(
+        &conn,
+        "app.boxpilot.Helper",
+        "/app/boxpilot/Helper",
+        "app.boxpilot.Helper1",
+    )
+    .await
+    .map_err(|e| CommandError { code: "dbus_proxy".into(), message: e.to_string() })?;
+    let resp_json: String = proxy
+        .call("ProfileRollbackRelease", &(req_json,))
+        .await
+        .map_err(|e| CommandError { code: "dbus_call".into(), message: e.to_string() })?;
+    let resp: boxpilot_ipc::ActivateBundleResponse = serde_json::from_str(&resp_json)
+        .map_err(|e| CommandError { code: "decode".into(), message: e.to_string() })?;
+    let outcome = match resp.outcome {
+        boxpilot_ipc::ActivateOutcome::Active => "active",
+        boxpilot_ipc::ActivateOutcome::RolledBack => "rolled_back",
+        boxpilot_ipc::ActivateOutcome::RollbackTargetMissing => "rollback_target_missing",
+        boxpilot_ipc::ActivateOutcome::RollbackUnstartable => "rollback_unstartable",
+    }
+    .to_string();
+    Ok(ActivateResponse {
+        outcome,
+        activation_id: resp.activation_id,
+        previous_activation_id: resp.previous_activation_id,
+        n_restarts_pre: resp.verify.n_restarts_pre,
+        n_restarts_post: resp.verify.n_restarts_post,
+        window_used_ms: resp.verify.window_used_ms,
+    })
+}

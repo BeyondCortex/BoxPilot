@@ -45,6 +45,8 @@ pub fn run() {
             profile_cmds::profile_revert,
             profile_cmds::profile_prepare_bundle,
             profile_cmds::profile_check,
+            profile_cmds::profile_activate,
+            profile_cmds::profile_rollback,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
