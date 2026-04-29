@@ -357,9 +357,16 @@ fn resolve_symlinks(fs: &dyn FsMetadataProvider, path: &Path) -> Result<PathBuf,
         let stat = fs.stat(&current);
         match stat {
             Ok(s) if matches!(s.kind, FileKind::Symlink) => {
-                current = fs
+                let target = fs
                     .read_link(&current)
                     .map_err(|e| TrustError::SymlinkResolution(format!("{e}")))?;
+                // POSIX symlinks: relative targets are interpreted against
+                // the symlink's parent directory, not the daemon's cwd.
+                current = if target.is_absolute() {
+                    target
+                } else {
+                    current.parent().map(|p| p.join(&target)).unwrap_or(target)
+                };
             }
             Ok(_) => return Ok(current),
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -446,6 +453,40 @@ mod verify_tests {
         prefixes.push(PathBuf::from("/opt"));
         let r = verify_executable_path(&fs, Path::new("/opt/sing-box"), &prefixes);
         assert!(r.is_ok(), "{r:?}");
+    }
+
+    #[test]
+    fn relative_symlink_resolves_against_parent_dir() {
+        // Real-world case: /usr/bin/sing-box -> ../lib/sing-box/sing-box.
+        // The relative target must be joined to the symlink's parent
+        // (/usr/bin), giving /usr/bin/../lib/sing-box/sing-box, NOT
+        // resolved against the daemon's cwd.
+        let fs = FakeFs::default();
+        fs.put("/", FakeFs::root_dir());
+        fs.put("/usr", FakeFs::root_dir());
+        fs.put("/usr/bin", FakeFs::root_dir());
+        fs.put("/usr/bin/lib", FakeFs::root_dir());
+        fs.put("/usr/bin/lib/sing-box", FakeFs::root_dir());
+        fs.put("/usr/bin/lib/sing-box/sing-box", FakeFs::root_bin());
+        // Mark the entry as a symlink.
+        fs.put(
+            "/usr/bin/sing-box",
+            FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Symlink,
+            },
+        );
+        fs.links.lock().unwrap().insert(
+            PathBuf::from("/usr/bin/sing-box"),
+            PathBuf::from("lib/sing-box/sing-box"), // relative target
+        );
+
+        let mut prefixes = default_allowed_prefixes();
+        prefixes.push(PathBuf::from("/usr/bin/lib"));
+        let r = verify_executable_path(&fs, Path::new("/usr/bin/sing-box"), &prefixes);
+        assert!(r.is_ok(), "expected relative symlink to resolve, got {r:?}");
     }
 }
 

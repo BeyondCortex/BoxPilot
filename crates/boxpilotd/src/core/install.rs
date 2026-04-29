@@ -190,13 +190,21 @@ pub async fn install_or_upgrade(
             message: format!("rm tarball: {e}"),
         })?;
 
-    // Promote: rename(2) staging dir to cores/<version>/
+    // Promote: rename(2) staging dir to cores/<version>/. If the target
+    // already exists, treat as idempotent — drop the staged copy and
+    // re-use the existing managed core so repeated install/upgrade calls
+    // for the same version (e.g. periodic "is `latest` newer?" checks)
+    // succeed and still update current/state.
     let target_dir = deps.paths.cores_dir().join(&version);
-    tokio::fs::rename(&staging, &target_dir)
-        .await
-        .map_err(|e| HelperError::Ipc {
-            message: format!("promote {staging:?} -> {target_dir:?}: {e}"),
-        })?;
+    if target_dir.is_dir() && target_dir.join("sing-box").exists() {
+        let _ = tokio::fs::remove_dir_all(&staging).await;
+    } else {
+        tokio::fs::rename(&staging, &target_dir)
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("promote {staging:?} -> {target_dir:?}: {e}"),
+            })?;
+    }
 
     // Build the new InstallState
     let mut state = read_state(&deps.paths.install_state_json()).await?;
@@ -500,6 +508,96 @@ mod pipeline_tests {
         assert!(matches!(r, Err(HelperError::Ipc { .. })));
         // Promotion did NOT happen.
         assert!(!paths.cores_dir().join("1.10.0").exists());
+    }
+
+    #[tokio::test]
+    async fn reinstall_same_version_is_idempotent() {
+        // First install creates cores/1.10.0/. Re-running the same request
+        // (e.g. periodic "is latest newer?" check) must NOT fail just
+        // because the directory already exists; it should reuse and still
+        // refresh state/current.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = mk_paths(&tmp);
+        let tarball = fake_singbox_tarball();
+
+        struct PermissiveFs;
+        impl FsMetadataProvider for PermissiveFs {
+            fn stat(&self, p: &std::path::Path) -> std::io::Result<crate::core::trust::FileStat> {
+                use crate::core::trust::{FileKind, FileStat};
+                let kind = if p.file_name().map(|n| n == "sing-box").unwrap_or(false) {
+                    FileKind::Regular
+                } else {
+                    FileKind::Directory
+                };
+                Ok(FileStat {
+                    uid: 0,
+                    gid: 0,
+                    mode: 0o755,
+                    kind,
+                })
+            }
+            fn read_link(&self, _: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "no symlinks",
+                ))
+            }
+        }
+
+        let req = CoreInstallRequest {
+            version: VersionRequest::Exact {
+                version: "1.10.0".into(),
+            },
+            architecture: ArchRequest::Exact {
+                arch: "x86_64".into(),
+            },
+        };
+
+        // First install
+        {
+            let downloader = FixedDownloader::new(tarball.clone());
+            let github = CannedGithubClient {
+                latest: Ok("1.10.0".into()),
+                sha256sums: Ok(None),
+            };
+            let fs = PermissiveFs;
+            let vc = FixedVersionChecker::ok("sing-box version 1.10.0");
+            let deps = InstallDeps {
+                paths: paths.clone(),
+                github: &github,
+                downloader: &downloader,
+                fs: &fs,
+                version_checker: &vc,
+            };
+            install_or_upgrade(&req, &deps, None).await.unwrap();
+        }
+        assert!(paths.cores_dir().join("1.10.0").exists());
+
+        // Second install of same version — must succeed without EEXIST.
+        {
+            let downloader = FixedDownloader::new(tarball.clone());
+            let github = CannedGithubClient {
+                latest: Ok("1.10.0".into()),
+                sha256sums: Ok(None),
+            };
+            let fs = PermissiveFs;
+            let vc = FixedVersionChecker::ok("sing-box version 1.10.0");
+            let deps = InstallDeps {
+                paths: paths.clone(),
+                github: &github,
+                downloader: &downloader,
+                fs: &fs,
+                version_checker: &vc,
+            };
+            let resp = install_or_upgrade(&req, &deps, None).await.unwrap();
+            assert_eq!(resp.installed.version, "1.10.0");
+            assert!(resp.became_current);
+        }
+
+        // Ledger should still have exactly one entry for 1.10.0.
+        let state = read_state(&paths.install_state_json()).await.unwrap();
+        assert_eq!(state.managed_cores.len(), 1);
+        assert_eq!(state.current_managed_core.as_deref(), Some("1.10.0"));
     }
 }
 
