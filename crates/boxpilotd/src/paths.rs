@@ -76,6 +76,24 @@ impl Paths {
     pub fn cores_staging_dir(&self) -> PathBuf {
         self.root.join("var/lib/boxpilot/.staging-cores")
     }
+
+    /// `/etc/systemd/system/boxpilot-sing-box.service`. Written by
+    /// `service.install_managed`. Plan #3 keeps the unit name hard-coded
+    /// because it must match `BoxpilotConfig::target_service`'s default.
+    pub fn systemd_unit_path(&self) -> PathBuf {
+        self.root.join("etc/systemd/system/boxpilot-sing-box.service")
+    }
+
+    /// `/etc/polkit-1/rules.d/48-boxpilot-controller.rules`. The daemon
+    /// rewrites this file under `/run/boxpilot/lock` whenever the
+    /// controller is claimed or transferred, so `49-boxpilot.rules` can
+    /// read `BOXPILOT_CONTROLLER` directly instead of spawning `cat`.
+    /// `48-` sorts before `49-` and polkit evaluates rules.d/* in lexical
+    /// order, so the var is in scope when the main rule runs.
+    pub fn polkit_controller_dropin_path(&self) -> PathBuf {
+        self.root
+            .join("etc/polkit-1/rules.d/48-boxpilot-controller.rules")
+    }
 }
 
 #[cfg(test)]
@@ -98,6 +116,24 @@ mod tests {
         assert_eq!(
             p.boxpilot_toml(),
             PathBuf::from("/tmp/fake/etc/boxpilot/boxpilot.toml")
+        );
+    }
+
+    #[test]
+    fn systemd_unit_path_under_etc_systemd_system() {
+        let p = Paths::system();
+        assert_eq!(
+            p.systemd_unit_path(),
+            PathBuf::from("/etc/systemd/system/boxpilot-sing-box.service")
+        );
+    }
+
+    #[test]
+    fn polkit_dropin_path_uses_48_prefix_so_it_loads_before_49() {
+        let p = Paths::system();
+        assert_eq!(
+            p.polkit_controller_dropin_path(),
+            PathBuf::from("/etc/polkit-1/rules.d/48-boxpilot-controller.rules")
         );
     }
 }
