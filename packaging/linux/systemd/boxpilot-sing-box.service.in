@@ -1,0 +1,42 @@
+# Reference template for the unit produced at runtime by
+# `boxpilotd`'s `service.install_managed` action.
+# `@CORE_PATH@` is replaced with the active core path (e.g.
+# `/var/lib/boxpilot/cores/current/sing-box`). The actual file
+# under `/etc/systemd/system/` is generated — do NOT install
+# this `.in` file directly. Source of truth: `service::unit::render`.
+
+[Unit]
+Description=BoxPilot managed sing-box service
+Documentation=https://sing-box.sagernet.org/
+After=network-online.target nss-lookup.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+UMask=0077
+WorkingDirectory=/etc/boxpilot/active
+ExecStartPre=@CORE_PATH@ check -c config.json
+ExecStart=@CORE_PATH@ run -c config.json
+Restart=on-failure
+RestartSec=5s
+StartLimitIntervalSec=300
+StartLimitBurst=5
+LimitNOFILE=1048576
+
+# Sandboxing — see spec §7.1
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+ReadWritePaths=/etc/boxpilot/active
+
+[Install]
+WantedBy=multi-user.target
