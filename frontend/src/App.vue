@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import CoresPanel from "./components/CoresPanel.vue";
+import ProfilesPanel from "./components/ProfilesPanel.vue";
 import ServicePanel from "./components/ServicePanel.vue";
 
-type Tab = "home" | "cores";
+type Tab = "home" | "profiles" | "cores";
 const tab = ref<Tab>("home");
 </script>
 
@@ -12,9 +13,11 @@ const tab = ref<Tab>("home");
     <h1>BoxPilot</h1>
     <nav>
       <button :class="{ active: tab === 'home' }" @click="tab = 'home'">Home</button>
+      <button :class="{ active: tab === 'profiles' }" @click="tab = 'profiles'">Profiles</button>
       <button :class="{ active: tab === 'cores' }" @click="tab = 'cores'">Settings → Cores</button>
     </nav>
     <ServicePanel v-if="tab === 'home'" />
+    <ProfilesPanel v-else-if="tab === 'profiles'" />
     <CoresPanel v-else-if="tab === 'cores'" />
   </main>
 </template>
