@@ -9,7 +9,7 @@ use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use crate::paths::Paths;
-use crate::systemd::Systemd;
+use crate::systemd::{JournalReader, Systemd};
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult};
 use std::sync::Arc;
 
@@ -18,6 +18,7 @@ pub struct HelperContext {
     pub callers: Arc<dyn CallerResolver>,
     pub authority: Arc<dyn Authority>,
     pub systemd: Arc<dyn Systemd>,
+    pub journal: Arc<dyn JournalReader>,
     pub user_lookup: Arc<dyn UserLookup>,
     pub github: Arc<dyn GithubClient>,
     pub downloader: Arc<dyn Downloader>,
@@ -32,12 +33,13 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 9 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 10 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
         authority: Arc<dyn Authority>,
         systemd: Arc<dyn Systemd>,
+        journal: Arc<dyn JournalReader>,
         user_lookup: Arc<dyn UserLookup>,
         github: Arc<dyn GithubClient>,
         downloader: Arc<dyn Downloader>,
@@ -49,6 +51,7 @@ impl HelperContext {
             callers,
             authority,
             systemd,
+            journal,
             user_lookup,
             github,
             downloader,
@@ -124,6 +127,7 @@ pub mod testing {
         let version_checker = Arc::new(
             crate::core::trust::version_testing::FixedVersionChecker::ok("sing-box version 1.10.0"),
         );
+        let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -131,6 +135,7 @@ pub mod testing {
             Arc::new(FixedSystemd {
                 answer: systemd_answer,
             }),
+            journal,
             Arc::new(PasswdLookup),
             github,
             downloader,
@@ -139,9 +144,83 @@ pub mod testing {
         )
     }
 
+    /// Build a context wired to a caller-supplied `Arc<RecordingSystemd>`
+    /// so the test can assert on which verb fired after a method runs.
+    /// Returns the ctx; the caller already has the Arc.
+    pub fn ctx_with_recording(
+        tmp: &TempDir,
+        config: Option<&str>,
+        authority: CannedAuthority,
+        rec: Arc<crate::systemd::testing::RecordingSystemd>,
+        callers: &[(&str, u32)],
+    ) -> HelperContext {
+        let paths = Paths::with_root(tmp.path());
+        std::fs::create_dir_all(paths.etc_dir()).unwrap();
+        if let Some(text) = config {
+            std::fs::write(paths.boxpilot_toml(), text).unwrap();
+        }
+        let github = Arc::new(crate::core::github::testing::CannedGithubClient {
+            latest: Ok("1.10.0".into()),
+            sha256sums: Ok(None),
+        });
+        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(Vec::new()));
+        let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
+        HelperContext::new(
+            paths,
+            Arc::new(FixedResolver::with(callers)),
+            Arc::new(authority),
+            rec,
+            journal,
+            Arc::new(PasswdLookup),
+            github,
+            downloader,
+            Arc::new(PermissiveTestFs),
+            Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
+                "sing-box version 1.10.0",
+            )),
+        )
+    }
+
+    /// Like `ctx_with` but lets the caller seed the journal tail with
+    /// canned lines for `service.logs` tests.
+    pub fn ctx_with_journal_lines(
+        tmp: &TempDir,
+        config: Option<&str>,
+        authority: CannedAuthority,
+        systemd_answer: UnitState,
+        callers: &[(&str, u32)],
+        lines: Vec<String>,
+    ) -> HelperContext {
+        let paths = Paths::with_root(tmp.path());
+        std::fs::create_dir_all(paths.etc_dir()).unwrap();
+        if let Some(text) = config {
+            std::fs::write(paths.boxpilot_toml(), text).unwrap();
+        }
+        let github = Arc::new(crate::core::github::testing::CannedGithubClient {
+            latest: Ok("1.10.0".into()),
+            sha256sums: Ok(None),
+        });
+        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(Vec::new()));
+        let journal = Arc::new(crate::systemd::testing::FixedJournal { lines });
+        HelperContext::new(
+            paths,
+            Arc::new(FixedResolver::with(callers)),
+            Arc::new(authority),
+            Arc::new(crate::systemd::testing::FixedSystemd { answer: systemd_answer }),
+            journal,
+            Arc::new(PasswdLookup),
+            github,
+            downloader,
+            Arc::new(PermissiveTestFs),
+            Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
+                "sing-box version 1.10.0",
+            )),
+        )
+    }
+
     /// A permissive test `FsMetadataProvider` that returns `NotFound` for all
     /// paths. This is sufficient for tests that never exercise trust checks.
-    struct PermissiveTestFs;
+    pub struct PermissiveTestFs;
 
     impl crate::core::trust::FsMetadataProvider for PermissiveTestFs {
         fn stat(&self, _path: &std::path::Path) -> std::io::Result<crate::core::trust::FileStat> {

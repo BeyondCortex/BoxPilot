@@ -82,11 +82,13 @@ async fn main() -> Result<()> {
     let fs_meta = Arc::new(StdFsMetadataProvider);
     let version_checker = Arc::new(ProcessVersionChecker);
 
+    let journal = Arc::new(crate::systemd::JournalctlProcess);
     let ctx = Arc::new(context::HelperContext::new(
         paths,
         Arc::new(credentials::DBusCallerResolver::new(conn.clone())),
         Arc::new(authority::DBusAuthority::new(conn.clone())),
         Arc::new(systemd::DBusSystemd::new(conn.clone())),
+        journal,
         Arc::new(controller::PasswdLookup),
         github,
         downloader,
