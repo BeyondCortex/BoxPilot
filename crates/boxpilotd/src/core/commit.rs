@@ -9,10 +9,29 @@ use crate::paths::Paths;
 use boxpilot_ipc::{BoxpilotConfig, CoreState, HelperError, HelperResult, InstallState};
 use std::path::PathBuf;
 
+#[derive(Debug, Clone)]
+pub struct ActiveFields {
+    pub release_id: String,
+    pub profile_id: String,
+    pub profile_name: Option<String>,
+    pub profile_sha256: String,
+    pub activated_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviousFields {
+    pub release_id: String,
+    pub profile_id: String,
+    pub profile_sha256: String,
+    pub activated_at: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TomlUpdates {
     pub core_path: Option<String>,
     pub core_state: Option<CoreState>,
+    pub active: Option<ActiveFields>,
+    pub previous: Option<PreviousFields>,
 }
 
 pub struct StateCommit {
@@ -218,6 +237,19 @@ impl StateCommit {
         if let Some(c) = &self.controller {
             cfg.controller_uid = Some(c.uid);
         }
+        if let Some(active) = &self.toml_updates.active {
+            cfg.active_release_id = Some(active.release_id.clone());
+            cfg.active_profile_id = Some(active.profile_id.clone());
+            cfg.active_profile_name = active.profile_name.clone();
+            cfg.active_profile_sha256 = Some(active.profile_sha256.clone());
+            cfg.activated_at = Some(active.activated_at.clone());
+        }
+        if let Some(prev) = &self.toml_updates.previous {
+            cfg.previous_release_id = Some(prev.release_id.clone());
+            cfg.previous_profile_id = Some(prev.profile_id.clone());
+            cfg.previous_profile_sha256 = Some(prev.profile_sha256.clone());
+            cfg.previous_activated_at = Some(prev.activated_at.clone());
+        }
         let toml_tmp = toml_path.with_extension("toml.new");
         if let Some(parent) = toml_path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -317,6 +349,7 @@ mod tests {
             toml_updates: TomlUpdates {
                 core_path: Some("/var/lib/boxpilot/cores/current/sing-box".into()),
                 core_state: Some(CoreState::ManagedInstalled),
+                ..TomlUpdates::default()
             },
             controller: None,
             install_state: state.clone(),
@@ -388,6 +421,7 @@ mod tests {
             toml_updates: TomlUpdates {
                 core_path: Some("/x".into()),
                 core_state: Some(CoreState::ManagedInstalled),
+                ..TomlUpdates::default()
             },
             controller: None,
             install_state: InstallState::empty(),
@@ -525,5 +559,60 @@ mod tests {
         let wrote = backfill_polkit_dropin(&paths, &lookup).await.unwrap();
         assert!(!wrote);
         assert!(!paths.polkit_controller_dropin_path().exists());
+    }
+
+    #[tokio::test]
+    async fn state_commit_writes_active_and_previous_fields() {
+        let tmp = tempdir().unwrap();
+        let paths = paths_for(&tmp);
+        std::fs::write(
+            paths.boxpilot_toml(),
+            "schema_version = 1\ncontroller_uid = 1000\nactive_release_id = \"old-id\"\nactive_profile_id = \"old-p\"\nactive_profile_sha256 = \"old-sha\"\nactivated_at = \"2026-04-29T00:00:00-07:00\"\n",
+        )
+        .unwrap();
+
+        let commit = StateCommit {
+            paths: paths.clone(),
+            toml_updates: TomlUpdates {
+                core_path: None,
+                core_state: None,
+                active: Some(ActiveFields {
+                    release_id: "new-id".into(),
+                    profile_id: "new-p".into(),
+                    profile_name: Some("New".into()),
+                    profile_sha256: "new-sha".into(),
+                    activated_at: "2026-04-30T00:00:00-07:00".into(),
+                }),
+                previous: Some(PreviousFields {
+                    release_id: "old-id".into(),
+                    profile_id: "old-p".into(),
+                    profile_sha256: "old-sha".into(),
+                    activated_at: "2026-04-29T00:00:00-07:00".into(),
+                }),
+            },
+            controller: None,
+            install_state: boxpilot_ipc::InstallState::empty(),
+            current_symlink_target: None,
+        };
+        commit.apply().await.unwrap();
+
+        let cfg = boxpilot_ipc::BoxpilotConfig::parse(
+            &tokio::fs::read_to_string(paths.boxpilot_toml())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg.active_release_id.as_deref(), Some("new-id"));
+        assert_eq!(cfg.active_profile_id.as_deref(), Some("new-p"));
+        assert_eq!(cfg.active_profile_name.as_deref(), Some("New"));
+        assert_eq!(cfg.active_profile_sha256.as_deref(), Some("new-sha"));
+        assert_eq!(cfg.activated_at.as_deref(), Some("2026-04-30T00:00:00-07:00"));
+        assert_eq!(cfg.previous_release_id.as_deref(), Some("old-id"));
+        assert_eq!(cfg.previous_profile_id.as_deref(), Some("old-p"));
+        assert_eq!(cfg.previous_profile_sha256.as_deref(), Some("old-sha"));
+        assert_eq!(
+            cfg.previous_activated_at.as_deref(),
+            Some("2026-04-29T00:00:00-07:00")
+        );
     }
 }

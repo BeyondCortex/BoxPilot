@@ -70,6 +70,7 @@ pub async fn rollback(
                     .to_string(),
             ),
             core_state: Some(core_state),
+            ..TomlUpdates::default()
         },
         controller,
         install_state: state.clone(),
