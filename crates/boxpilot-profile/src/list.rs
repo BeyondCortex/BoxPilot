@@ -19,7 +19,9 @@ impl ProfileStore {
         Self { paths }
     }
 
-    pub fn paths(&self) -> &ProfileStorePaths { &self.paths }
+    pub fn paths(&self) -> &ProfileStorePaths {
+        &self.paths
+    }
 
     pub fn list(&self) -> Result<Vec<ProfileMetadata>, StoreError> {
         let dir = self.paths.profiles_dir();
@@ -30,13 +32,23 @@ impl ProfileStore {
         };
         let mut out = Vec::new();
         for entry in read {
-            let entry = match entry { Ok(e) => e, Err(_) => continue };
-            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
-            let id = match entry.file_name().to_str() { Some(s) => s.to_string(), None => continue };
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let id = match entry.file_name().to_str() {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
             let meta_path = self.paths.profile_metadata(&id);
             match read_metadata(&meta_path) {
                 Ok(m) => out.push(m),
-                Err(e) => tracing::warn!(profile_id = %id, error = %e, "skipping profile with unreadable metadata"),
+                Err(e) => {
+                    tracing::warn!(profile_id = %id, error = %e, "skipping profile with unreadable metadata")
+                }
             }
         }
         // Lexicographic sort assumes timestamps are RFC3339 normalised to a

@@ -45,12 +45,11 @@ pub async fn activate_bundle(
         return Err(HelperError::ActiveCorrupt);
     }
 
-    let cfg_text =
-        tokio::fs::read_to_string(deps.paths.boxpilot_toml())
-            .await
-            .map_err(|e| HelperError::Ipc {
-                message: format!("read toml: {e}"),
-            })?;
+    let cfg_text = tokio::fs::read_to_string(deps.paths.boxpilot_toml())
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("read toml: {e}"),
+        })?;
     let cfg = BoxpilotConfig::parse(&cfg_text)?;
     let core_path = cfg.core_path.clone().ok_or_else(|| HelperError::Ipc {
         message: "core_path not set; install_managed first".into(),
@@ -324,9 +323,7 @@ mod tests {
     use crate::profile::checker::testing::FakeChecker;
     use crate::profile::verifier::testing::ScriptedVerifier;
     use crate::systemd::testing::FixedSystemd;
-    use boxpilot_ipc::{
-        ActivationManifest, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION,
-    };
+    use boxpilot_ipc::{ActivationManifest, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION};
     use std::sync::Arc;
     use tempfile::tempdir;
 

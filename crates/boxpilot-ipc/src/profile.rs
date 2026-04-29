@@ -95,9 +95,18 @@ mod tests {
 
     #[test]
     fn source_kind_wire_form_matches_spec() {
-        assert_eq!(serde_json::to_string(&SourceKind::Local).unwrap(), "\"local\"");
-        assert_eq!(serde_json::to_string(&SourceKind::LocalDir).unwrap(), "\"local-dir\"");
-        assert_eq!(serde_json::to_string(&SourceKind::Remote).unwrap(), "\"remote\"");
+        assert_eq!(
+            serde_json::to_string(&SourceKind::Local).unwrap(),
+            "\"local\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SourceKind::LocalDir).unwrap(),
+            "\"local-dir\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SourceKind::Remote).unwrap(),
+            "\"remote\""
+        );
     }
 
     #[test]

@@ -32,7 +32,9 @@ mod tests {
         let j = FixedJournal {
             lines: vec!["a".into()],
         };
-        let r = read(&ServiceLogsRequest { lines: 0 }, "u", &j).await.unwrap();
+        let r = read(&ServiceLogsRequest { lines: 0 }, "u", &j)
+            .await
+            .unwrap();
         assert_eq!(r.lines, vec!["a".to_string()]);
         assert!(!r.truncated);
     }
@@ -40,14 +42,18 @@ mod tests {
     #[tokio::test]
     async fn over_max_is_clamped_and_truncated_flag_set() {
         let j = FixedJournal { lines: Vec::new() };
-        let r = read(&ServiceLogsRequest { lines: 10_000 }, "u", &j).await.unwrap();
+        let r = read(&ServiceLogsRequest { lines: 10_000 }, "u", &j)
+            .await
+            .unwrap();
         assert!(r.truncated);
     }
 
     #[tokio::test]
     async fn under_max_passes_through_untruncated() {
         let j = FixedJournal { lines: Vec::new() };
-        let r = read(&ServiceLogsRequest { lines: 50 }, "u", &j).await.unwrap();
+        let r = read(&ServiceLogsRequest { lines: 50 }, "u", &j)
+            .await
+            .unwrap();
         assert!(!r.truncated);
     }
 }

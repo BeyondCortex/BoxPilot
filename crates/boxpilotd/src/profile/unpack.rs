@@ -44,14 +44,13 @@ pub fn unpack_into(
     }
 
     let mut file = File::from(fd);
-    let total_size = file
-        .seek(SeekFrom::End(0))
-        .map_err(|e| HelperError::Ipc {
-            message: format!("seek bundle fd: {e}"),
-        })?;
-    file.seek(SeekFrom::Start(0)).map_err(|e| HelperError::Ipc {
-        message: format!("rewind bundle fd: {e}"),
+    let total_size = file.seek(SeekFrom::End(0)).map_err(|e| HelperError::Ipc {
+        message: format!("seek bundle fd: {e}"),
     })?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|e| HelperError::Ipc {
+            message: format!("rewind bundle fd: {e}"),
+        })?;
     if total_size > BUNDLE_MAX_TOTAL_BYTES {
         return Err(HelperError::BundleTooLarge {
             total: total_size,
@@ -134,10 +133,7 @@ pub fn unpack_into(
                 file_count = file_count.saturating_add(1);
                 if file_count > BUNDLE_MAX_FILE_COUNT {
                     return Err(HelperError::BundleEntryRejected {
-                        reason: format!(
-                            "file count {} > {}",
-                            file_count, BUNDLE_MAX_FILE_COUNT
-                        ),
+                        reason: format!("file count {} > {}", file_count, BUNDLE_MAX_FILE_COUNT),
                     });
                 }
 
@@ -182,11 +178,10 @@ pub fn unpack_into(
     let manifest_bytes = manifest_bytes.ok_or_else(|| HelperError::BundleEntryRejected {
         reason: "manifest.json missing from bundle".into(),
     })?;
-    let manifest: ActivationManifest = serde_json::from_slice(&manifest_bytes).map_err(|e| {
-        HelperError::BundleEntryRejected {
+    let manifest: ActivationManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|e| HelperError::BundleEntryRejected {
             reason: format!("manifest.json parse: {e}"),
-        }
-    })?;
+        })?;
     if manifest.schema_version != boxpilot_ipc::ACTIVATION_MANIFEST_SCHEMA_VERSION {
         return Err(HelperError::UnsupportedSchemaVersion {
             got: manifest.schema_version,
@@ -228,11 +223,7 @@ fn check_entry_path(p: &Path) -> HelperResult<()> {
     }
     let s = p.to_string_lossy();
     for ch in s.chars() {
-        if ch == '\0'
-            || ch.is_ascii_control()
-            || ch == '\\'
-            || ch == '\u{2215}'
-            || ch == '\u{FF0F}'
+        if ch == '\0' || ch.is_ascii_control() || ch == '\\' || ch == '\u{2215}' || ch == '\u{FF0F}'
         {
             return Err(HelperError::BundleEntryRejected {
                 reason: format!("forbidden character in path: {}", p.display()),
@@ -250,11 +241,9 @@ fn check_entry_path(p: &Path) -> HelperResult<()> {
 }
 
 fn safe_join(root: &Path, rel: &Path) -> HelperResult<PathBuf> {
-    let root_canon = root
-        .canonicalize()
-        .map_err(|e| HelperError::Ipc {
-            message: format!("canonicalize root: {e}"),
-        })?;
+    let root_canon = root.canonicalize().map_err(|e| HelperError::Ipc {
+        message: format!("canonicalize root: {e}"),
+    })?;
     let mut out = root_canon.clone();
     for comp in rel.iter() {
         out.push(comp);
@@ -351,12 +340,7 @@ mod tests {
     /// hostile entries §9.2 requires us to refuse (absolute paths,
     /// `..` traversal, etc.). Constructs a 512-byte ustar header plus
     /// padded body directly.
-    fn write_raw_tar_entry(
-        f: &mut File,
-        path: &str,
-        ty: tar::EntryType,
-        body: &[u8],
-    ) {
+    fn write_raw_tar_entry(f: &mut File, path: &str, ty: tar::EntryType, body: &[u8]) {
         use std::io::Write;
         let mut header = [0u8; 512];
         let pbytes = path.as_bytes();
@@ -405,9 +389,17 @@ mod tests {
             }],
         );
         let fd = tar_memfd(vec![
-            ("config.json", tar::EntryType::Regular, br#"{"log":{}}"#.to_vec()),
+            (
+                "config.json",
+                tar::EntryType::Regular,
+                br#"{"log":{}}"#.to_vec(),
+            ),
             ("assets", tar::EntryType::Directory, Vec::new()),
-            ("assets/geosite.db", tar::EntryType::Regular, b"GEO".to_vec()),
+            (
+                "assets/geosite.db",
+                tar::EntryType::Regular,
+                b"GEO".to_vec(),
+            ),
             ("manifest.json", tar::EntryType::Regular, manifest),
         ]);
         let dir = tempdir().unwrap();
@@ -420,7 +412,11 @@ mod tests {
 
     #[test]
     fn refuses_absolute_path_entry() {
-        let fd = tar_memfd(vec![("/etc/passwd", tar::EntryType::Regular, b"x".to_vec())]);
+        let fd = tar_memfd(vec![(
+            "/etc/passwd",
+            tar::EntryType::Regular,
+            b"x".to_vec(),
+        )]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         let err = unpack_into(fd, &dest, None).unwrap_err();
@@ -507,11 +503,7 @@ mod tests {
 
     #[test]
     fn refuses_path_with_division_slash() {
-        let fd = tar_memfd(vec![(
-            "a\u{2215}b",
-            tar::EntryType::Regular,
-            b"x".to_vec(),
-        )]);
+        let fd = tar_memfd(vec![("a\u{2215}b", tar::EntryType::Regular, b"x".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
@@ -522,11 +514,7 @@ mod tests {
 
     #[test]
     fn refuses_path_with_fullwidth_solidus() {
-        let fd = tar_memfd(vec![(
-            "a\u{FF0F}b",
-            tar::EntryType::Regular,
-            b"x".to_vec(),
-        )]);
+        let fd = tar_memfd(vec![("a\u{FF0F}b", tar::EntryType::Regular, b"x".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
@@ -554,9 +542,16 @@ mod tests {
     #[test]
     fn rejects_too_deep_nesting() {
         let depth = (BUNDLE_MAX_NESTING_DEPTH + 1) as usize;
-        let path: String =
-            std::iter::repeat("d").take(depth).collect::<Vec<_>>().join("/") + "/leaf.txt";
-        let fd = tar_memfd(vec![(path.as_str(), tar::EntryType::Regular, b"x".to_vec())]);
+        let path: String = std::iter::repeat("d")
+            .take(depth)
+            .collect::<Vec<_>>()
+            .join("/")
+            + "/leaf.txt";
+        let fd = tar_memfd(vec![(
+            path.as_str(),
+            tar::EntryType::Regular,
+            b"x".to_vec(),
+        )]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         let err = unpack_into(fd, &dest, None).unwrap_err();
@@ -565,7 +560,11 @@ mod tests {
 
     #[test]
     fn rejects_missing_manifest() {
-        let fd = tar_memfd(vec![("config.json", tar::EntryType::Regular, b"{}".to_vec())]);
+        let fd = tar_memfd(vec![(
+            "config.json",
+            tar::EntryType::Regular,
+            b"{}".to_vec(),
+        )]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         let err = unpack_into(fd, &dest, None).unwrap_err();
@@ -588,7 +587,11 @@ mod tests {
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             ("assets", tar::EntryType::Directory, Vec::new()),
-            ("assets/geosite.db", tar::EntryType::Regular, b"GEO".to_vec()),
+            (
+                "assets/geosite.db",
+                tar::EntryType::Regular,
+                b"GEO".to_vec(),
+            ),
             ("manifest.json", tar::EntryType::Regular, manifest),
         ]);
         let dir = tempdir().unwrap();
@@ -600,10 +603,9 @@ mod tests {
     #[test]
     fn rejects_manifest_unknown_schema_version() {
         let m_bytes = make_manifest("p", vec![]);
-        let s = String::from_utf8(m_bytes).unwrap().replace(
-            "\"schema_version\": 1",
-            "\"schema_version\": 99",
-        );
+        let s = String::from_utf8(m_bytes)
+            .unwrap()
+            .replace("\"schema_version\": 1", "\"schema_version\": 99");
         let m_bytes = s.into_bytes();
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
@@ -612,7 +614,10 @@ mod tests {
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         let err = unpack_into(fd, &dest, None).unwrap_err();
-        assert!(matches!(err, HelperError::UnsupportedSchemaVersion { got: 99 }));
+        assert!(matches!(
+            err,
+            HelperError::UnsupportedSchemaVersion { got: 99 }
+        ));
     }
 
     #[test]
@@ -629,7 +634,11 @@ mod tests {
     fn expected_total_bytes_mismatch_aborts_early() {
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
-            ("manifest.json", tar::EntryType::Regular, make_manifest("p", vec![])),
+            (
+                "manifest.json",
+                tar::EntryType::Regular,
+                make_manifest("p", vec![]),
+            ),
         ]);
         let actual = nix::sys::stat::fstat(fd.as_raw_fd()).unwrap().st_size as u64;
         let dir = tempdir().unwrap();
@@ -642,7 +651,11 @@ mod tests {
     fn happy_path_creates_dest_with_0700() {
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
-            ("manifest.json", tar::EntryType::Regular, make_manifest("p", vec![])),
+            (
+                "manifest.json",
+                tar::EntryType::Regular,
+                make_manifest("p", vec![]),
+            ),
         ]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
@@ -655,7 +668,11 @@ mod tests {
     fn unpacked_files_are_0600() {
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
-            ("manifest.json", tar::EntryType::Regular, make_manifest("p", vec![])),
+            (
+                "manifest.json",
+                tar::EntryType::Regular,
+                make_manifest("p", vec![]),
+            ),
         ]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");

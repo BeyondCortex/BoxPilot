@@ -176,19 +176,25 @@ impl HelperClient {
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    pub async fn service_restart(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+    pub async fn service_restart(
+        &self,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_restart().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    pub async fn service_enable(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+    pub async fn service_enable(
+        &self,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_enable().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    pub async fn service_disable(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+    pub async fn service_disable(
+        &self,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_disable().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))

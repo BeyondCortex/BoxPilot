@@ -59,9 +59,7 @@ fn redact_secrets(s: &str) -> String {
     s.lines()
         .filter(|line| {
             let lower = line.to_ascii_lowercase();
-            !(lower.contains("password")
-                || lower.contains("uuid")
-                || lower.contains("private_key"))
+            !(lower.contains("password") || lower.contains("uuid") || lower.contains("private_key"))
         })
         .collect::<Vec<_>>()
         .join("\n")

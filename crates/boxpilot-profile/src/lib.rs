@@ -23,8 +23,8 @@ pub use redact::{redact_url_for_display, redact_url_strict};
 
 pub mod import;
 pub use import::{
-    import_local_dir, import_local_file, new_profile_id, sha256_hex, slugify,
-    DirImportError, ImportError, SINGLE_JSON_MAX_BYTES,
+    import_local_dir, import_local_file, new_profile_id, sha256_hex, slugify, DirImportError,
+    ImportError, SINGLE_JSON_MAX_BYTES,
 };
 
 pub mod remote;

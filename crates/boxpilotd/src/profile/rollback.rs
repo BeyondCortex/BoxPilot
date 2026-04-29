@@ -59,8 +59,8 @@ pub async fn rollback_release(
         .map_err(|e| HelperError::Ipc {
             message: format!("read target manifest: {e}"),
         })?;
-    let target_manifest: ActivationManifest = serde_json::from_slice(&manifest_bytes)
-        .map_err(|e| HelperError::Ipc {
+    let target_manifest: ActivationManifest =
+        serde_json::from_slice(&manifest_bytes).map_err(|e| HelperError::Ipc {
             message: format!("parse target manifest: {e}"),
         })?;
 
@@ -194,9 +194,7 @@ mod tests {
     use super::*;
     use crate::profile::verifier::testing::ScriptedVerifier;
     use crate::systemd::testing::FixedSystemd;
-    use boxpilot_ipc::{
-        ActivationManifest, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION,
-    };
+    use boxpilot_ipc::{ActivationManifest, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION};
     use std::sync::Arc;
     use tempfile::tempdir;
 

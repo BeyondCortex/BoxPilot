@@ -1,8 +1,16 @@
 use url::Url;
 
 const SENSITIVE_KEYS: &[&str] = &[
-    "token", "key", "secret", "password", "auth",
-    "t", "sub", "subscription", "apikey", "api_key",
+    "token",
+    "key",
+    "secret",
+    "password",
+    "auth",
+    "t",
+    "sub",
+    "subscription",
+    "apikey",
+    "api_key",
 ];
 
 /// Returns a string suitable for display, logs, and the system-side

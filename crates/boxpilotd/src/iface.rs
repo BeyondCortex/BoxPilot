@@ -119,7 +119,10 @@ impl Helper {
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
         let sender = extract_sender(&header)?;
-        let resp = self.do_service_restart(&sender).await.map_err(to_zbus_err)?;
+        let resp = self
+            .do_service_restart(&sender)
+            .await
+            .map_err(to_zbus_err)?;
         serde_json::to_string(&resp).map_err(|e| {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
@@ -141,7 +144,10 @@ impl Helper {
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
         let sender = extract_sender(&header)?;
-        let resp = self.do_service_disable(&sender).await.map_err(to_zbus_err)?;
+        let resp = self
+            .do_service_disable(&sender)
+            .await
+            .map_err(to_zbus_err)?;
         serde_json::to_string(&resp).map_err(|e| {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
@@ -185,8 +191,8 @@ impl Helper {
         bundle_fd: zbus::zvariant::OwnedFd,
     ) -> zbus::fdo::Result<String> {
         let sender = extract_sender(&header)?;
-        let req: boxpilot_ipc::ActivateBundleRequest =
-            serde_json::from_str(&request_json).map_err(|e| {
+        let req: boxpilot_ipc::ActivateBundleRequest = serde_json::from_str(&request_json)
+            .map_err(|e| {
                 zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
             })?;
         let resp = self
@@ -423,7 +429,8 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceInstallManagedResponse, HelperError> {
-        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceInstallManaged).await?;
+        let call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceInstallManaged).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
             call.caller_uid,
@@ -768,7 +775,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_start(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::StartUnit(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::StartUnit(_))));
     }
 
     #[tokio::test]
@@ -784,7 +794,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_stop(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::StopUnit(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::StopUnit(_))));
     }
 
     #[tokio::test]
@@ -800,7 +813,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_restart(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::RestartUnit(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::RestartUnit(_))));
     }
 
     #[tokio::test]
@@ -816,7 +832,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_enable(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::EnableUnitFiles(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::EnableUnitFiles(_))));
     }
 
     #[tokio::test]
@@ -832,7 +851,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_disable(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::DisableUnitFiles(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::DisableUnitFiles(_))));
     }
 
     #[tokio::test]
@@ -857,8 +879,13 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         let resp = h.do_service_install_managed(":1.42").await.unwrap();
-        assert!(resp.generated_unit_path.ends_with("etc/systemd/system/boxpilot-sing-box.service"));
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::Reload)));
+        assert!(resp
+            .generated_unit_path
+            .ends_with("etc/systemd/system/boxpilot-sing-box.service"));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::Reload)));
     }
 
     #[tokio::test]

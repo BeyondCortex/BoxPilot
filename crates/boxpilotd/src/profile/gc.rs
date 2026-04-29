@@ -46,7 +46,7 @@ pub fn run(paths: &Paths, keep_active: Option<&str>, keep_previous: Option<&str>
         let size = dir_size(&path);
         entries.push((name, path, mtime, size));
     }
-    entries.sort_by(|a, b| a.2.cmp(&b.2));
+    entries.sort_by_key(|e| e.2);
 
     let is_kept = |name: &str| {
         keep_active.map(|k| k == name).unwrap_or(false)

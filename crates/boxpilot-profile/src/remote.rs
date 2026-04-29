@@ -53,7 +53,11 @@ impl Default for ReqwestFetcher {
 #[async_trait]
 impl RemoteFetcher for ReqwestFetcher {
     async fn fetch(&self, url: &str) -> Result<FetchedRemote, FetchError> {
-        let resp = self.client.get(url).send().await
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
             .map_err(|e| FetchError::Transport(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
@@ -62,21 +66,33 @@ impl RemoteFetcher for ReqwestFetcher {
                 message: status.canonical_reason().unwrap_or("").to_string(),
             });
         }
-        let etag = resp.headers().get(reqwest::header::ETAG)
-            .and_then(|v| v.to_str().ok()).map(str::to_string);
+        let etag = resp
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         if let Some(len) = resp.content_length() {
             if len > SINGLE_JSON_MAX_BYTES {
-                return Err(FetchError::TooLarge { size: len, limit: SINGLE_JSON_MAX_BYTES });
+                return Err(FetchError::TooLarge {
+                    size: len,
+                    limit: SINGLE_JSON_MAX_BYTES,
+                });
             }
         }
-        let bytes = resp.bytes().await
+        let bytes = resp
+            .bytes()
+            .await
             .map_err(|e| FetchError::Transport(e.to_string()))?;
         if (bytes.len() as u64) > SINGLE_JSON_MAX_BYTES {
             return Err(FetchError::TooLarge {
-                size: bytes.len() as u64, limit: SINGLE_JSON_MAX_BYTES,
+                size: bytes.len() as u64,
+                limit: SINGLE_JSON_MAX_BYTES,
             });
         }
-        Ok(FetchedRemote { bytes: bytes.to_vec(), etag })
+        Ok(FetchedRemote {
+            bytes: bytes.to_vec(),
+            etag,
+        })
     }
 }
 
@@ -102,8 +118,7 @@ pub async fn import_remote(
     url: &str,
 ) -> Result<ProfileMetadata, FetchError> {
     let fetched = fetcher.fetch(url).await?;
-    serde_json::from_slice::<serde_json::Value>(&fetched.bytes)
-        .map_err(FetchError::InvalidJson)?;
+    serde_json::from_slice::<serde_json::Value>(&fetched.bytes).map_err(FetchError::InvalidJson)?;
 
     // Update remotes.json with the full URL (0600).
     let remotes_path = store.paths().remotes_json();
@@ -149,23 +164,34 @@ pub async fn refresh_remote(
     fetcher: &dyn RemoteFetcher,
     profile_id: &str,
 ) -> Result<ProfileMetadata, FetchError> {
-    let mut meta = store.get(profile_id)
-        .map_err(|e| FetchError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, e.to_string())))?;
-    let remote_id = meta.remote_id.clone()
-        .ok_or_else(|| FetchError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput, "profile is not a remote profile",
-        )))?;
+    let mut meta = store.get(profile_id).map_err(|e| {
+        FetchError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            e.to_string(),
+        ))
+    })?;
+    let remote_id = meta.remote_id.clone().ok_or_else(|| {
+        FetchError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "profile is not a remote profile",
+        ))
+    })?;
 
     let remotes_path = store.paths().remotes_json();
     let mut rfile = read_remotes_or_recover(&remotes_path);
-    let url = rfile.remotes.get(&remote_id)
-        .ok_or_else(|| FetchError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound, "remote entry missing from remotes.json",
-        )))?
-        .url.clone();
+    let url = rfile
+        .remotes
+        .get(&remote_id)
+        .ok_or_else(|| {
+            FetchError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "remote entry missing from remotes.json",
+            ))
+        })?
+        .url
+        .clone();
     let fetched = fetcher.fetch(&url).await?;
-    serde_json::from_slice::<serde_json::Value>(&fetched.bytes)
-        .map_err(FetchError::InvalidJson)?;
+    serde_json::from_slice::<serde_json::Value>(&fetched.bytes).map_err(FetchError::InvalidJson)?;
     let now = Utc::now();
     if let Some(e) = rfile.remotes.get_mut(&remote_id) {
         e.last_fetched_at = Some(now.to_rfc3339());
@@ -186,7 +212,9 @@ mod tests {
     use crate::store::ProfileStorePaths;
     use pretty_assertions::assert_eq;
 
-    struct FixedFetcher { reply: FetchedRemote }
+    struct FixedFetcher {
+        reply: FetchedRemote,
+    }
     #[async_trait]
     impl RemoteFetcher for FixedFetcher {
         async fn fetch(&self, _url: &str) -> Result<FetchedRemote, FetchError> {
@@ -203,9 +231,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let s = store_in(&tmp);
         let f = FixedFetcher {
-            reply: FetchedRemote { bytes: br#"{"v":1}"#.to_vec(), etag: Some("\"abc\"".into()) },
+            reply: FetchedRemote {
+                bytes: br#"{"v":1}"#.to_vec(),
+                etag: Some("\"abc\"".into()),
+            },
         };
-        let m = import_remote(&s, &f, "Sub", "https://h/p?token=AAA").await.unwrap();
+        let m = import_remote(&s, &f, "Sub", "https://h/p?token=AAA")
+            .await
+            .unwrap();
         assert!(matches!(m.source_kind, SourceKind::Remote));
         assert!(m.remote_id.is_some());
 
@@ -221,9 +254,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let s = store_in(&tmp);
         let f = FixedFetcher {
-            reply: FetchedRemote { bytes: b"<html>".to_vec(), etag: None },
+            reply: FetchedRemote {
+                bytes: b"<html>".to_vec(),
+                etag: None,
+            },
         };
-        let err = import_remote(&s, &f, "Bad", "https://h/p").await.unwrap_err();
+        let err = import_remote(&s, &f, "Bad", "https://h/p")
+            .await
+            .unwrap_err();
         assert!(matches!(err, FetchError::InvalidJson(_)));
     }
 
@@ -231,7 +269,10 @@ mod tests {
     #[async_trait]
     impl RemoteFetcher for Http4xxFetcher {
         async fn fetch(&self, _url: &str) -> Result<FetchedRemote, FetchError> {
-            Err(FetchError::Http { status: 401, message: "Unauthorized".into() })
+            Err(FetchError::Http {
+                status: 401,
+                message: "Unauthorized".into(),
+            })
         }
     }
 
@@ -240,7 +281,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let s = store_in(&tmp);
         let f = Http4xxFetcher;
-        let err = import_remote(&s, &f, "Bad", "https://h/p").await.unwrap_err();
+        let err = import_remote(&s, &f, "Bad", "https://h/p")
+            .await
+            .unwrap_err();
         assert!(matches!(err, FetchError::Http { status: 401, .. }));
     }
 
@@ -248,9 +291,19 @@ mod tests {
     async fn refresh_remote_updates_in_place() {
         let tmp = tempfile::tempdir().unwrap();
         let s = store_in(&tmp);
-        let f1 = FixedFetcher { reply: FetchedRemote { bytes: br#"{"v":1}"#.to_vec(), etag: None } };
+        let f1 = FixedFetcher {
+            reply: FetchedRemote {
+                bytes: br#"{"v":1}"#.to_vec(),
+                etag: None,
+            },
+        };
         let m = import_remote(&s, &f1, "Sub", "https://h/p").await.unwrap();
-        let f2 = FixedFetcher { reply: FetchedRemote { bytes: br#"{"v":2}"#.to_vec(), etag: None } };
+        let f2 = FixedFetcher {
+            reply: FetchedRemote {
+                bytes: br#"{"v":2}"#.to_vec(),
+                etag: None,
+            },
+        };
         let m2 = refresh_remote(&s, &f2, &m.id).await.unwrap();
         assert_eq!(m2.id, m.id);
         let on_disk = std::fs::read(s.paths().profile_source(&m.id)).unwrap();

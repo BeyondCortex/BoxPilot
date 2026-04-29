@@ -125,13 +125,12 @@ impl StateCommit {
         // non-empty one is already on disk, preserve it — we're not changing
         // the cores ledger here. (Triggered by service.install_managed,
         // which only writes controller-name + boxpilot.toml + polkit drop-in.)
-        let install_state_to_write = if self.install_state == InstallState::empty()
-            && install_state_path.exists()
-        {
-            crate::core::state::read_state(&install_state_path).await?
-        } else {
-            self.install_state.clone()
-        };
+        let install_state_to_write =
+            if self.install_state == InstallState::empty() && install_state_path.exists() {
+                crate::core::state::read_state(&install_state_path).await?
+            } else {
+                self.install_state.clone()
+            };
         tokio::fs::write(&install_state_tmp, install_state_to_write.to_json())
             .await
             .map_err(|e| HelperError::Ipc {
@@ -475,13 +474,18 @@ mod tests {
         let commit = StateCommit {
             paths: paths.clone(),
             toml_updates: TomlUpdates::default(),
-            controller: Some(ControllerWrites { uid: 1000, username: "alice".into() }),
+            controller: Some(ControllerWrites {
+                uid: 1000,
+                username: "alice".into(),
+            }),
             install_state: InstallState::empty(),
             current_symlink_target: None,
         };
         commit.apply().await.unwrap();
 
-        let after = crate::core::state::read_state(&paths.install_state_json()).await.unwrap();
+        let after = crate::core::state::read_state(&paths.install_state_json())
+            .await
+            .unwrap();
         assert_eq!(after.managed_cores.len(), 1);
         assert_eq!(after.current_managed_core.as_deref(), Some("1.10.0"));
     }
@@ -606,7 +610,10 @@ mod tests {
         assert_eq!(cfg.active_profile_id.as_deref(), Some("new-p"));
         assert_eq!(cfg.active_profile_name.as_deref(), Some("New"));
         assert_eq!(cfg.active_profile_sha256.as_deref(), Some("new-sha"));
-        assert_eq!(cfg.activated_at.as_deref(), Some("2026-04-30T00:00:00-07:00"));
+        assert_eq!(
+            cfg.activated_at.as_deref(),
+            Some("2026-04-30T00:00:00-07:00")
+        );
         assert_eq!(cfg.previous_release_id.as_deref(), Some("old-id"));
         assert_eq!(cfg.previous_profile_id.as_deref(), Some("old-p"));
         assert_eq!(cfg.previous_profile_sha256.as_deref(), Some("old-sha"));

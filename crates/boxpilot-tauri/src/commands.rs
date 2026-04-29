@@ -77,36 +77,33 @@ pub async fn helper_core_adopt(
 }
 
 #[tauri::command]
-pub async fn helper_service_start(
-) -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
+pub async fn helper_service_start() -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
     let c = HelperClient::connect().await?;
     Ok(c.service_start().await?)
 }
 
 #[tauri::command]
-pub async fn helper_service_stop(
-) -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
+pub async fn helper_service_stop() -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
     let c = HelperClient::connect().await?;
     Ok(c.service_stop().await?)
 }
 
 #[tauri::command]
-pub async fn helper_service_restart(
-) -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
+pub async fn helper_service_restart() -> Result<boxpilot_ipc::ServiceControlResponse, CommandError>
+{
     let c = HelperClient::connect().await?;
     Ok(c.service_restart().await?)
 }
 
 #[tauri::command]
-pub async fn helper_service_enable(
-) -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
+pub async fn helper_service_enable() -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
     let c = HelperClient::connect().await?;
     Ok(c.service_enable().await?)
 }
 
 #[tauri::command]
-pub async fn helper_service_disable(
-) -> Result<boxpilot_ipc::ServiceControlResponse, CommandError> {
+pub async fn helper_service_disable() -> Result<boxpilot_ipc::ServiceControlResponse, CommandError>
+{
     let c = HelperClient::connect().await?;
     Ok(c.service_disable().await?)
 }

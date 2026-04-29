@@ -179,7 +179,9 @@ pub mod testing {
             latest: Ok("1.10.0".into()),
             sha256sums: Ok(None),
         });
-        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(Vec::new()));
+        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(
+            Vec::new(),
+        ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
         HelperContext::new(
             paths,
@@ -191,9 +193,11 @@ pub mod testing {
             github,
             downloader,
             Arc::new(PermissiveTestFs),
-            Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
-                "sing-box version 1.10.0",
-            )),
+            Arc::new(
+                crate::core::trust::version_testing::FixedVersionChecker::ok(
+                    "sing-box version 1.10.0",
+                ),
+            ),
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
@@ -220,21 +224,27 @@ pub mod testing {
             latest: Ok("1.10.0".into()),
             sha256sums: Ok(None),
         });
-        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(Vec::new()));
+        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(
+            Vec::new(),
+        ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines });
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
-            Arc::new(crate::systemd::testing::FixedSystemd { answer: systemd_answer }),
+            Arc::new(crate::systemd::testing::FixedSystemd {
+                answer: systemd_answer,
+            }),
             journal,
             Arc::new(PasswdLookup),
             github,
             downloader,
             Arc::new(PermissiveTestFs),
-            Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
-                "sing-box version 1.10.0",
-            )),
+            Arc::new(
+                crate::core::trust::version_testing::FixedVersionChecker::ok(
+                    "sing-box version 1.10.0",
+                ),
+            ),
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],

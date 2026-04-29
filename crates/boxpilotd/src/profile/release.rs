@@ -26,11 +26,7 @@ pub fn promote_staging(staging: &Path, target: &Path) -> HelperResult<()> {
         })?;
     }
     std::fs::rename(staging, target).map_err(|e| HelperError::Ipc {
-        message: format!(
-            "promote {} -> {}: {e}",
-            staging.display(),
-            target.display()
-        ),
+        message: format!("promote {} -> {}: {e}", staging.display(), target.display()),
     })?;
     Ok(())
 }

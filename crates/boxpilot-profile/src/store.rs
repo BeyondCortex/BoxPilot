@@ -27,17 +27,39 @@ impl ProfileStorePaths {
         Ok(Self::new(base.join("boxpilot")))
     }
 
-    pub fn root(&self) -> &Path { &self.root }
-    pub fn profiles_dir(&self) -> PathBuf { self.root.join("profiles") }
-    pub fn profile_dir(&self, id: &str) -> PathBuf { self.profiles_dir().join(id) }
-    pub fn profile_source(&self, id: &str) -> PathBuf { self.profile_dir(id).join("source.json") }
-    pub fn profile_assets_dir(&self, id: &str) -> PathBuf { self.profile_dir(id).join("assets") }
-    pub fn profile_metadata(&self, id: &str) -> PathBuf { self.profile_dir(id).join("metadata.json") }
-    pub fn profile_last_valid_dir(&self, id: &str) -> PathBuf { self.profile_dir(id).join("last-valid") }
-    pub fn profile_last_valid_config(&self, id: &str) -> PathBuf { self.profile_last_valid_dir(id).join("config.json") }
-    pub fn profile_last_valid_assets_dir(&self, id: &str) -> PathBuf { self.profile_last_valid_dir(id).join("assets") }
-    pub fn remotes_json(&self) -> PathBuf { self.root.join("remotes.json") }
-    pub fn ui_state_json(&self) -> PathBuf { self.root.join("ui-state.json") }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+    pub fn profiles_dir(&self) -> PathBuf {
+        self.root.join("profiles")
+    }
+    pub fn profile_dir(&self, id: &str) -> PathBuf {
+        self.profiles_dir().join(id)
+    }
+    pub fn profile_source(&self, id: &str) -> PathBuf {
+        self.profile_dir(id).join("source.json")
+    }
+    pub fn profile_assets_dir(&self, id: &str) -> PathBuf {
+        self.profile_dir(id).join("assets")
+    }
+    pub fn profile_metadata(&self, id: &str) -> PathBuf {
+        self.profile_dir(id).join("metadata.json")
+    }
+    pub fn profile_last_valid_dir(&self, id: &str) -> PathBuf {
+        self.profile_dir(id).join("last-valid")
+    }
+    pub fn profile_last_valid_config(&self, id: &str) -> PathBuf {
+        self.profile_last_valid_dir(id).join("config.json")
+    }
+    pub fn profile_last_valid_assets_dir(&self, id: &str) -> PathBuf {
+        self.profile_last_valid_dir(id).join("assets")
+    }
+    pub fn remotes_json(&self) -> PathBuf {
+        self.root.join("remotes.json")
+    }
+    pub fn ui_state_json(&self) -> PathBuf {
+        self.root.join("ui-state.json")
+    }
 }
 
 /// Idempotent: creates `path` (and parents via `create_dir_all`) if missing,
@@ -80,11 +102,26 @@ mod tests {
         let p = ProfileStorePaths::new(PathBuf::from("/x"));
         assert_eq!(p.profiles_dir(), PathBuf::from("/x/profiles"));
         assert_eq!(p.profile_dir("abc"), PathBuf::from("/x/profiles/abc"));
-        assert_eq!(p.profile_source("abc"), PathBuf::from("/x/profiles/abc/source.json"));
-        assert_eq!(p.profile_assets_dir("abc"), PathBuf::from("/x/profiles/abc/assets"));
-        assert_eq!(p.profile_metadata("abc"), PathBuf::from("/x/profiles/abc/metadata.json"));
-        assert_eq!(p.profile_last_valid_config("abc"), PathBuf::from("/x/profiles/abc/last-valid/config.json"));
-        assert_eq!(p.profile_last_valid_assets_dir("abc"), PathBuf::from("/x/profiles/abc/last-valid/assets"));
+        assert_eq!(
+            p.profile_source("abc"),
+            PathBuf::from("/x/profiles/abc/source.json")
+        );
+        assert_eq!(
+            p.profile_assets_dir("abc"),
+            PathBuf::from("/x/profiles/abc/assets")
+        );
+        assert_eq!(
+            p.profile_metadata("abc"),
+            PathBuf::from("/x/profiles/abc/metadata.json")
+        );
+        assert_eq!(
+            p.profile_last_valid_config("abc"),
+            PathBuf::from("/x/profiles/abc/last-valid/config.json")
+        );
+        assert_eq!(
+            p.profile_last_valid_assets_dir("abc"),
+            PathBuf::from("/x/profiles/abc/last-valid/assets")
+        );
         assert_eq!(p.remotes_json(), PathBuf::from("/x/remotes.json"));
         assert_eq!(p.ui_state_json(), PathBuf::from("/x/ui-state.json"));
     }

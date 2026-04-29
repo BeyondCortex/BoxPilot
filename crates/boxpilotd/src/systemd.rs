@@ -36,7 +36,8 @@ trait SystemdManager {
     /// / "ignore-requirements". We always pass "replace".
     fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
     fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
-    fn restart_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn restart_unit(&self, name: &str, mode: &str)
+        -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
 
     /// Returns `(carries_install_info, changes)`. We ignore the changes vec
     /// — systemd has already applied them; we just want the success/error
@@ -283,12 +284,24 @@ pub mod testing {
         async fn unit_state(&self, _: &str) -> Result<UnitState, HelperError> {
             Ok(self.answer.clone())
         }
-        async fn start_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
-        async fn stop_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
-        async fn restart_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
-        async fn enable_unit_files(&self, _: &[String]) -> Result<(), HelperError> { Ok(()) }
-        async fn disable_unit_files(&self, _: &[String]) -> Result<(), HelperError> { Ok(()) }
-        async fn reload(&self) -> Result<(), HelperError> { Ok(()) }
+        async fn start_unit(&self, _: &str) -> Result<(), HelperError> {
+            Ok(())
+        }
+        async fn stop_unit(&self, _: &str) -> Result<(), HelperError> {
+            Ok(())
+        }
+        async fn restart_unit(&self, _: &str) -> Result<(), HelperError> {
+            Ok(())
+        }
+        async fn enable_unit_files(&self, _: &[String]) -> Result<(), HelperError> {
+            Ok(())
+        }
+        async fn disable_unit_files(&self, _: &[String]) -> Result<(), HelperError> {
+            Ok(())
+        }
+        async fn reload(&self) -> Result<(), HelperError> {
+            Ok(())
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,23 +337,38 @@ pub mod testing {
             Ok(self.answer.clone())
         }
         async fn start_unit(&self, name: &str) -> Result<(), HelperError> {
-            self.calls.lock().unwrap().push(RecordedCall::StartUnit(name.into()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedCall::StartUnit(name.into()));
             Ok(())
         }
         async fn stop_unit(&self, name: &str) -> Result<(), HelperError> {
-            self.calls.lock().unwrap().push(RecordedCall::StopUnit(name.into()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedCall::StopUnit(name.into()));
             Ok(())
         }
         async fn restart_unit(&self, name: &str) -> Result<(), HelperError> {
-            self.calls.lock().unwrap().push(RecordedCall::RestartUnit(name.into()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedCall::RestartUnit(name.into()));
             Ok(())
         }
         async fn enable_unit_files(&self, names: &[String]) -> Result<(), HelperError> {
-            self.calls.lock().unwrap().push(RecordedCall::EnableUnitFiles(names.to_vec()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedCall::EnableUnitFiles(names.to_vec()));
             Ok(())
         }
         async fn disable_unit_files(&self, names: &[String]) -> Result<(), HelperError> {
-            self.calls.lock().unwrap().push(RecordedCall::DisableUnitFiles(names.to_vec()));
+            self.calls
+                .lock()
+                .unwrap()
+                .push(RecordedCall::DisableUnitFiles(names.to_vec()));
             Ok(())
         }
         async fn reload(&self) -> Result<(), HelperError> {

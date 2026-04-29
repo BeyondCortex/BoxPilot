@@ -20,7 +20,10 @@ pub struct UiState {
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { schema_version: UI_STATE_SCHEMA_VERSION, selected_profile_id: None }
+        Self {
+            schema_version: UI_STATE_SCHEMA_VERSION,
+            selected_profile_id: None,
+        }
     }
 }
 
@@ -55,7 +58,10 @@ mod tests {
     fn round_trip() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("ui-state.json");
-        let s = UiState { selected_profile_id: Some("p1".into()), ..UiState::default() };
+        let s = UiState {
+            selected_profile_id: Some("p1".into()),
+            ..UiState::default()
+        };
         write_ui_state(&path, &s).unwrap();
         assert_eq!(read_ui_state(&path).unwrap(), s);
     }

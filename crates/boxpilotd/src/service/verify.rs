@@ -68,7 +68,9 @@ mod tests {
                 exec_main_status: 0,
             },
         };
-        let o = wait_for_running("u", 0, Duration::from_millis(50), &s).await.unwrap();
+        let o = wait_for_running("u", 0, Duration::from_millis(50), &s)
+            .await
+            .unwrap();
         assert_eq!(o, VerifyOutcome::Running);
     }
 
@@ -83,14 +85,20 @@ mod tests {
                 exec_main_status: 0,
             },
         };
-        let o = wait_for_running("u", 0, Duration::from_millis(100), &s).await.unwrap();
+        let o = wait_for_running("u", 0, Duration::from_millis(100), &s)
+            .await
+            .unwrap();
         assert!(matches!(o, VerifyOutcome::Stuck { .. }));
     }
 
     #[tokio::test]
     async fn returns_not_found_when_unit_missing() {
-        let s = FixedSystemd { answer: UnitState::NotFound };
-        let o = wait_for_running("u", 0, Duration::from_millis(50), &s).await.unwrap();
+        let s = FixedSystemd {
+            answer: UnitState::NotFound,
+        };
+        let o = wait_for_running("u", 0, Duration::from_millis(50), &s)
+            .await
+            .unwrap();
         assert_eq!(o, VerifyOutcome::NotFound);
     }
 
@@ -107,7 +115,9 @@ mod tests {
                 exec_main_status: 0,
             },
         };
-        let o = wait_for_running("u", 0, Duration::from_millis(50), &s).await.unwrap();
+        let o = wait_for_running("u", 0, Duration::from_millis(50), &s)
+            .await
+            .unwrap();
         assert!(matches!(o, VerifyOutcome::Stuck { .. }));
     }
 }
