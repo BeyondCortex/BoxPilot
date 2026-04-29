@@ -4,4 +4,6 @@
 //!
 //! Submodules are added by subsequent tasks of plan #5.
 
+pub mod recovery;
+pub mod release;
 pub mod unpack;

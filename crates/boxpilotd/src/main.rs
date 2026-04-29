@@ -65,6 +65,21 @@ async fn run_startup_recovery(paths: &paths::Paths) -> anyhow::Result<()> {
         Ok(false) => {} // already present, nothing to backfill, etc.
         Err(e) => warn!("polkit drop-in backfill failed: {e}"),
     }
+
+    // Plan #5 §10 crash recovery: clean stale .staging/ subdirs (always
+    // mid-call when present) and validate /etc/boxpilot/active resolves
+    // under /etc/boxpilot/releases. Logged here; activation/rollback
+    // verbs re-check `active_corrupt` themselves on each call.
+    let activation_recovery = crate::profile::recovery::reconcile(paths).await;
+    if activation_recovery.staging_dirs_swept > 0 {
+        info!(
+            count = activation_recovery.staging_dirs_swept,
+            "swept stale activation .staging entries"
+        );
+    }
+    if activation_recovery.active_corrupt {
+        warn!("/etc/boxpilot/active is corrupt; activation/rollback will refuse until repaired");
+    }
     Ok(())
 }
 
