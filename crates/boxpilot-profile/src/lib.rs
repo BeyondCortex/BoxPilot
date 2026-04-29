@@ -6,6 +6,9 @@ pub use store::{ensure_dir_0700, write_file_0600_atomic, ProfileStorePaths};
 pub mod meta;
 pub use meta::{read_metadata, write_metadata, ProfileMetadata, METADATA_SCHEMA_VERSION};
 
+pub mod list;
+pub use list::{ProfileStore, StoreError};
+
 #[cfg(test)]
 mod sanity {
     #[test]
