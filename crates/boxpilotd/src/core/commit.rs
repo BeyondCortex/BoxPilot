@@ -52,7 +52,18 @@ impl StateCommit {
                     message: format!("mkdir install-state parent: {e}"),
                 })?;
         }
-        tokio::fs::write(&install_state_tmp, self.install_state.to_json())
+        // 1a (revised). If the caller passed an empty install_state and a
+        // non-empty one is already on disk, preserve it — we're not changing
+        // the cores ledger here. (Triggered by service.install_managed,
+        // which only writes controller-name + boxpilot.toml + polkit drop-in.)
+        let install_state_to_write = if self.install_state == InstallState::empty()
+            && install_state_path.exists()
+        {
+            crate::core::state::read_state(&install_state_path).await?
+        } else {
+            self.install_state.clone()
+        };
+        tokio::fs::write(&install_state_tmp, install_state_to_write.to_json())
             .await
             .map_err(|e| HelperError::Ipc {
                 message: format!("stage install-state: {e}"),
@@ -352,5 +363,38 @@ mod tests {
             .unwrap();
         // Backslash and double-quote are escaped; no raw injection vector.
         assert!(dropin.contains(r#"var BOXPILOT_CONTROLLER = "a\"\\b";"#));
+    }
+
+    #[tokio::test]
+    async fn apply_preserves_existing_install_state_when_caller_passes_empty() {
+        let tmp = tempdir().unwrap();
+        let paths = paths_for(&tmp);
+        // Pre-seed install-state.json with a real ledger (1 managed core).
+        let mut seeded = InstallState::empty();
+        seeded.managed_cores.push(boxpilot_ipc::ManagedCoreEntry {
+            version: "1.10.0".into(),
+            path: "/var/lib/boxpilot/cores/1.10.0/sing-box".into(),
+            sha256: "deadbeef".into(),
+            installed_at: "2026-04-29T00:00:00Z".into(),
+            source: "github-sagernet".into(),
+        });
+        seeded.current_managed_core = Some("1.10.0".into());
+        std::fs::create_dir_all(paths.install_state_json().parent().unwrap()).unwrap();
+        std::fs::write(paths.install_state_json(), seeded.to_json()).unwrap();
+
+        // Now run a StateCommit with an empty install_state (as
+        // service.install_managed would). Existing ledger must survive.
+        let commit = StateCommit {
+            paths: paths.clone(),
+            toml_updates: TomlUpdates::default(),
+            controller: Some(ControllerWrites { uid: 1000, username: "alice".into() }),
+            install_state: InstallState::empty(),
+            current_symlink_target: None,
+        };
+        commit.apply().await.unwrap();
+
+        let after = crate::core::state::read_state(&paths.install_state_json()).await.unwrap();
+        assert_eq!(after.managed_cores.len(), 1);
+        assert_eq!(after.current_managed_core.as_deref(), Some("1.10.0"));
     }
 }

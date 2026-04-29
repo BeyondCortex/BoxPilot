@@ -140,14 +140,33 @@ impl Helper {
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ServiceInstallManaged)
+        let sender = extract_sender(&header)?;
+        let resp = self
+            .do_service_install_managed(&sender)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
+
     async fn service_logs(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ServiceLogs).await
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::ServiceLogsRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_service_logs(&sender, req)
+            .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn profile_activate_bundle(
         &self,
@@ -367,6 +386,54 @@ impl Helper {
         .await
     }
 
+    async fn do_service_install_managed(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::ServiceInstallManagedResponse, HelperError> {
+        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceInstallManaged).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
+        let cfg = self.ctx.load_config().await?;
+        let deps = crate::service::install::InstallDeps {
+            paths: self.ctx.paths.clone(),
+            systemd: &*self.ctx.systemd,
+            fs: &*self.ctx.fs_meta,
+        };
+        let mut resp = crate::service::install::install_managed(&cfg, &deps, controller.clone()).await?;
+        resp.claimed_controller = controller.is_some();
+
+        // Persist controller-name + boxpilot.toml + polkit drop-in if claiming.
+        // T8 made StateCommit also write the polkit drop-in atomically with
+        // controller-name. The install_state passed here is empty because
+        // service.install_managed does not change the cores ledger; the guard
+        // inside StateCommit::apply preserves any on-disk install-state.json.
+        if let Some(c) = controller {
+            let commit = crate::core::commit::StateCommit {
+                paths: self.ctx.paths.clone(),
+                toml_updates: crate::core::commit::TomlUpdates::default(),
+                controller: Some(c),
+                install_state: boxpilot_ipc::InstallState::empty(),
+                current_symlink_target: None,
+            };
+            commit.apply().await?;
+        }
+
+        Ok(resp)
+    }
+
+    async fn do_service_logs(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::ServiceLogsRequest,
+    ) -> Result<boxpilot_ipc::ServiceLogsResponse, HelperError> {
+        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceLogs).await?;
+        let cfg = self.ctx.load_config().await?;
+        crate::service::logs::read(&req, &cfg.target_service, &*self.ctx.journal).await
+    }
+
     /// Run the §6 dispatch contract (caller-uid → controller → polkit →
     /// optional lock) for a method whose body isn't implemented yet, then
     /// return `NotImplemented`. Unauthorized callers see `NotAuthorized`
@@ -488,6 +555,7 @@ mod tests {
     use super::*;
     use crate::authority::testing::CannedAuthority;
     use crate::context::testing::ctx_with;
+    use crate::context::testing::ctx_with_journal_lines;
     use crate::context::testing::ctx_with_recording;
     use crate::systemd::testing::{RecordedCall, RecordingSystemd};
     use boxpilot_ipc::UnitState;
@@ -695,5 +763,48 @@ mod tests {
         let h = Helper::new(ctx);
         h.do_service_disable(":1.42").await.unwrap();
         assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::DisableUnitFiles(_))));
+    }
+
+    #[tokio::test]
+    async fn service_install_managed_writes_unit_when_core_path_set() {
+        let tmp = tempdir().unwrap();
+        let rec = Arc::new(RecordingSystemd::new(UnitState::Known {
+            active_state: "inactive".into(),
+            sub_state: "dead".into(),
+            load_state: "loaded".into(),
+            n_restarts: 0,
+            exec_main_status: 0,
+        }));
+        // /usr/bin/sing-box is in the §6.5 default-allowed prefix list and
+        // PermissiveTestFs reports it as root-owned 0o755, so the trust
+        // check passes inside the test.
+        let ctx = Arc::new(ctx_with_recording(
+            &tmp,
+            Some("schema_version = 1\ncore_path = \"/usr/bin/sing-box\"\ncore_state = \"managed-installed\"\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.install-managed"]),
+            rec.clone(),
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let resp = h.do_service_install_managed(":1.42").await.unwrap();
+        assert!(resp.generated_unit_path.ends_with("etc/systemd/system/boxpilot-sing-box.service"));
+        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::Reload)));
+    }
+
+    #[tokio::test]
+    async fn service_logs_returns_journal_lines() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with_journal_lines(
+            &tmp,
+            Some("schema_version = 1\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.logs"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+            vec!["entry1".into(), "entry2".into()],
+        ));
+        let h = Helper::new(ctx);
+        let req = boxpilot_ipc::ServiceLogsRequest { lines: 5 };
+        let resp = h.do_service_logs(":1.42", req).await.unwrap();
+        assert_eq!(resp.lines, vec!["entry1".to_string(), "entry2".to_string()]);
     }
 }

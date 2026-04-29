@@ -218,13 +218,31 @@ pub mod testing {
         )
     }
 
-    /// A permissive test `FsMetadataProvider` that returns `NotFound` for all
-    /// paths. This is sufficient for tests that never exercise trust checks.
+    /// A permissive test `FsMetadataProvider` that reports every path as a
+    /// root-owned 0o755 regular file (for leaf paths ending with a known
+    /// binary name) or directory (for all other paths). This lets tests that
+    /// probe trust checks against `/usr/bin/sing-box` or similar pass without
+    /// requiring a real filesystem.
     pub struct PermissiveTestFs;
 
     impl crate::core::trust::FsMetadataProvider for PermissiveTestFs {
-        fn stat(&self, _path: &std::path::Path) -> std::io::Result<crate::core::trust::FileStat> {
-            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "test"))
+        fn stat(&self, path: &std::path::Path) -> std::io::Result<crate::core::trust::FileStat> {
+            use crate::core::trust::{FileKind, FileStat};
+            let is_binary = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n == "sing-box")
+                .unwrap_or(false);
+            Ok(FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: if is_binary {
+                    FileKind::Regular
+                } else {
+                    FileKind::Directory
+                },
+            })
         }
         fn read_link(&self, _path: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
             Err(std::io::Error::new(
