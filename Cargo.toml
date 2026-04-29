@@ -21,6 +21,7 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "fs", "sync"] }
+url = "2"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 fs2 = "0.4"
 nix = { version = "0.29", features = ["user", "fs"] }
@@ -34,7 +35,6 @@ hex = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 futures-util = "0.3"
 async-trait = "0.1"
-url = "2"
 
 [profile.release]
 lto = "thin"
