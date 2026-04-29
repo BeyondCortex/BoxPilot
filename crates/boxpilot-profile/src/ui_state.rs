@@ -1,3 +1,9 @@
+//! Forward-compatible reservation for `~/.local/share/boxpilot/ui-state.json`.
+//!
+//! Plan #4 ships the schema, the read/write helpers, and the path; no Tauri
+//! command wires this up yet. Plan #7 (GUI: Home / Profiles / Settings tabs)
+//! will persist `selected_profile_id` and any later UI state across launches.
+
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
