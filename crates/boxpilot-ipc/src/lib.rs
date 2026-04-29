@@ -29,7 +29,8 @@ pub use service::{
 
 pub mod profile;
 pub use profile::{
-    ActivationManifest, AssetEntry, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION,
+    ActivateBundleRequest, ActivateBundleResponse, ActivateOutcome, ActivationManifest,
+    AssetEntry, RollbackRequest, SourceKind, VerifySummary, ACTIVATION_MANIFEST_SCHEMA_VERSION,
     BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT, BUNDLE_MAX_NESTING_DEPTH,
     BUNDLE_MAX_TOTAL_BYTES,
 };

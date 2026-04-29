@@ -78,6 +78,10 @@ impl HelperContext {
                 active_profile_sha256: None,
                 active_release_id: None,
                 activated_at: None,
+                previous_release_id: None,
+                previous_profile_id: None,
+                previous_profile_sha256: None,
+                previous_activated_at: None,
             }),
             Err(e) => Err(HelperError::Ipc {
                 message: format!("read {path:?}: {e}"),

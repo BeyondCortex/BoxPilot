@@ -26,6 +26,14 @@ pub struct BoxpilotConfig {
     pub active_release_id: Option<String>,
     #[serde(default)]
     pub activated_at: Option<String>,
+    #[serde(default)]
+    pub previous_release_id: Option<String>,
+    #[serde(default)]
+    pub previous_profile_id: Option<String>,
+    #[serde(default)]
+    pub previous_profile_sha256: Option<String>,
+    #[serde(default)]
+    pub previous_activated_at: Option<String>,
 }
 
 fn default_target_service() -> String {
@@ -120,5 +128,29 @@ controller_uid = 1000
         let text = cfg.to_toml();
         let back = BoxpilotConfig::parse(&text).unwrap();
         assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn parses_previous_release_fields() {
+        let cfg = BoxpilotConfig::parse(
+            "schema_version = 1\nprevious_release_id = \"id-0\"\nprevious_profile_id = \"p-0\"\nprevious_profile_sha256 = \"abc\"\nprevious_activated_at = \"2026-04-29T00:00:00-07:00\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.previous_release_id.as_deref(), Some("id-0"));
+        assert_eq!(cfg.previous_profile_id.as_deref(), Some("p-0"));
+        assert_eq!(cfg.previous_profile_sha256.as_deref(), Some("abc"));
+        assert_eq!(
+            cfg.previous_activated_at.as_deref(),
+            Some("2026-04-29T00:00:00-07:00")
+        );
+    }
+
+    #[test]
+    fn previous_fields_default_to_none() {
+        let cfg = BoxpilotConfig::parse("schema_version = 1\n").unwrap();
+        assert_eq!(cfg.previous_release_id, None);
+        assert_eq!(cfg.previous_profile_id, None);
+        assert_eq!(cfg.previous_profile_sha256, None);
+        assert_eq!(cfg.previous_activated_at, None);
     }
 }

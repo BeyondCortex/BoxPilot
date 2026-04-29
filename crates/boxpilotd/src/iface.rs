@@ -39,6 +39,16 @@ fn to_zbus_err(e: HelperError) -> zbus::fdo::Error {
         HelperError::Busy => "app.boxpilot.Helper1.Busy",
         HelperError::Systemd { .. } => "app.boxpilot.Helper1.Systemd",
         HelperError::Ipc { .. } => "app.boxpilot.Helper1.Ipc",
+        HelperError::BundleTooLarge { .. } => "app.boxpilot.Helper1.BundleTooLarge",
+        HelperError::BundleEntryRejected { .. } => "app.boxpilot.Helper1.BundleEntryRejected",
+        HelperError::BundleAssetMismatch { .. } => "app.boxpilot.Helper1.BundleAssetMismatch",
+        HelperError::SingboxCheckFailed { .. } => "app.boxpilot.Helper1.SingboxCheckFailed",
+        HelperError::ActivationVerifyStuck { .. } => "app.boxpilot.Helper1.ActivationVerifyStuck",
+        HelperError::RollbackTargetMissing => "app.boxpilot.Helper1.RollbackTargetMissing",
+        HelperError::RollbackUnstartable { .. } => "app.boxpilot.Helper1.RollbackUnstartable",
+        HelperError::ActiveCorrupt => "app.boxpilot.Helper1.ActiveCorrupt",
+        HelperError::ReleaseAlreadyActive => "app.boxpilot.Helper1.ReleaseAlreadyActive",
+        HelperError::ReleaseNotFound { .. } => "app.boxpilot.Helper1.ReleaseNotFound",
     };
     let msg = e.to_string();
     // We use zbus::fdo::Error::Failed as the carrier; the precise mapping
