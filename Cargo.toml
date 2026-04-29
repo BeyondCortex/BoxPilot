@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/boxpilot-ipc", "crates/boxpilotd", "crates/boxpilot-tauri"]
+members = [
+    "crates/boxpilot-ipc",
+    "crates/boxpilotd",
+    "crates/boxpilot-tauri",
+    "crates/boxpilot-profile",
+]
 
 [workspace.package]
 edition = "2021"
@@ -29,6 +34,7 @@ hex = "0.4"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 futures-util = "0.3"
 async-trait = "0.1"
+url = "2"
 
 [profile.release]
 lto = "thin"
