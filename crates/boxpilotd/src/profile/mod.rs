@@ -9,5 +9,6 @@ pub mod checker;
 pub mod gc;
 pub mod recovery;
 pub mod release;
+pub mod rollback;
 pub mod unpack;
 pub mod verifier;
