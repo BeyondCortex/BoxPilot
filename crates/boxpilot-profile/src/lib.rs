@@ -32,6 +32,9 @@ pub use remote::{
     import_remote, refresh_remote, FetchError, FetchedRemote, RemoteFetcher, ReqwestFetcher,
 };
 
+pub mod editor;
+pub use editor::{apply_patch, patch_in_place, save_edits, EditError};
+
 #[cfg(test)]
 mod sanity {
     #[test]
