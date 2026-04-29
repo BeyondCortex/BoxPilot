@@ -21,6 +21,12 @@ pub use install_state::{
     AdoptedCoreEntry, InstallState, ManagedCoreEntry, INSTALL_STATE_SCHEMA_VERSION,
 };
 
+pub mod service;
+pub use service::{
+    ServiceControlResponse, ServiceInstallManagedResponse, ServiceLogsRequest,
+    ServiceLogsResponse, SERVICE_LOGS_DEFAULT_LINES, SERVICE_LOGS_MAX_LINES,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]

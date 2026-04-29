@@ -1,15 +1,22 @@
-//! systemd query layer. We only need read access in this plan
-//! (`Manager.GetUnit` + `Properties.Get`), which is unauthenticated on the
-//! system bus when the daemon runs as root. Service-control verbs come in
-//! plan #3.
+//! systemd query and control layer.  Read access (`GetUnit` + `Properties.Get`)
+//! is unauthenticated on the system bus when the daemon runs as root.
+//! Service-control verbs (`StartUnit`, `StopUnit`, …) are added in plan #3.
 
 use async_trait::async_trait;
 use boxpilot_ipc::{HelperError, UnitState};
 use zbus::{proxy, Connection};
 
 #[async_trait]
-pub trait SystemdQuery: Send + Sync {
+pub trait Systemd: Send + Sync {
     async fn unit_state(&self, unit_name: &str) -> Result<UnitState, HelperError>;
+    async fn start_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn stop_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn restart_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn enable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError>;
+    async fn disable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError>;
+    /// Equivalent to `systemctl daemon-reload`. Required after writing a
+    /// new unit file so systemd parses it before the next StartUnit.
+    async fn reload(&self) -> Result<(), HelperError>;
 }
 
 #[proxy(
@@ -19,11 +26,38 @@ pub trait SystemdQuery: Send + Sync {
 )]
 trait SystemdManager {
     fn get_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
-    // Reserved for plan #3's `service.install_managed` flow, which calls
-    // LoadUnit to ensure systemd has parsed the freshly-written .service file
-    // before issuing StartUnit.
+    // Plan #3 ended up using Reload (daemon-reload) instead of LoadUnit for
+    // the install path; LoadUnit stays here pre-declared in case a future
+    // plan needs single-unit re-parse without a full daemon-reload.
     #[allow(dead_code)]
     fn load_unit(&self, name: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+
+    /// `mode` is one of "replace" / "fail" / "isolate" / "ignore-dependencies"
+    /// / "ignore-requirements". We always pass "replace".
+    fn start_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn stop_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+    fn restart_unit(&self, name: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+
+    /// Returns `(carries_install_info, changes)`. We ignore the changes vec
+    /// — systemd has already applied them; we just want the success/error
+    /// surface. `runtime=false` writes to `/etc/systemd/system/`; `force=true`
+    /// overwrites pre-existing symlinks.
+    #[zbus(name = "EnableUnitFiles")]
+    fn enable_unit_files(
+        &self,
+        files: &[&str],
+        runtime: bool,
+        force: bool,
+    ) -> zbus::Result<(bool, Vec<(String, String, String)>)>;
+
+    #[zbus(name = "DisableUnitFiles")]
+    fn disable_unit_files(
+        &self,
+        files: &[&str],
+        runtime: bool,
+    ) -> zbus::Result<Vec<(String, String, String)>>;
+
+    fn reload(&self) -> zbus::Result<()>;
 }
 
 #[proxy(interface = "org.freedesktop.systemd1.Unit")]
@@ -55,7 +89,7 @@ impl DBusSystemd {
 }
 
 #[async_trait]
-impl SystemdQuery for DBusSystemd {
+impl Systemd for DBusSystemd {
     async fn unit_state(&self, unit_name: &str) -> Result<UnitState, HelperError> {
         let mgr = SystemdManagerProxy::new(&self.conn)
             .await
@@ -125,6 +159,65 @@ impl SystemdQuery for DBusSystemd {
             exec_main_status,
         })
     }
+
+    async fn start_unit(&self, unit_name: &str) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.start_unit(unit_name, "replace")
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
+    }
+
+    async fn stop_unit(&self, unit_name: &str) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.stop_unit(unit_name, "replace")
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
+    }
+
+    async fn restart_unit(&self, unit_name: &str) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.restart_unit(unit_name, "replace")
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
+    }
+
+    async fn enable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        let refs: Vec<&str> = unit_names.iter().map(|s| s.as_str()).collect();
+        mgr.enable_unit_files(&refs, false, true)
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
+    }
+
+    async fn disable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        let refs: Vec<&str> = unit_names.iter().map(|s| s.as_str()).collect();
+        mgr.disable_unit_files(&refs, false)
+            .await
+            .map(|_| ())
+            .map_err(systemd_err)
+    }
+
+    async fn reload(&self) -> Result<(), HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        mgr.reload().await.map_err(systemd_err)
+    }
 }
 
 fn systemd_err(e: zbus::Error) -> HelperError {
@@ -133,18 +226,126 @@ fn systemd_err(e: zbus::Error) -> HelperError {
     }
 }
 
+#[async_trait]
+pub trait JournalReader: Send + Sync {
+    /// Return the last `lines` journal entries for `unit_name`. Caller is
+    /// responsible for clamping `lines` to a sane upper bound; this trait
+    /// passes through whatever it gets.
+    async fn tail(&self, unit_name: &str, lines: u32) -> Result<Vec<String>, HelperError>;
+}
+
+pub struct JournalctlProcess;
+
+#[async_trait]
+impl JournalReader for JournalctlProcess {
+    async fn tail(&self, unit_name: &str, lines: u32) -> Result<Vec<String>, HelperError> {
+        let n_str = lines.to_string();
+        let out = tokio::process::Command::new("journalctl")
+            .arg("--no-pager")
+            .arg("-u")
+            .arg(unit_name)
+            .arg("-n")
+            .arg(&n_str)
+            // --output=short keeps the format `Apr 28 12:34:56 host unit[pid]: msg`
+            // which is what `journalctl` defaults to anyway, but pinning it makes
+            // the format stable across distros that change defaults.
+            .arg("--output=short")
+            .output()
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("spawn journalctl: {e}"),
+            })?;
+        if !out.status.success() {
+            return Err(HelperError::Ipc {
+                message: format!(
+                    "journalctl exit {:?}: {}",
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            });
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        Ok(text.lines().map(|l| l.to_string()).collect())
+    }
+}
+
 #[cfg(test)]
 pub mod testing {
     use super::*;
+    use std::sync::Mutex;
 
     pub struct FixedSystemd {
         pub answer: UnitState,
     }
 
     #[async_trait]
-    impl SystemdQuery for FixedSystemd {
-        async fn unit_state(&self, _unit_name: &str) -> Result<UnitState, HelperError> {
+    impl Systemd for FixedSystemd {
+        async fn unit_state(&self, _: &str) -> Result<UnitState, HelperError> {
             Ok(self.answer.clone())
+        }
+        async fn start_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
+        async fn stop_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
+        async fn restart_unit(&self, _: &str) -> Result<(), HelperError> { Ok(()) }
+        async fn enable_unit_files(&self, _: &[String]) -> Result<(), HelperError> { Ok(()) }
+        async fn disable_unit_files(&self, _: &[String]) -> Result<(), HelperError> { Ok(()) }
+        async fn reload(&self) -> Result<(), HelperError> { Ok(()) }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum RecordedCall {
+        StartUnit(String),
+        StopUnit(String),
+        RestartUnit(String),
+        EnableUnitFiles(Vec<String>),
+        DisableUnitFiles(Vec<String>),
+        Reload,
+    }
+
+    pub struct RecordingSystemd {
+        pub answer: UnitState,
+        pub calls: Mutex<Vec<RecordedCall>>,
+    }
+
+    impl RecordingSystemd {
+        pub fn new(answer: UnitState) -> Self {
+            Self {
+                answer,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        pub fn calls(&self) -> Vec<RecordedCall> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Systemd for RecordingSystemd {
+        async fn unit_state(&self, _: &str) -> Result<UnitState, HelperError> {
+            Ok(self.answer.clone())
+        }
+        async fn start_unit(&self, name: &str) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::StartUnit(name.into()));
+            Ok(())
+        }
+        async fn stop_unit(&self, name: &str) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::StopUnit(name.into()));
+            Ok(())
+        }
+        async fn restart_unit(&self, name: &str) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::RestartUnit(name.into()));
+            Ok(())
+        }
+        async fn enable_unit_files(&self, names: &[String]) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::EnableUnitFiles(names.to_vec()));
+            Ok(())
+        }
+        async fn disable_unit_files(&self, names: &[String]) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::DisableUnitFiles(names.to_vec()));
+            Ok(())
+        }
+        async fn reload(&self) -> Result<(), HelperError> {
+            self.calls.lock().unwrap().push(RecordedCall::Reload);
+            Ok(())
         }
     }
 
@@ -154,5 +355,34 @@ pub mod testing {
             answer: UnitState::NotFound,
         };
         assert_eq!(q.unit_state("anything").await.unwrap(), UnitState::NotFound);
+    }
+
+    #[tokio::test]
+    async fn recording_systemd_records_start_unit() {
+        let s = RecordingSystemd::new(UnitState::NotFound);
+        s.start_unit("boxpilot-sing-box.service").await.unwrap();
+        assert_eq!(
+            s.calls(),
+            vec![RecordedCall::StartUnit("boxpilot-sing-box.service".into())]
+        );
+    }
+
+    pub struct FixedJournal {
+        pub lines: Vec<String>,
+    }
+
+    #[async_trait]
+    impl JournalReader for FixedJournal {
+        async fn tail(&self, _: &str, _: u32) -> Result<Vec<String>, HelperError> {
+            Ok(self.lines.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn fixed_journal_returns_canned_lines() {
+        let j = FixedJournal {
+            lines: vec!["a".into(), "b".into()],
+        };
+        assert_eq!(j.tail("u", 10).await.unwrap(), vec!["a", "b"]);
     }
 }

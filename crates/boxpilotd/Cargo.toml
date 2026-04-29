@@ -18,7 +18,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "sync"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "fs", "sync", "process"] }
 zbus.workspace = true
 fs2.workspace = true
 nix.workspace = true

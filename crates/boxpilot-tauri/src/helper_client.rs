@@ -27,6 +27,21 @@ trait Helper {
 
     #[zbus(name = "CoreAdopt")]
     fn core_adopt(&self, request_json: &str) -> zbus::Result<String>;
+
+    #[zbus(name = "ServiceStart")]
+    fn service_start(&self) -> zbus::Result<String>;
+    #[zbus(name = "ServiceStop")]
+    fn service_stop(&self) -> zbus::Result<String>;
+    #[zbus(name = "ServiceRestart")]
+    fn service_restart(&self) -> zbus::Result<String>;
+    #[zbus(name = "ServiceEnable")]
+    fn service_enable(&self) -> zbus::Result<String>;
+    #[zbus(name = "ServiceDisable")]
+    fn service_disable(&self) -> zbus::Result<String>;
+    #[zbus(name = "ServiceInstallManaged")]
+    fn service_install_managed(&self) -> zbus::Result<String>;
+    #[zbus(name = "ServiceLogs")]
+    fn service_logs(&self, request_json: &str) -> zbus::Result<String>;
 }
 
 #[derive(Debug, Error)]
@@ -145,6 +160,55 @@ impl HelperClient {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy
             .core_adopt(&serde_json::to_string(req).unwrap())
+            .await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_start(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.service_start().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_stop(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.service_stop().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_restart(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.service_restart().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_enable(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.service_enable().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_disable(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.service_disable().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_install_managed(
+        &self,
+    ) -> Result<boxpilot_ipc::ServiceInstallManagedResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.service_install_managed().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_logs(
+        &self,
+        req: &boxpilot_ipc::ServiceLogsRequest,
+    ) -> Result<boxpilot_ipc::ServiceLogsResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy
+            .service_logs(&serde_json::to_string(req).unwrap())
             .await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
