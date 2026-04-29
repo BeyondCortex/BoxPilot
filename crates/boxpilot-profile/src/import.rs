@@ -69,6 +69,8 @@ pub fn import_local_file(
     let now = Utc::now();
     let id = new_profile_id(name, now);
     let dir = store.paths().profile_dir(&id);
+    ensure_dir_0700(store.paths().root())?;
+    ensure_dir_0700(&store.paths().profiles_dir())?;
     ensure_dir_0700(&dir)?;
     ensure_dir_0700(&store.paths().profile_assets_dir(&id))?;
 
@@ -152,9 +154,6 @@ pub fn import_local_dir(
 
     while let Some((dir, depth)) = queue.pop_front() {
         max_depth = max_depth.max(depth);
-        if depth > BUNDLE_MAX_NESTING_DEPTH {
-            return Err(DirImportError::TooDeep { depth, limit: BUNDLE_MAX_NESTING_DEPTH });
-        }
         for entry in std::fs::read_dir(&dir)? {
             let entry = entry?;
             let abs = entry.path();
@@ -163,7 +162,14 @@ pub fn import_local_dir(
                 return Err(DirImportError::SymlinkRejected(abs));
             }
             if ft.is_dir() {
-                queue.push_back((abs, depth + 1));
+                let child_depth = depth + 1;
+                if child_depth > BUNDLE_MAX_NESTING_DEPTH {
+                    return Err(DirImportError::TooDeep {
+                        depth: child_depth,
+                        limit: BUNDLE_MAX_NESTING_DEPTH,
+                    });
+                }
+                queue.push_back((abs, child_depth));
                 continue;
             }
             if !ft.is_file() {
@@ -202,6 +208,8 @@ pub fn import_local_dir(
     let now = chrono::Utc::now();
     let id = new_profile_id(name, now);
     let dir = store.paths().profile_dir(&id);
+    ensure_dir_0700(store.paths().root())?;
+    ensure_dir_0700(&store.paths().profiles_dir())?;
     ensure_dir_0700(&dir)?;
     let assets_root = store.paths().profile_assets_dir(&id);
     ensure_dir_0700(&assets_root)?;
@@ -337,5 +345,23 @@ mod tests {
         let m = import_local_dir(&s, &src, "B").unwrap();
         let saved = std::fs::read(s.paths().profile_source(&m.id)).unwrap();
         assert!(String::from_utf8_lossy(&saved).contains("\"chosen\":true"));
+    }
+
+    #[test]
+    fn import_local_dir_rejects_excessive_nesting() {
+        use boxpilot_ipc::BUNDLE_MAX_NESTING_DEPTH;
+        let (tmp, s) = fixture();
+        let src = tmp.path().join("bundle");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("config.json"), r#"{}"#).unwrap();
+        // Build a chain of subdirectories one level deeper than the limit.
+        let mut p = src.clone();
+        for i in 0..(BUNDLE_MAX_NESTING_DEPTH as usize + 2) {
+            p = p.join(format!("d{i}"));
+            std::fs::create_dir_all(&p).unwrap();
+        }
+        std::fs::write(p.join("leaf"), b"x").unwrap();
+        let err = import_local_dir(&s, &src, "deep").unwrap_err();
+        assert!(matches!(err, DirImportError::TooDeep { .. }));
     }
 }

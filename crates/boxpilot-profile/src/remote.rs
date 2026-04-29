@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use chrono::Utc;
+use std::path::Path;
 
 use boxpilot_ipc::SourceKind;
 
@@ -70,6 +71,21 @@ impl RemoteFetcher for ReqwestFetcher {
     }
 }
 
+fn read_remotes_or_recover(path: &Path) -> crate::remotes::RemotesFile {
+    use crate::remotes::RemotesFile;
+    match read_remotes(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => RemotesFile::default(),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "remotes.json is unreadable; recreating — existing entries will be lost",
+            );
+            RemotesFile::default()
+        }
+    }
+}
+
 pub async fn import_remote(
     store: &ProfileStore,
     fetcher: &dyn RemoteFetcher,
@@ -82,7 +98,7 @@ pub async fn import_remote(
 
     // Update remotes.json with the full URL (0600).
     let remotes_path = store.paths().remotes_json();
-    let mut rfile = read_remotes(&remotes_path).unwrap_or_default();
+    let mut rfile = read_remotes_or_recover(&remotes_path);
     let rid = remote_id_for_url(url);
     let now = Utc::now();
     let entry = rfile.remotes.entry(rid.clone()).or_insert(RemoteEntry {
@@ -94,6 +110,7 @@ pub async fn import_remote(
     entry.last_fetched_at = Some(now.to_rfc3339());
     entry.last_etag = fetched.etag.clone();
     ensure_dir_0700(store.paths().root())?;
+    ensure_dir_0700(&store.paths().profiles_dir())?;
     write_remotes(&remotes_path, &rfile)?;
 
     let id = new_profile_id(name, now);
@@ -131,7 +148,7 @@ pub async fn refresh_remote(
         )))?;
 
     let remotes_path = store.paths().remotes_json();
-    let mut rfile = read_remotes(&remotes_path).unwrap_or_default();
+    let mut rfile = read_remotes_or_recover(&remotes_path);
     let url = rfile.remotes.get(&remote_id)
         .ok_or_else(|| FetchError::Io(std::io::Error::new(
             std::io::ErrorKind::NotFound, "remote entry missing from remotes.json",
