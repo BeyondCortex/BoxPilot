@@ -402,7 +402,7 @@ impl Helper {
             systemd: &*self.ctx.systemd,
             fs: &*self.ctx.fs_meta,
         };
-        let mut resp = crate::service::install::install_managed(&cfg, &deps, controller.clone()).await?;
+        let mut resp = crate::service::install::install_managed(&cfg, &deps).await?;
         resp.claimed_controller = controller.is_some();
 
         // Persist controller-name + boxpilot.toml + polkit drop-in if claiming.
@@ -410,6 +410,11 @@ impl Helper {
         // controller-name. The install_state passed here is empty because
         // service.install_managed does not change the cores ledger; the guard
         // inside StateCommit::apply preserves any on-disk install-state.json.
+        //
+        // Atomicity note: the unit file + daemon-reload above are NOT atomic
+        // with the StateCommit below. If the commit fails, the unit lives on
+        // disk but the controller claim is not recorded; the next attempt
+        // rewrites both, so the corner is benign rather than blocking.
         if let Some(c) = controller {
             let commit = crate::core::commit::StateCommit {
                 paths: self.ctx.paths.clone(),

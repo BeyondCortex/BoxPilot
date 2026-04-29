@@ -8,7 +8,6 @@
 use crate::core::trust::{
     default_allowed_prefixes, verify_executable_path, FsMetadataProvider, TrustError,
 };
-use crate::dispatch::ControllerWrites;
 use crate::paths::Paths;
 use crate::service::unit;
 use crate::systemd::Systemd;
@@ -26,7 +25,6 @@ pub struct InstallDeps<'a> {
 pub async fn install_managed(
     cfg: &BoxpilotConfig,
     deps: &InstallDeps<'_>,
-    _controller: Option<ControllerWrites>,
 ) -> HelperResult<ServiceInstallManagedResponse> {
     let core_path_str = cfg.core_path.as_deref().ok_or_else(|| HelperError::Ipc {
         message: "no core configured — install or adopt a core first".into(),
@@ -47,8 +45,8 @@ pub async fn install_managed(
     Ok(ServiceInstallManagedResponse {
         unit_state,
         generated_unit_path: target.to_string_lossy().to_string(),
-        // claimed_controller is filled by the iface wrapper from the dispatch
-        // result — keep it false here since the body itself has no view.
+        // The dispatch chokepoint owns the controller-claim decision; the
+        // iface wrapper sets this field after install_managed returns.
         claimed_controller: false,
     })
 }
@@ -151,7 +149,7 @@ mod tests {
         let cfg = cfg_with_core("/usr/bin/sing-box");
         let deps = InstallDeps { paths: paths.clone(), systemd: &systemd, fs: &fs };
 
-        let resp = install_managed(&cfg, &deps, None).await.unwrap();
+        let resp = install_managed(&cfg, &deps).await.unwrap();
 
         let written = tokio::fs::read_to_string(paths.systemd_unit_path()).await.unwrap();
         assert!(written.contains("ExecStart=/usr/bin/sing-box run -c config.json"));
@@ -172,7 +170,7 @@ mod tests {
         let mut cfg = cfg_with_core("/x");
         cfg.core_path = None;
         let deps = InstallDeps { paths, systemd: &systemd, fs: &fs };
-        let r = install_managed(&cfg, &deps, None).await;
+        let r = install_managed(&cfg, &deps).await;
         assert!(matches!(r, Err(HelperError::Ipc { .. })));
     }
 
@@ -194,7 +192,7 @@ mod tests {
         let fs = DenyFs;
         let cfg = cfg_with_core("/home/evil/sing-box");
         let deps = InstallDeps { paths: paths.clone(), systemd: &systemd, fs: &fs };
-        let r = install_managed(&cfg, &deps, None).await;
+        let r = install_managed(&cfg, &deps).await;
         assert!(matches!(r, Err(HelperError::Ipc { .. })));
         // Critical: the unit file must NOT have been written.
         assert!(!paths.systemd_unit_path().exists());
