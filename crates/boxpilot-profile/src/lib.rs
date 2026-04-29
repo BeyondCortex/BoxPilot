@@ -27,6 +27,11 @@ pub use import::{
     DirImportError, ImportError, SINGLE_JSON_MAX_BYTES,
 };
 
+pub mod remote;
+pub use remote::{
+    import_remote, refresh_remote, FetchError, FetchedRemote, RemoteFetcher, ReqwestFetcher,
+};
+
 #[cfg(test)]
 mod sanity {
     #[test]
