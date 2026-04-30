@@ -8,6 +8,7 @@ mod core;
 mod credentials;
 mod dispatch;
 mod iface;
+mod legacy;
 mod lock;
 mod paths;
 mod profile;
