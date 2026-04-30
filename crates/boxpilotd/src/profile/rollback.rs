@@ -289,6 +289,8 @@ mod tests {
         std::os::unix::fs::symlink(paths.release_dir("cur"), paths.active_symlink()).unwrap();
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![]);
         let deps = RollbackDeps {
@@ -327,6 +329,8 @@ mod tests {
         std::os::unix::fs::symlink(paths.release_dir("cur"), paths.active_symlink()).unwrap();
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![]);
         let deps = RollbackDeps {
@@ -371,6 +375,8 @@ mod tests {
                 n_restarts: 0,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![VerifyOutcome::Running]);
         let deps = RollbackDeps {
@@ -426,6 +432,8 @@ mod tests {
                 n_restarts: 0,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![
             VerifyOutcome::Stuck {
@@ -486,6 +494,8 @@ mod tests {
 
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![VerifyOutcome::NotFound]);
         let deps = RollbackDeps {

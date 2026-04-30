@@ -146,6 +146,8 @@ pub mod testing {
             Arc::new(authority),
             Arc::new(FixedSystemd {
                 answer: systemd_answer,
+                fragment_path: None,
+                unit_file_state: None,
             }),
             journal,
             Arc::new(PasswdLookup),
@@ -234,6 +236,8 @@ pub mod testing {
             Arc::new(authority),
             Arc::new(crate::systemd::testing::FixedSystemd {
                 answer: systemd_answer,
+                fragment_path: None,
+                unit_file_state: None,
             }),
             journal,
             Arc::new(PasswdLookup),

@@ -446,6 +446,8 @@ mod tests {
                 n_restarts: 0,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![VerifyOutcome::Running]);
         let checker = FakeChecker::ok();
@@ -477,6 +479,8 @@ mod tests {
         std::fs::create_dir_all(paths.run_dir()).unwrap();
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![]);
         let checker = FakeChecker::fail();
@@ -510,6 +514,8 @@ mod tests {
         };
         let systemd = Arc::new(FixedSystemd {
             answer: stuck_state.clone(),
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![VerifyOutcome::Stuck {
             final_state: stuck_state,
@@ -558,6 +564,8 @@ mod tests {
                 n_restarts: 0,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![
             VerifyOutcome::Stuck {
@@ -603,6 +611,8 @@ mod tests {
                 n_restarts: 0,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![
             VerifyOutcome::Stuck {
@@ -635,6 +645,8 @@ mod tests {
         std::fs::create_dir_all(paths.run_dir()).unwrap();
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![]);
         let checker = FakeChecker::ok();
@@ -661,6 +673,8 @@ mod tests {
         std::os::unix::fs::symlink(tmp.path().join("ghost"), paths.active_symlink()).unwrap();
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         });
         let verifier = ScriptedVerifier::new(vec![]);
         let checker = FakeChecker::ok();
