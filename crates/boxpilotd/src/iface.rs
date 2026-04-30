@@ -48,6 +48,18 @@ fn to_zbus_err(e: HelperError) -> zbus::fdo::Error {
         HelperError::ActiveCorrupt => "app.boxpilot.Helper1.ActiveCorrupt",
         HelperError::ReleaseAlreadyActive => "app.boxpilot.Helper1.ReleaseAlreadyActive",
         HelperError::ReleaseNotFound { .. } => "app.boxpilot.Helper1.ReleaseNotFound",
+        HelperError::LegacyConfigPathUnsafe { .. } => "app.boxpilot.Helper1.LegacyConfigPathUnsafe",
+        HelperError::LegacyUnitNotFound { .. } => "app.boxpilot.Helper1.LegacyUnitNotFound",
+        HelperError::LegacyExecStartUnparseable { .. } => {
+            "app.boxpilot.Helper1.LegacyExecStartUnparseable"
+        }
+        HelperError::LegacyStopFailed { .. } => "app.boxpilot.Helper1.LegacyStopFailed",
+        HelperError::LegacyDisableFailed { .. } => "app.boxpilot.Helper1.LegacyDisableFailed",
+        HelperError::LegacyConflictsWithManaged { .. } => {
+            "app.boxpilot.Helper1.LegacyConflictsWithManaged"
+        }
+        HelperError::LegacyAssetTooLarge { .. } => "app.boxpilot.Helper1.LegacyAssetTooLarge",
+        HelperError::LegacyTooManyAssets { .. } => "app.boxpilot.Helper1.LegacyTooManyAssets",
     };
     let msg = e.to_string();
     // We use zbus::fdo::Error::Failed as the carrier; the precise mapping
