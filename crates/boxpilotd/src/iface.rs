@@ -322,8 +322,14 @@ impl Helper {
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::LegacyObserveService)
+        let sender = extract_sender(&header)?;
+        let resp = self
+            .do_legacy_observe_service(&sender)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn legacy_migrate_service(
         &self,
@@ -646,6 +652,20 @@ impl Helper {
         };
         crate::profile::rollback::rollback_release(req, controller, &deps).await
     }
+
+    async fn do_legacy_observe_service(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::LegacyObserveServiceResponse, HelperError> {
+        let _call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::LegacyObserveService).await?;
+        let cfg = self.ctx.load_config().await?;
+        let deps = crate::legacy::observe::ObserveDeps {
+            systemd: &*self.ctx.systemd,
+            fs_read: &*self.ctx.fs_fragment_reader,
+        };
+        crate::legacy::observe::observe(&cfg, &deps).await
+    }
 }
 
 #[cfg(test)]
@@ -924,5 +944,35 @@ mod tests {
         let req = boxpilot_ipc::ServiceLogsRequest { lines: 5 };
         let resp = h.do_service_logs(":1.42", req).await.unwrap();
         assert_eq!(resp.lines, vec!["entry1".to_string(), "entry2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn legacy_observe_returns_not_detected_when_unit_absent() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::allowing(&["app.boxpilot.helper.legacy.observe-service"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let resp = h.do_legacy_observe_service(":1.42").await.unwrap();
+        assert!(!resp.detected);
+    }
+
+    #[tokio::test]
+    async fn legacy_observe_denied_returns_not_authorized() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::denying(&["app.boxpilot.helper.legacy.observe-service"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let r = h.do_legacy_observe_service(":1.42").await;
+        assert!(matches!(r, Err(HelperError::NotAuthorized)));
     }
 }

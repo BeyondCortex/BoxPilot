@@ -28,6 +28,7 @@ pub struct HelperContext {
     pub version_checker: Arc<dyn VersionChecker>,
     pub checker: Arc<dyn SingboxChecker>,
     pub verifier: Arc<dyn ServiceVerifier>,
+    pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
     // Cache is intentionally absent. `load_config` reads the file each call;
     // call sites are infrequent (one disk read per `service.status` poll, or
     // per privileged action). When SIGHUP-style reload lands in a later
@@ -37,7 +38,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 12 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 13 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -51,6 +52,7 @@ impl HelperContext {
         version_checker: Arc<dyn VersionChecker>,
         checker: Arc<dyn SingboxChecker>,
         verifier: Arc<dyn ServiceVerifier>,
+        fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
     ) -> Self {
         Self {
             paths,
@@ -65,6 +67,7 @@ impl HelperContext {
             version_checker,
             checker,
             verifier,
+            fs_fragment_reader,
         }
     }
 
@@ -159,6 +162,7 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            Arc::new(NoFragments),
         )
     }
 
@@ -204,6 +208,7 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            Arc::new(NoFragments),
         )
     }
 
@@ -253,7 +258,22 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            Arc::new(NoFragments),
         )
+    }
+
+    /// A `FragmentReader` that pretends every fragment is missing — used
+    /// by tests that don't care about ExecStart parsing. Returns
+    /// `ErrorKind::NotFound` for every read.
+    pub struct NoFragments;
+
+    impl crate::legacy::observe::FragmentReader for NoFragments {
+        fn read_to_string(&self, _path: &std::path::Path) -> std::io::Result<String> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test fragment reader",
+            ))
+        }
     }
 
     /// A permissive test `FsMetadataProvider` that reports every path as a
