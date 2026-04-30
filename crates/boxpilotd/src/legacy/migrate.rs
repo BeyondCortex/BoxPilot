@@ -189,12 +189,97 @@ pub async fn prepare(
     })
 }
 
+pub struct CutoverDeps<'a> {
+    pub systemd: &'a dyn crate::systemd::Systemd,
+    pub backups_units_dir: &'a Path,
+    pub now_iso: fn() -> String,
+}
+
+pub async fn cutover(
+    deps: &CutoverDeps<'_>,
+    unit_name: &str,
+) -> HelperResult<boxpilot_ipc::LegacyMigrateCutoverResponse> {
+    deps.systemd
+        .stop_unit(unit_name)
+        .await
+        .map_err(|e| HelperError::LegacyStopFailed {
+            unit: unit_name.to_string(),
+            message: match e {
+                HelperError::Systemd { message } => message,
+                other => format!("{other}"),
+            },
+        })?;
+
+    deps.systemd
+        .disable_unit_files(&[unit_name.to_string()])
+        .await
+        .map_err(|e| HelperError::LegacyDisableFailed {
+            unit: unit_name.to_string(),
+            message: match e {
+                HelperError::Systemd { message } => message,
+                other => format!("{other}"),
+            },
+        })?;
+
+    let fragment_path = deps
+        .systemd
+        .fragment_path(unit_name)
+        .await
+        .ok()
+        .flatten();
+    let backup_path = match fragment_path {
+        Some(p) => crate::legacy::backup::backup_unit_file(
+            Path::new(&p),
+            deps.backups_units_dir,
+            unit_name,
+            &(deps.now_iso)(),
+        )
+        .await
+        .map(|pb| pb.to_string_lossy().into_owned())?,
+        None => String::new(), // unit had no on-disk fragment; backup is a no-op
+    };
+
+    let final_unit_state = deps.systemd.unit_state(unit_name).await?;
+
+    Ok(boxpilot_ipc::LegacyMigrateCutoverResponse {
+        unit_name: unit_name.to_string(),
+        backup_unit_path: backup_path,
+        final_unit_state,
+    })
+}
+
+/// Single entry point that dispatches `LegacyMigrateRequest::Prepare` /
+/// `Cutover` to the right helper. Used by `iface::do_legacy_migrate_service`.
+pub async fn run(
+    cfg: &BoxpilotConfig,
+    req: boxpilot_ipc::LegacyMigrateRequest,
+    prep_deps: &PrepareDeps<'_>,
+    cut_deps: &CutoverDeps<'_>,
+) -> HelperResult<boxpilot_ipc::LegacyMigrateResponse> {
+    match req {
+        boxpilot_ipc::LegacyMigrateRequest::Prepare => {
+            let r = prepare(cfg, prep_deps).await?;
+            Ok(boxpilot_ipc::LegacyMigrateResponse::Prepare(r))
+        }
+        boxpilot_ipc::LegacyMigrateRequest::Cutover => {
+            if cfg.target_service == LEGACY_UNIT_NAME {
+                return Err(HelperError::LegacyConflictsWithManaged {
+                    unit: LEGACY_UNIT_NAME.to_string(),
+                });
+            }
+            let r = cutover(cut_deps, LEGACY_UNIT_NAME).await?;
+            Ok(boxpilot_ipc::LegacyMigrateResponse::Cutover(r))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systemd::testing::FixedSystemd;
+    use crate::systemd::testing::{FixedSystemd, RecordedCall, RecordingSystemd};
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use tempfile::tempdir;
 
     /// Composite test fake: serves both as a `FragmentReader` (for fragment
     /// text) and as a `ConfigReader` (for config + sibling enumeration).
@@ -427,5 +512,97 @@ mod tests {
         };
         let r = prepare(&cfg(), &deps).await.unwrap();
         assert!(r.assets.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cutover_stops_then_disables_then_backs_up() {
+        let tmp = tempdir().unwrap();
+        // Stage a fragment file so backup_unit_file has something to copy.
+        let fragments = tmp.path().join("etc/systemd/system");
+        tokio::fs::create_dir_all(&fragments).await.unwrap();
+        let fragment = fragments.join("sing-box.service");
+        tokio::fs::write(&fragment, b"[Service]\nExecStart=foo\n")
+            .await
+            .unwrap();
+
+        let recording = RecordingSystemd::new(boxpilot_ipc::UnitState::NotFound);
+        recording.set_fragment_path(Some(fragment.to_string_lossy().into_owned()));
+
+        let backups = tmp.path().join("var/lib/boxpilot/backups/units");
+        let resp = cutover(
+            &CutoverDeps {
+                systemd: &recording,
+                backups_units_dir: &backups,
+                now_iso: || "2026-04-29T00-00-00Z".into(),
+            },
+            "sing-box.service",
+        )
+        .await
+        .unwrap();
+
+        // Order: StopUnit before DisableUnitFiles. backup arrives after.
+        let calls = recording.calls();
+        let stop_idx = calls
+            .iter()
+            .position(|c| matches!(c, RecordedCall::StopUnit(u) if u == "sing-box.service"))
+            .expect("stop call");
+        let disable_idx = calls
+            .iter()
+            .position(|c| matches!(c, RecordedCall::DisableUnitFiles(v) if v == &vec!["sing-box.service".to_string()]))
+            .expect("disable call");
+        assert!(stop_idx < disable_idx, "stop must precede disable");
+
+        assert!(resp.backup_unit_path.starts_with(&backups.to_string_lossy().into_owned()));
+        assert!(tokio::fs::metadata(&resp.backup_unit_path).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn cutover_aborts_when_stop_returns_systemd_error() {
+        // FixedSystemd returns Ok(()) for stop, so use a small wrapper
+        // that fails StopUnit; reuse the test struct.
+        struct StopFails;
+        #[async_trait::async_trait]
+        impl crate::systemd::Systemd for StopFails {
+            async fn unit_state(&self, _: &str) -> Result<boxpilot_ipc::UnitState, HelperError> {
+                Ok(boxpilot_ipc::UnitState::NotFound)
+            }
+            async fn start_unit(&self, _: &str) -> Result<(), HelperError> {
+                Ok(())
+            }
+            async fn stop_unit(&self, _: &str) -> Result<(), HelperError> {
+                Err(HelperError::Systemd {
+                    message: "EBUSY".into(),
+                })
+            }
+            async fn restart_unit(&self, _: &str) -> Result<(), HelperError> {
+                Ok(())
+            }
+            async fn enable_unit_files(&self, _: &[String]) -> Result<(), HelperError> {
+                Ok(())
+            }
+            async fn disable_unit_files(&self, _: &[String]) -> Result<(), HelperError> {
+                Ok(())
+            }
+            async fn reload(&self) -> Result<(), HelperError> {
+                Ok(())
+            }
+            async fn fragment_path(&self, _: &str) -> Result<Option<String>, HelperError> {
+                Ok(None)
+            }
+            async fn unit_file_state(&self, _: &str) -> Result<Option<String>, HelperError> {
+                Ok(None)
+            }
+        }
+        let tmp = tempdir().unwrap();
+        let r = cutover(
+            &CutoverDeps {
+                systemd: &StopFails,
+                backups_units_dir: &tmp.path().join("b/u"),
+                now_iso: || "ts".into(),
+            },
+            "sing-box.service",
+        )
+        .await;
+        assert!(matches!(r, Err(HelperError::LegacyStopFailed { .. })));
     }
 }
