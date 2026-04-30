@@ -256,10 +256,9 @@ impl Systemd for DBusSystemd {
             .build()
             .await
             .map_err(systemd_err)?;
-        let iface = zbus::names::InterfaceName::try_from("org.freedesktop.systemd1.Unit")
-            .map_err(|e| HelperError::Systemd {
-                message: format!("InterfaceName: {e}"),
-            })?;
+        let iface = zbus::names::InterfaceName::from_static_str_unchecked(
+            "org.freedesktop.systemd1.Unit",
+        );
         let v = props
             .get(iface, "FragmentPath")
             .await
