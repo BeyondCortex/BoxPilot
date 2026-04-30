@@ -256,9 +256,8 @@ impl Systemd for DBusSystemd {
             .build()
             .await
             .map_err(systemd_err)?;
-        let iface = zbus::names::InterfaceName::from_static_str_unchecked(
-            "org.freedesktop.systemd1.Unit",
-        );
+        let iface =
+            zbus::names::InterfaceName::from_static_str_unchecked("org.freedesktop.systemd1.Unit");
         let v = props
             .get(iface, "FragmentPath")
             .await
@@ -421,6 +420,7 @@ pub mod testing {
         pub fn set_fragment_path(&self, path: Option<String>) {
             *self.fragment_path.lock().unwrap() = path;
         }
+        #[allow(dead_code)] // wired by future plans (test-only fixture setter)
         pub fn set_unit_file_state(&self, state: Option<String>) {
             *self.unit_file_state.lock().unwrap() = state;
         }

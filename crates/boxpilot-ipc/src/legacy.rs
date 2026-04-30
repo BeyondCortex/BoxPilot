@@ -169,8 +169,8 @@ mod tests {
 
         let cut = LegacyMigrateResponse::Cutover(LegacyMigrateCutoverResponse {
             unit_name: "sing-box.service".into(),
-            backup_unit_path: "/var/lib/boxpilot/backups/units/sing-box.service-2026-04-29T00-00-00Z"
-                .into(),
+            backup_unit_path:
+                "/var/lib/boxpilot/backups/units/sing-box.service-2026-04-29T00-00-00Z".into(),
             final_unit_state: UnitState::NotFound,
         });
         let s = serde_json::to_string(&cut).unwrap();

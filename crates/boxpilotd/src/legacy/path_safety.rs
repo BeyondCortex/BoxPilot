@@ -25,7 +25,12 @@ pub fn classify_config_path(p: &Path) -> ConfigPathKind {
         }
     }
     const SAFE_PREFIXES: &[&str] = &[
-        "/etc/", "/usr/", "/var/lib/", "/var/cache/", "/opt/", "/srv/",
+        "/etc/",
+        "/usr/",
+        "/var/lib/",
+        "/var/cache/",
+        "/opt/",
+        "/srv/",
     ];
     for pre in SAFE_PREFIXES {
         if s.starts_with(pre) {

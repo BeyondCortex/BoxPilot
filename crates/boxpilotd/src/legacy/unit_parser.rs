@@ -78,7 +78,9 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     fn unit(body: &str) -> String {
-        format!("[Unit]\nDescription=x\n\n[Service]\n{body}\n\n[Install]\nWantedBy=multi-user.target\n")
+        format!(
+            "[Unit]\nDescription=x\n\n[Service]\n{body}\n\n[Install]\nWantedBy=multi-user.target\n"
+        )
     }
 
     #[test]
@@ -132,7 +134,10 @@ ExecStart=/usr/bin/sing-box run -c /etc/sb/c.json
     #[test]
     fn rejects_unit_without_service_section() {
         let u = "[Unit]\nDescription=x\n[Install]\nWantedBy=x\n";
-        assert!(matches!(parse_exec_start(u), Err(ParseError::NoServiceSection)));
+        assert!(matches!(
+            parse_exec_start(u),
+            Err(ParseError::NoServiceSection)
+        ));
     }
 
     #[test]

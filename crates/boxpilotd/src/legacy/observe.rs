@@ -175,10 +175,7 @@ mod tests {
         let r = observe(&cfg, &deps).await.unwrap();
         assert!(r.detected);
         assert_eq!(r.unit_name.as_deref(), Some("sing-box.service"));
-        assert_eq!(
-            r.config_path.as_deref(),
-            Some("/etc/sing-box/config.json")
-        );
+        assert_eq!(r.config_path.as_deref(), Some("/etc/sing-box/config.json"));
         assert_eq!(r.config_path_kind, ConfigPathKind::SystemPath);
         assert_eq!(r.unit_file_state.as_deref(), Some("enabled"));
     }

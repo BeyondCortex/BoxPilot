@@ -90,9 +90,10 @@ pub async fn prepare(
         .map_err(|e| HelperError::Ipc {
             message: format!("read fragment {fragment_path}: {e}"),
         })?;
-    let exec = parse_exec_start(&unit_text).map_err(|e| HelperError::LegacyExecStartUnparseable {
-        reason: e.to_string(),
-    })?;
+    let exec =
+        parse_exec_start(&unit_text).map_err(|e| HelperError::LegacyExecStartUnparseable {
+            reason: e.to_string(),
+        })?;
     let config_path = exec
         .config_path
         .ok_or_else(|| HelperError::LegacyExecStartUnparseable {
@@ -221,12 +222,7 @@ pub async fn cutover(
             },
         })?;
 
-    let fragment_path = deps
-        .systemd
-        .fragment_path(unit_name)
-        .await
-        .ok()
-        .flatten();
+    let fragment_path = deps.systemd.fragment_path(unit_name).await.ok().flatten();
     let backup_path = match fragment_path {
         Some(p) => crate::legacy::backup::backup_unit_file(
             Path::new(&p),
@@ -467,7 +463,10 @@ mod tests {
             config_reader: &fs,
         };
         let r = prepare(&c, &deps).await;
-        assert!(matches!(r, Err(HelperError::LegacyConflictsWithManaged { .. })));
+        assert!(matches!(
+            r,
+            Err(HelperError::LegacyConflictsWithManaged { .. })
+        ));
     }
 
     #[tokio::test]
@@ -552,7 +551,9 @@ mod tests {
             .expect("disable call");
         assert!(stop_idx < disable_idx, "stop must precede disable");
 
-        assert!(resp.backup_unit_path.starts_with(&backups.to_string_lossy().into_owned()));
+        assert!(resp
+            .backup_unit_path
+            .starts_with(&backups.to_string_lossy().into_owned()));
         assert!(tokio::fs::metadata(&resp.backup_unit_path).await.is_ok());
     }
 

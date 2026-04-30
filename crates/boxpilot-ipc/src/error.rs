@@ -109,11 +109,7 @@ pub enum HelperError {
 
     /// One sibling file in the legacy config dir exceeds BUNDLE_MAX_FILE_BYTES.
     #[error("legacy asset {path} exceeds per-file limit ({size} > {limit})")]
-    LegacyAssetTooLarge {
-        path: String,
-        size: u64,
-        limit: u64,
-    },
+    LegacyAssetTooLarge { path: String, size: u64, limit: u64 },
 
     /// Direct parent of the legacy config has more than BUNDLE_MAX_FILE_COUNT-1
     /// sibling files.
@@ -205,7 +201,10 @@ mod tests {
                 size: 99,
                 limit: 50,
             },
-            LegacyTooManyAssets { count: 99, limit: 50 },
+            LegacyTooManyAssets {
+                count: 99,
+                limit: 50,
+            },
         ] {
             let s = serde_json::to_string(&v).unwrap();
             let back: HelperError = serde_json::from_str(&s).unwrap();
