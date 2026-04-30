@@ -4,3 +4,4 @@ pub mod path_safety;
 pub mod unit_parser;
 pub mod observe;
 pub mod backup;
+pub mod migrate;
