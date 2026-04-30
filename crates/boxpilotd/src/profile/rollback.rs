@@ -281,6 +281,9 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir_all(paths.run_dir()).unwrap();
+        std::fs::create_dir_all(paths.active_symlink().parent().unwrap()).unwrap();
+        write_release(&paths, "cur", "pcur");
+        std::os::unix::fs::symlink(paths.release_dir("cur"), paths.active_symlink()).unwrap();
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
         });
@@ -314,7 +317,11 @@ mod tests {
         )
         .unwrap();
         std::fs::create_dir_all(paths.run_dir()).unwrap();
+        std::fs::create_dir_all(paths.active_symlink().parent().unwrap()).unwrap();
         write_release(&paths, "cur", "pcur");
+        // toml says cur is active — symlink must agree, otherwise reconcile
+        // flags corrupt and the test never reaches the "already active" check.
+        std::os::unix::fs::symlink(paths.release_dir("cur"), paths.active_symlink()).unwrap();
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,
         });
@@ -462,15 +469,14 @@ mod tests {
         let tmp = tempdir().unwrap();
         let paths = Paths::with_root(tmp.path());
         std::fs::create_dir_all(paths.etc_dir()).unwrap();
-        std::fs::write(
-            paths.boxpilot_toml(),
-            "schema_version = 1\nactive_release_id = \"cur\"\n",
-        )
-        .unwrap();
+        // toml has no active_release_id — fresh state, no prior activation.
+        // (If it did, reconcile would correctly flag corrupt and short-
+        // circuit the rollback before this branch could execute.)
+        std::fs::write(paths.boxpilot_toml(), "schema_version = 1\n").unwrap();
         std::fs::create_dir_all(paths.run_dir()).unwrap();
         std::fs::create_dir_all(paths.active_symlink().parent().unwrap()).unwrap();
         write_release(&paths, "tgt", "ptgt");
-        // Note: no pre-existing active symlink.
+        // No pre-existing active symlink — exercises the None-prev arm.
 
         let systemd = Arc::new(FixedSystemd {
             answer: UnitState::NotFound,

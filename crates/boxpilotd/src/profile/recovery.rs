@@ -3,6 +3,7 @@
 //! and validate `active` resolves under `releases/`.
 
 use crate::paths::Paths;
+use boxpilot_ipc::BoxpilotConfig;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -66,8 +67,26 @@ pub async fn reconcile(paths: &Paths) -> RecoveryReport {
                 report.active_corrupt = true;
             }
         }
+    } else if toml_claims_active(paths).await {
+        // Symlink absent but boxpilot.toml records something as active —
+        // the activation pipeline's no-previous failure paths remove the
+        // symlink to surface this divergence here. Force the operator to
+        // re-activate explicitly rather than silently accepting a
+        // half-committed state.
+        warn!("active symlink missing but toml has active_release_id; flagging corrupt");
+        report.active_corrupt = true;
     }
     report
+}
+
+async fn toml_claims_active(paths: &Paths) -> bool {
+    let cfg_text = match tokio::fs::read_to_string(paths.boxpilot_toml()).await {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    BoxpilotConfig::parse(&cfg_text)
+        .map(|cfg| cfg.active_release_id.is_some())
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -129,5 +148,36 @@ mod tests {
         std::os::unix::fs::symlink(&missing, paths.active_symlink()).unwrap();
         let r = reconcile(&paths).await;
         assert!(r.active_corrupt);
+    }
+
+    #[tokio::test]
+    async fn missing_symlink_with_toml_active_is_corrupt() {
+        // The activation pipeline's no-previous failure paths remove the
+        // active symlink as a tripwire — reconcile must turn that into
+        // active_corrupt so the next activation refuses to proceed silently.
+        let tmp = tempdir().unwrap();
+        let paths = Paths::with_root(tmp.path());
+        std::fs::create_dir_all(paths.etc_dir()).unwrap();
+        std::fs::write(
+            paths.boxpilot_toml(),
+            "schema_version = 1\nactive_release_id = \"orphan\"\n",
+        )
+        .unwrap();
+        // No symlink exists at paths.active_symlink().
+        let r = reconcile(&paths).await;
+        assert!(r.active_corrupt);
+        assert!(r.active_target.is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_symlink_with_no_toml_active_is_clean() {
+        // Fresh install before any activation — toml has no
+        // active_release_id and no symlink. Not corrupt.
+        let tmp = tempdir().unwrap();
+        let paths = Paths::with_root(tmp.path());
+        std::fs::create_dir_all(paths.etc_dir()).unwrap();
+        std::fs::write(paths.boxpilot_toml(), "schema_version = 1\n").unwrap();
+        let r = reconcile(&paths).await;
+        assert!(!r.active_corrupt);
     }
 }
