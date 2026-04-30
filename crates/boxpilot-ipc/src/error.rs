@@ -61,10 +61,6 @@ pub enum HelperError {
     #[error("sing-box check failed (exit {exit}): {stderr_tail}")]
     SingboxCheckFailed { exit: i32, stderr_tail: String },
 
-    /// §7.2: the unit did not reach active/running within the window.
-    #[error("activation verify stuck; final state {final_state}")]
-    ActivationVerifyStuck { final_state: String },
-
     /// §10 step 14: rollback path entered but no previous release exists on disk.
     #[error("rollback target missing on disk")]
     RollbackTargetMissing,
@@ -124,9 +120,6 @@ mod tests {
             SingboxCheckFailed {
                 exit: 1,
                 stderr_tail: "bad rule".into(),
-            },
-            ActivationVerifyStuck {
-                final_state: "NotFound".into(),
             },
             RollbackTargetMissing,
             RollbackUnstartable {

@@ -489,38 +489,25 @@ pub async fn profile_rollback(request: RollbackArgs) -> Result<ActivateResponse,
         target_activation_id: request.target_activation_id,
         verify_window_secs: request.verify_window_secs,
     };
-    let req_json = serde_json::to_string(&req).map_err(|e| CommandError {
-        code: "encode".into(),
-        message: e.to_string(),
-    })?;
-
-    let conn = zbus::Connection::system().await.map_err(|e| CommandError {
-        code: "dbus_connect".into(),
-        message: e.to_string(),
-    })?;
-    let proxy = zbus::Proxy::new(
-        &conn,
-        "app.boxpilot.Helper",
-        "/app/boxpilot/Helper",
-        "app.boxpilot.Helper1",
-    )
-    .await
-    .map_err(|e| CommandError {
-        code: "dbus_proxy".into(),
-        message: e.to_string(),
-    })?;
-    let resp_json: String = proxy
-        .call("ProfileRollbackRelease", &(req_json,))
+    let client = crate::helper_client::HelperClient::connect()
         .await
         .map_err(|e| CommandError {
-            code: "dbus_call".into(),
+            code: "dbus_connect".into(),
             message: e.to_string(),
         })?;
-    let resp: boxpilot_ipc::ActivateBundleResponse =
-        serde_json::from_str(&resp_json).map_err(|e| CommandError {
-            code: "decode".into(),
-            message: e.to_string(),
-        })?;
+    let resp = client.profile_rollback_release(&req).await.map_err(|e| {
+        if let crate::helper_client::ClientError::Method { code, message } = &e {
+            CommandError {
+                code: code.clone(),
+                message: message.clone(),
+            }
+        } else {
+            CommandError {
+                code: "dbus_call".into(),
+                message: e.to_string(),
+            }
+        }
+    })?;
     let outcome = match resp.outcome {
         boxpilot_ipc::ActivateOutcome::Active => "active",
         boxpilot_ipc::ActivateOutcome::RolledBack => "rolled_back",

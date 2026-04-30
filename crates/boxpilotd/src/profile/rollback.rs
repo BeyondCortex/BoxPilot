@@ -4,6 +4,7 @@
 //! previous. GC does not run inside this verb.
 
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
+use crate::dispatch::ControllerWrites;
 use crate::lock;
 use crate::paths::Paths;
 use crate::profile::recovery;
@@ -27,6 +28,7 @@ pub struct RollbackDeps<'a> {
 
 pub async fn rollback_release(
     req: RollbackRequest,
+    controller: Option<ControllerWrites>,
     deps: &RollbackDeps<'_>,
 ) -> HelperResult<ActivateBundleResponse> {
     let _guard = lock::try_acquire(&deps.paths.run_lock())?;
@@ -99,7 +101,7 @@ pub async fn rollback_release(
             let active = ActiveFields {
                 release_id: target_id.clone(),
                 profile_id: target_manifest.profile_id.clone(),
-                profile_name: None,
+                profile_name: target_manifest.profile_name.clone(),
                 profile_sha256: target_manifest.profile_sha256.clone(),
                 activated_at: Utc::now().to_rfc3339(),
             };
@@ -125,7 +127,7 @@ pub async fn rollback_release(
                     previous,
                     ..TomlUpdates::default()
                 },
-                controller: None,
+                controller,
                 install_state: boxpilot_ipc::InstallState::empty(),
                 current_symlink_target: None,
             };
@@ -137,7 +139,22 @@ pub async fn rollback_release(
                 verify: summary,
             })
         }
-        VerifyOutcome::Stuck { .. } | VerifyOutcome::NotFound => {
+        VerifyOutcome::NotFound => {
+            // Spec §7: NotFound means the unit file is missing entirely —
+            // surface honestly instead of attempting a futile rollback. Restore
+            // the previous symlink first so we don't leave it pointing at the
+            // chosen target whose service won't start.
+            if let Some(p) = prev_active_target.as_ref() {
+                let _ = swap_active_symlink(&deps.paths.active_symlink(), p);
+            }
+            Err(HelperError::Systemd {
+                message: format!(
+                    "unit {target_service} not found during rollback verify; \
+                     install_managed has not run"
+                ),
+            })
+        }
+        VerifyOutcome::Stuck { .. } => {
             let restore_target = match prev_active_target {
                 Some(p) => p,
                 None => {
@@ -151,32 +168,46 @@ pub async fn rollback_release(
                 }
             };
             swap_active_symlink(&deps.paths.active_symlink(), &restore_target)?;
+            // Re-snapshot n_restarts after the swap and before restart so the
+            // baseline reflects the operation we're about to verify (§7.2).
+            let restore_pre = match deps.systemd.unit_state(&target_service).await? {
+                UnitState::Known { n_restarts, .. } => n_restarts,
+                UnitState::NotFound => 0,
+            };
             let _ = control::run(Verb::Restart, &target_service, deps.systemd).await;
             let started2 = Instant::now();
             let restore_outcome = deps
                 .verifier
-                .wait_for_running(&target_service, n_restarts_post, window, deps.systemd)
+                .wait_for_running(&target_service, restore_pre, window, deps.systemd)
                 .await?;
             let elapsed2 = started2.elapsed().as_millis() as u64;
             let post2 = deps.systemd.unit_state(&target_service).await.ok();
             let final_summary = VerifySummary {
                 window_used_ms: elapsed2,
-                n_restarts_pre: n_restarts_post,
+                n_restarts_pre: restore_pre,
                 n_restarts_post: match post2.as_ref() {
                     Some(UnitState::Known { n_restarts, .. }) => *n_restarts,
-                    _ => n_restarts_post,
+                    _ => restore_pre,
                 },
                 final_unit_state: post2,
             };
-            if !matches!(restore_outcome, VerifyOutcome::Running) {
-                let _ = control::run(Verb::Stop, &target_service, deps.systemd).await;
+            match restore_outcome {
+                VerifyOutcome::Running => Ok(ActivateBundleResponse {
+                    outcome: ActivateOutcome::Active,
+                    activation_id: cfg.active_release_id.clone().unwrap_or_default(),
+                    previous_activation_id: cfg.active_release_id.clone(),
+                    verify: final_summary,
+                }),
+                _ => {
+                    let _ = control::run(Verb::Stop, &target_service, deps.systemd).await;
+                    Ok(ActivateBundleResponse {
+                        outcome: ActivateOutcome::RollbackUnstartable,
+                        activation_id: target_id.clone(),
+                        previous_activation_id: cfg.active_release_id.clone(),
+                        verify: final_summary,
+                    })
+                }
             }
-            Ok(ActivateBundleResponse {
-                outcome: ActivateOutcome::RollbackUnstartable,
-                activation_id: target_id.clone(),
-                previous_activation_id: cfg.active_release_id.clone(),
-                verify: final_summary,
-            })
         }
     }
 }
@@ -205,6 +236,7 @@ mod tests {
             schema_version: ACTIVATION_MANIFEST_SCHEMA_VERSION,
             activation_id: id.into(),
             profile_id: profile_id.into(),
+            profile_name: Some(format!("name-{profile_id}")),
             profile_sha256: "psha".into(),
             config_sha256: "csha".into(),
             source_kind: SourceKind::Local,
@@ -246,6 +278,7 @@ mod tests {
                 target_activation_id: "ghost".into(),
                 verify_window_secs: None,
             },
+            None,
             &deps,
         )
         .await
@@ -279,6 +312,7 @@ mod tests {
                 target_activation_id: "cur".into(),
                 verify_window_secs: None,
             },
+            None,
             &deps,
         )
         .await
@@ -322,6 +356,7 @@ mod tests {
                 target_activation_id: "tgt".into(),
                 verify_window_secs: Some(2),
             },
+            None,
             &deps,
         )
         .await

@@ -57,10 +57,17 @@ pub fn unpack_into(
             limit: BUNDLE_MAX_TOTAL_BYTES,
         });
     }
+    // Treat `expected_total_bytes` as a soft upper bound (per the IPC field
+    // doc). Reject when the actual stream is larger than the caller said it
+    // would be — that would mean the producer or a man-in-the-middle has
+    // grown the bundle behind our back. A caller passing a conservative
+    // upper-bound estimate is fine.
     if let Some(hint) = expected_total_bytes {
-        if hint != total_size {
+        if total_size > hint {
             return Err(HelperError::Ipc {
-                message: format!("expected_total_bytes {hint} != actual {total_size}"),
+                message: format!(
+                    "actual bundle bytes {total_size} exceed expected_total_bytes hint {hint}"
+                ),
             });
         }
     }
@@ -306,6 +313,7 @@ mod tests {
             schema_version: ACTIVATION_MANIFEST_SCHEMA_VERSION,
             activation_id: "test-id".into(),
             profile_id: profile_id.into(),
+            profile_name: None,
             profile_sha256: "deadbeef".into(),
             config_sha256: "cafebabe".into(),
             source_kind: SourceKind::Local,
@@ -631,7 +639,10 @@ mod tests {
     }
 
     #[test]
-    fn expected_total_bytes_mismatch_aborts_early() {
+    fn expected_total_bytes_under_actual_aborts_early() {
+        // Hint says "≤ N" but the bundle is actually larger — reject. This is
+        // the safety case: a producer or MITM that grew the bundle must not
+        // sneak past the daemon's pre-mmap size guard.
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             (
@@ -643,8 +654,27 @@ mod tests {
         let actual = nix::sys::stat::fstat(fd.as_raw_fd()).unwrap().st_size as u64;
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, Some(actual + 1)).unwrap_err();
+        let err = unpack_into(fd, &dest, Some(actual.saturating_sub(1))).unwrap_err();
         assert!(matches!(err, HelperError::Ipc { .. }));
+    }
+
+    #[test]
+    fn expected_total_bytes_over_actual_is_accepted_as_upper_bound() {
+        // Hint > actual is fine: the field's contract is "soft hint to
+        // short-circuit oversized bundles before mmap", so a conservative
+        // upper bound from the producer must not be rejected.
+        let fd = tar_memfd(vec![
+            ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
+            (
+                "manifest.json",
+                tar::EntryType::Regular,
+                make_manifest("p", vec![]),
+            ),
+        ]);
+        let actual = nix::sys::stat::fstat(fd.as_raw_fd()).unwrap().st_size as u64;
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("s");
+        unpack_into(fd, &dest, Some(actual + 4096)).expect("upper-bound hint must be accepted");
     }
 
     #[test]

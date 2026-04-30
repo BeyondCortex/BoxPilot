@@ -5,6 +5,7 @@
 //! Surfaces four explicit terminal outcomes.
 
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
+use crate::dispatch::ControllerWrites;
 use crate::lock;
 use crate::paths::Paths;
 use crate::profile::checker::SingboxChecker;
@@ -36,6 +37,7 @@ pub struct ActivateDeps<'a> {
 pub async fn activate_bundle(
     req: ActivateBundleRequest,
     fd: OwnedFd,
+    controller: Option<ControllerWrites>,
     deps: &ActivateDeps<'_>,
 ) -> HelperResult<ActivateBundleResponse> {
     let _guard = lock::try_acquire(&deps.paths.run_lock())?;
@@ -146,7 +148,7 @@ pub async fn activate_bundle(
             let active = ActiveFields {
                 release_id: activation_id.clone(),
                 profile_id: manifest.profile_id.clone(),
-                profile_name: None,
+                profile_name: manifest.profile_name.clone(),
                 profile_sha256: manifest.profile_sha256.clone(),
                 activated_at: manifest.created_at.clone(),
             };
@@ -158,7 +160,7 @@ pub async fn activate_bundle(
                     previous,
                     ..TomlUpdates::default()
                 },
-                controller: None,
+                controller,
                 install_state: boxpilot_ipc::InstallState::empty(),
                 current_symlink_target: None,
             };
@@ -170,13 +172,22 @@ pub async fn activate_bundle(
             let new_cfg = new_cfg_text
                 .as_deref()
                 .and_then(|t| BoxpilotConfig::parse(t).ok());
-            let report_gc = gc::run(
-                &deps.paths,
-                Some(&activation_id),
-                new_cfg
-                    .as_ref()
-                    .and_then(|c| c.previous_release_id.as_deref()),
-            );
+            let prev_id = new_cfg.as_ref().and_then(|c| c.previous_release_id.clone());
+            let paths_for_gc = deps.paths.clone();
+            let activation_id_for_gc = activation_id.clone();
+            // gc::run uses blocking std::fs (recursive walks over up to 2 GiB
+            // of release data) — keep it off the async executor.
+            let report_gc = tokio::task::spawn_blocking(move || {
+                gc::run(
+                    &paths_for_gc,
+                    Some(&activation_id_for_gc),
+                    prev_id.as_deref(),
+                )
+            })
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("gc join error: {e}"),
+            })?;
             if !report_gc.deleted.is_empty() {
                 info!(deleted = ?report_gc.deleted, "gc completed after activation");
             }
@@ -191,7 +202,20 @@ pub async fn activate_bundle(
                 verify: verify_summary,
             })
         }
-        VerifyOutcome::Stuck { .. } | VerifyOutcome::NotFound => {
+        VerifyOutcome::NotFound => {
+            // Spec §7: NotFound means the unit isn't installed — rolling back
+            // would just hit the same condition. Surface the missing unit
+            // honestly and leave the new symlink in place so the operator can
+            // see what was attempted (recovery::reconcile will flag it on
+            // next startup if the release dir is consistent).
+            Err(HelperError::Systemd {
+                message: format!(
+                    "unit {target_service} not found during verify; \
+                     install_managed has not run"
+                ),
+            })
+        }
+        VerifyOutcome::Stuck { .. } => {
             rollback_after_verify_failure(
                 deps,
                 &target_service,
@@ -265,6 +289,13 @@ async fn rollback_after_verify_failure(
         Some(p) => p,
         None => {
             let _ = control::run(Verb::Stop, target_service, deps.systemd).await;
+            // The active symlink was already swapped to the failed release in
+            // step 7. With no previous release to fall back to, leaving it in
+            // place would silently mask a broken state on next startup —
+            // recovery::reconcile resolves it as a valid existing dir. Remove
+            // it so reconcile flags `active_corrupt` and the operator must
+            // re-activate explicitly.
+            let _ = std::fs::remove_file(deps.paths.active_symlink());
             return Ok(ActivateBundleResponse {
                 outcome: ActivateOutcome::RollbackTargetMissing,
                 activation_id: failed_id.into(),
@@ -305,7 +336,13 @@ async fn rollback_after_verify_failure(
             previous_activation_id: prev_release_id,
             verify: summary,
         }),
-        VerifyOutcome::Stuck { .. } | VerifyOutcome::NotFound => {
+        VerifyOutcome::NotFound => Err(HelperError::Systemd {
+            message: format!(
+                "unit {target_service} not found during rollback verify; \
+                 install_managed has not run"
+            ),
+        }),
+        VerifyOutcome::Stuck { .. } => {
             let _ = control::run(Verb::Stop, target_service, deps.systemd).await;
             Ok(ActivateBundleResponse {
                 outcome: ActivateOutcome::RollbackUnstartable,
@@ -349,6 +386,7 @@ mod tests {
             schema_version: ACTIVATION_MANIFEST_SCHEMA_VERSION,
             activation_id: activation_id.into(),
             profile_id: "p".into(),
+            profile_name: Some("TestProfile".into()),
             profile_sha256: "sha".into(),
             config_sha256: "cfgsha".into(),
             source_kind: SourceKind::Local,
@@ -404,7 +442,7 @@ mod tests {
         };
         let fd = make_bundle_memfd("act-1");
         let req = ActivateBundleRequest::default();
-        let resp = activate_bundle(req, fd, &deps).await.unwrap();
+        let resp = activate_bundle(req, fd, None, &deps).await.unwrap();
         assert_eq!(resp.outcome, ActivateOutcome::Active);
         assert_eq!(resp.activation_id, "act-1");
         assert!(paths.release_dir("act-1").exists());
@@ -434,7 +472,7 @@ mod tests {
             checker: &checker,
         };
         let fd = make_bundle_memfd("act-2");
-        let err = activate_bundle(ActivateBundleRequest::default(), fd, &deps)
+        let err = activate_bundle(ActivateBundleRequest::default(), fd, None, &deps)
             .await
             .unwrap_err();
         assert!(matches!(err, HelperError::SingboxCheckFailed { .. }));
@@ -469,14 +507,17 @@ mod tests {
             checker: &checker,
         };
         let fd = make_bundle_memfd("act-3");
-        let resp = activate_bundle(ActivateBundleRequest::default(), fd, &deps)
+        let resp = activate_bundle(ActivateBundleRequest::default(), fd, None, &deps)
             .await
             .unwrap();
         assert_eq!(resp.outcome, ActivateOutcome::RollbackTargetMissing);
         assert!(paths.release_dir("act-3").exists());
-        assert_eq!(
-            std::fs::read_link(paths.active_symlink()).unwrap(),
-            paths.release_dir("act-3"),
+        // active symlink must be removed so recovery::reconcile flags
+        // active_corrupt on next startup rather than masking the dead release.
+        assert!(
+            !paths.active_symlink().exists()
+                && std::fs::symlink_metadata(paths.active_symlink()).is_err(),
+            "active symlink should not exist after RollbackTargetMissing",
         );
     }
 
@@ -514,7 +555,7 @@ mod tests {
             checker: &checker,
         };
         let fd = make_bundle_memfd("new-id");
-        let resp = activate_bundle(ActivateBundleRequest::default(), fd, &deps)
+        let resp = activate_bundle(ActivateBundleRequest::default(), fd, None, &deps)
             .await
             .unwrap();
         assert_eq!(resp.outcome, ActivateOutcome::RolledBack);
@@ -561,7 +602,7 @@ mod tests {
             checker: &checker,
         };
         let fd = make_bundle_memfd("new-id-2");
-        let resp = activate_bundle(ActivateBundleRequest::default(), fd, &deps)
+        let resp = activate_bundle(ActivateBundleRequest::default(), fd, None, &deps)
             .await
             .unwrap();
         assert_eq!(resp.outcome, ActivateOutcome::RollbackUnstartable);
@@ -586,7 +627,7 @@ mod tests {
             checker: &checker,
         };
         let fd = make_bundle_memfd("x");
-        let err = activate_bundle(ActivateBundleRequest::default(), fd, &deps)
+        let err = activate_bundle(ActivateBundleRequest::default(), fd, None, &deps)
             .await
             .unwrap_err();
         assert!(matches!(err, HelperError::Ipc { .. }));
@@ -612,7 +653,7 @@ mod tests {
             checker: &checker,
         };
         let fd = make_bundle_memfd("x");
-        let err = activate_bundle(ActivateBundleRequest::default(), fd, &deps)
+        let err = activate_bundle(ActivateBundleRequest::default(), fd, None, &deps)
             .await
             .unwrap_err();
         assert!(matches!(err, HelperError::ActiveCorrupt));

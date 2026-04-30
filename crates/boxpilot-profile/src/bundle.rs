@@ -164,6 +164,7 @@ pub fn prepare_bundle(
         schema_version: ACTIVATION_MANIFEST_SCHEMA_VERSION,
         activation_id,
         profile_id: profile_id.to_string(),
+        profile_name: Some(meta.name.clone()),
         profile_sha256,
         config_sha256,
         source_kind: meta.source_kind,

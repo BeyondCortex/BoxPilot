@@ -1,6 +1,6 @@
 //! `app.boxpilot.Helper1` D-Bus interface. Each method goes through
-//! [`crate::dispatch::authorize`] before doing any work — including the 18
-//! stubs awaiting plans #2-#9. Authorization on stubs avoids leaking which
+//! [`crate::dispatch::authorize`] before doing any work — including the
+//! stubs awaiting later plans. Authorization on stubs avoids leaking which
 //! methods exist to unauthorized callers and exercises the §6 contract for
 //! every method from day one.
 //!
@@ -43,7 +43,6 @@ fn to_zbus_err(e: HelperError) -> zbus::fdo::Error {
         HelperError::BundleEntryRejected { .. } => "app.boxpilot.Helper1.BundleEntryRejected",
         HelperError::BundleAssetMismatch { .. } => "app.boxpilot.Helper1.BundleAssetMismatch",
         HelperError::SingboxCheckFailed { .. } => "app.boxpilot.Helper1.SingboxCheckFailed",
-        HelperError::ActivationVerifyStuck { .. } => "app.boxpilot.Helper1.ActivationVerifyStuck",
         HelperError::RollbackTargetMissing => "app.boxpilot.Helper1.RollbackTargetMissing",
         HelperError::RollbackUnstartable { .. } => "app.boxpilot.Helper1.RollbackUnstartable",
         HelperError::ActiveCorrupt => "app.boxpilot.Helper1.ActiveCorrupt",
@@ -87,9 +86,9 @@ impl Helper {
         })
     }
 
-    // ----- Stubs for the other 18 actions (filled in by plans #2-#9). -----
+    // ----- Stubs for the remaining actions (filled in by later plans). -----
     // Each goes through dispatch::authorize first — an unauthorized caller
-    // sees NotAuthorized, not NotImplemented. Plans #2-#9 replace each body
+    // sees NotAuthorized, not NotImplemented. Later plans replace each body
     // with the real implementation while keeping the authorize chokepoint.
 
     async fn service_start(
@@ -600,15 +599,20 @@ impl Helper {
         req: boxpilot_ipc::ActivateBundleRequest,
         fd: std::os::fd::OwnedFd,
     ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
-        let _call =
+        let call =
             dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileActivateBundle).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
         let deps = crate::profile::activate::ActivateDeps {
             paths: self.ctx.paths.clone(),
             systemd: &*self.ctx.systemd,
             verifier: &*self.ctx.verifier,
             checker: &*self.ctx.checker,
         };
-        crate::profile::activate::activate_bundle(req, fd, &deps).await
+        crate::profile::activate::activate_bundle(req, fd, controller, &deps).await
     }
 
     async fn do_profile_rollback_release(
@@ -616,14 +620,19 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::RollbackRequest,
     ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
-        let _call =
+        let call =
             dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileRollbackRelease).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
         let deps = crate::profile::rollback::RollbackDeps {
             paths: self.ctx.paths.clone(),
             systemd: &*self.ctx.systemd,
             verifier: &*self.ctx.verifier,
         };
-        crate::profile::rollback::rollback_release(req, &deps).await
+        crate::profile::rollback::rollback_release(req, controller, &deps).await
     }
 }
 
@@ -710,7 +719,7 @@ mod tests {
         let h = Helper::new(ctx);
         // We can't construct a real zbus::message::Header in unit tests, so
         // we test through the inner dispatch path. The interface-level
-        // wiring is mechanically identical for all 18 stubs (verified in
+        // wiring is mechanically identical for every stub (verified in
         // the file above by inspection).
         let r = dispatch::authorize(&h.ctx, ":1.42", HelperMethod::CoreDiscover).await;
         assert!(matches!(r, Err(HelperError::NotAuthorized)));
@@ -718,7 +727,7 @@ mod tests {
 
     /// An authorized stub call passes the §6 chokepoint and reaches the
     /// stub body, which returns NotImplemented. Confirms the ordering
-    /// (authorize first, then NotImplemented) for plan #2-#9 to rely on.
+    /// (authorize first, then NotImplemented) for later plans to rely on.
     #[tokio::test]
     async fn stub_authorized_reaches_not_implemented() {
         let tmp = tempdir().unwrap();

@@ -22,6 +22,12 @@ pub struct ActivationManifest {
     pub schema_version: u32,
     pub activation_id: String,
     pub profile_id: String,
+    /// Human-readable name from the source profile, persisted to
+    /// `boxpilot.toml::active_profile_name` on activation/rollback. `None` if
+    /// the producer did not supply one (older bundles or programmatic
+    /// activations).
+    #[serde(default)]
+    pub profile_name: Option<String>,
     pub profile_sha256: String,
     pub config_sha256: String,
     pub source_kind: SourceKind,
@@ -115,6 +121,7 @@ mod tests {
             schema_version: ACTIVATION_MANIFEST_SCHEMA_VERSION,
             activation_id: "2026-04-30T00-00-00Z-abc123".into(),
             profile_id: "profile-id".into(),
+            profile_name: Some("Daily".into()),
             profile_sha256: "deadbeef".into(),
             config_sha256: "cafebabe".into(),
             source_kind: SourceKind::Remote,
