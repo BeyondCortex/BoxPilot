@@ -205,9 +205,20 @@ pub async fn activate_bundle(
         VerifyOutcome::NotFound => {
             // Spec §7: NotFound means the unit isn't installed — rolling back
             // would just hit the same condition. Surface the missing unit
-            // honestly and leave the new symlink in place so the operator can
-            // see what was attempted (recovery::reconcile will flag it on
-            // next startup if the release dir is consistent).
+            // honestly. recovery::reconcile only checks symlink-resolves and
+            // target-exists, not toml/symlink agreement, so we have to put
+            // the symlink back ourselves: restore it to whatever it was
+            // before so toml and symlink stay in sync, or remove it if
+            // there was no previous target (so reconcile flags
+            // `active_corrupt` next boot).
+            match prev_active_target.as_ref() {
+                Some(p) => {
+                    let _ = swap_active_symlink(&deps.paths.active_symlink(), p);
+                }
+                None => {
+                    let _ = std::fs::remove_file(deps.paths.active_symlink());
+                }
+            }
             Err(HelperError::Systemd {
                 message: format!(
                     "unit {target_service} not found during verify; \

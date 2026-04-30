@@ -141,11 +141,17 @@ pub async fn rollback_release(
         }
         VerifyOutcome::NotFound => {
             // Spec §7: NotFound means the unit file is missing entirely —
-            // surface honestly instead of attempting a futile rollback. Restore
-            // the previous symlink first so we don't leave it pointing at the
-            // chosen target whose service won't start.
-            if let Some(p) = prev_active_target.as_ref() {
-                let _ = swap_active_symlink(&deps.paths.active_symlink(), p);
+            // surface honestly instead of attempting a futile rollback. Put
+            // the symlink back to whatever was active before so the toml and
+            // symlink stay in sync; if there was no previous symlink, remove
+            // ours so recovery::reconcile flags `active_corrupt` next boot.
+            match prev_active_target.as_ref() {
+                Some(p) => {
+                    let _ = swap_active_symlink(&deps.paths.active_symlink(), p);
+                }
+                None => {
+                    let _ = std::fs::remove_file(deps.paths.active_symlink());
+                }
             }
             Err(HelperError::Systemd {
                 message: format!(
@@ -159,6 +165,11 @@ pub async fn rollback_release(
                 Some(p) => p,
                 None => {
                     let _ = control::run(Verb::Stop, &target_service, deps.systemd).await;
+                    // Same masking risk as activate.rs's analogous arm: with
+                    // no previous to restore, leaving the symlink pointed at
+                    // the failed target lets reconcile mark a broken state
+                    // healthy. Drop the symlink so reconcile flags it.
+                    let _ = std::fs::remove_file(deps.paths.active_symlink());
                     return Ok(ActivateBundleResponse {
                         outcome: ActivateOutcome::RollbackTargetMissing,
                         activation_id: target_id.clone(),
@@ -192,9 +203,15 @@ pub async fn rollback_release(
                 final_unit_state: post2,
             };
             match restore_outcome {
+                // Symmetric with activate.rs's auto-rollback success: nothing
+                // actually changed on disk in the toml sense (we tried to
+                // swap, failed, reverted). Surface as `RolledBack` with the
+                // attempted-but-failed id in `activation_id` and the still-
+                // active id in `previous_activation_id`. Skip StateCommit —
+                // the previous active is still active.
                 VerifyOutcome::Running => Ok(ActivateBundleResponse {
-                    outcome: ActivateOutcome::Active,
-                    activation_id: cfg.active_release_id.clone().unwrap_or_default(),
+                    outcome: ActivateOutcome::RolledBack,
+                    activation_id: target_id.clone(),
                     previous_activation_id: cfg.active_release_id.clone(),
                     verify: final_summary,
                 }),
@@ -369,5 +386,115 @@ mod tests {
         .unwrap();
         assert_eq!(cfg.active_release_id.as_deref(), Some("tgt"));
         assert_eq!(cfg.previous_release_id.as_deref(), Some("cur"));
+    }
+
+    #[tokio::test]
+    async fn rollback_target_stuck_then_restore_running_returns_rolled_back() {
+        // Symmetric with activate.rs's auto-rollback success: target verify
+        // fails, restore-to-original succeeds → outcome `RolledBack`,
+        // `activation_id` = the failed target, `previous_activation_id` =
+        // the still-active original. NO toml mutation expected.
+        let tmp = tempdir().unwrap();
+        let paths = Paths::with_root(tmp.path());
+        std::fs::create_dir_all(paths.etc_dir()).unwrap();
+        std::fs::write(
+            paths.boxpilot_toml(),
+            "schema_version = 1\nactive_release_id = \"cur\"\nactive_profile_id = \"pcur\"\nactive_profile_sha256 = \"sha-cur\"\nactivated_at = \"2026-04-29T00:00:00-07:00\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(paths.run_dir()).unwrap();
+        std::fs::create_dir_all(paths.active_symlink().parent().unwrap()).unwrap();
+        write_release(&paths, "cur", "pcur");
+        write_release(&paths, "tgt", "ptgt");
+        std::os::unix::fs::symlink(paths.release_dir("cur"), paths.active_symlink()).unwrap();
+
+        let systemd = Arc::new(FixedSystemd {
+            answer: UnitState::Known {
+                active_state: "active".into(),
+                sub_state: "running".into(),
+                load_state: "loaded".into(),
+                n_restarts: 0,
+                exec_main_status: 0,
+            },
+        });
+        let verifier = ScriptedVerifier::new(vec![
+            VerifyOutcome::Stuck {
+                final_state: UnitState::NotFound,
+            },
+            VerifyOutcome::Running,
+        ]);
+        let deps = RollbackDeps {
+            paths: paths.clone(),
+            systemd: &*systemd,
+            verifier: &verifier,
+        };
+        let resp = rollback_release(
+            RollbackRequest {
+                target_activation_id: "tgt".into(),
+                verify_window_secs: Some(2),
+            },
+            None,
+            &deps,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.outcome, ActivateOutcome::RolledBack);
+        assert_eq!(resp.activation_id, "tgt");
+        assert_eq!(resp.previous_activation_id.as_deref(), Some("cur"));
+        // No toml change: cur is still active, no previous recorded.
+        let cfg = boxpilot_ipc::BoxpilotConfig::parse(
+            &std::fs::read_to_string(paths.boxpilot_toml()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg.active_release_id.as_deref(), Some("cur"));
+        assert!(cfg.previous_release_id.is_none());
+        // Symlink restored to original.
+        assert_eq!(
+            std::fs::read_link(paths.active_symlink()).unwrap(),
+            paths.release_dir("cur"),
+        );
+    }
+
+    #[tokio::test]
+    async fn rollback_notfound_with_no_prev_removes_active_symlink() {
+        // NotFound on first verify, no previous active to restore to →
+        // remove the symlink so reconcile flags `active_corrupt` next boot.
+        let tmp = tempdir().unwrap();
+        let paths = Paths::with_root(tmp.path());
+        std::fs::create_dir_all(paths.etc_dir()).unwrap();
+        std::fs::write(
+            paths.boxpilot_toml(),
+            "schema_version = 1\nactive_release_id = \"cur\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(paths.run_dir()).unwrap();
+        std::fs::create_dir_all(paths.active_symlink().parent().unwrap()).unwrap();
+        write_release(&paths, "tgt", "ptgt");
+        // Note: no pre-existing active symlink.
+
+        let systemd = Arc::new(FixedSystemd {
+            answer: UnitState::NotFound,
+        });
+        let verifier = ScriptedVerifier::new(vec![VerifyOutcome::NotFound]);
+        let deps = RollbackDeps {
+            paths: paths.clone(),
+            systemd: &*systemd,
+            verifier: &verifier,
+        };
+        let err = rollback_release(
+            RollbackRequest {
+                target_activation_id: "tgt".into(),
+                verify_window_secs: Some(2),
+            },
+            None,
+            &deps,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, HelperError::Systemd { .. }));
+        assert!(
+            std::fs::symlink_metadata(paths.active_symlink()).is_err(),
+            "active symlink must be removed when no previous to restore to",
+        );
     }
 }
