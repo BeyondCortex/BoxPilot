@@ -70,7 +70,12 @@ Click "Activate this profile" in the GUI for the imported profile. Confirm the s
 
 ## 7. Recovery if cutover fails
 
-If `LegacyStopFailed` or `LegacyDisableFailed` is returned, the legacy unit is **not** torn down. Verify `systemctl` still shows the legacy unit running (or whatever it was). The user has no data loss — they can retry, or pursue advanced takeover (out of scope for v1.0).
+Failure modes by error code:
+
+- `LegacyStopFailed` — fragment_path was read and the unit fragment was backed up to `/var/lib/boxpilot/backups/units/`; the legacy unit was NOT stopped or disabled. Safe to retry; the legacy `sing-box.service` is unchanged.
+- `LegacyDisableFailed` — the legacy unit has been stopped and a backup was written, but `disable` did not complete. The unit is stopped now, but its symlinks under `multi-user.target.wants/` may still point at the fragment, so the legacy unit will return at next reboot. Recovery: re-run cutover, or manually `sudo systemctl disable sing-box.service`.
+
+In neither case does BoxPilot start `boxpilot-sing-box.service`. Activation only proceeds when the user separately invokes `profile.activate_bundle` against the imported profile.
 
 ## 8. Authorization gating
 

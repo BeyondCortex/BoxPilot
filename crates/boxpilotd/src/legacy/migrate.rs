@@ -131,6 +131,7 @@ pub async fn prepare(
             message: format!("read_dir {}: {e}", parent.display()),
         })?;
     let mut count = 0u32;
+    let mut total: u64 = cfg_bytes.len() as u64;
     for e in entries {
         if e.is_symlink || !e.is_file {
             continue;
@@ -155,6 +156,14 @@ pub async fn prepare(
                 path: e.path.to_string_lossy().into_owned(),
                 size,
                 limit: BUNDLE_MAX_FILE_BYTES,
+            });
+        }
+        total = total.saturating_add(size);
+        if total > boxpilot_ipc::BUNDLE_MAX_TOTAL_BYTES {
+            return Err(HelperError::LegacyAssetTooLarge {
+                path: e.path.to_string_lossy().into_owned(),
+                size: total,
+                limit: boxpilot_ipc::BUNDLE_MAX_TOTAL_BYTES,
             });
         }
         let bytes = deps
@@ -200,6 +209,24 @@ pub async fn cutover(
     deps: &CutoverDeps<'_>,
     unit_name: &str,
 ) -> HelperResult<boxpilot_ipc::LegacyMigrateCutoverResponse> {
+    // Read FragmentPath BEFORE any mutation. Disable can remove a symlink
+    // fragment and make the post-disable lookup return None, silently
+    // skipping the backup. Capture it now so the backup is always written
+    // when one exists on disk.
+    let fragment_path = deps.systemd.fragment_path(unit_name).await.ok().flatten();
+
+    let backup_path = match fragment_path {
+        Some(p) => crate::legacy::backup::backup_unit_file(
+            Path::new(&p),
+            deps.backups_units_dir,
+            unit_name,
+            &(deps.now_iso)(),
+        )
+        .await
+        .map(|pb| pb.to_string_lossy().into_owned())?,
+        None => String::new(), // unit had no on-disk fragment; backup is a no-op
+    };
+
     deps.systemd
         .stop_unit(unit_name)
         .await
@@ -221,19 +248,6 @@ pub async fn cutover(
                 other => format!("{other}"),
             },
         })?;
-
-    let fragment_path = deps.systemd.fragment_path(unit_name).await.ok().flatten();
-    let backup_path = match fragment_path {
-        Some(p) => crate::legacy::backup::backup_unit_file(
-            Path::new(&p),
-            deps.backups_units_dir,
-            unit_name,
-            &(deps.now_iso)(),
-        )
-        .await
-        .map(|pb| pb.to_string_lossy().into_owned())?,
-        None => String::new(), // unit had no on-disk fragment; backup is a no-op
-    };
 
     let final_unit_state = deps.systemd.unit_state(unit_name).await?;
 
@@ -605,5 +619,54 @@ mod tests {
         )
         .await;
         assert!(matches!(r, Err(HelperError::LegacyStopFailed { .. })));
+    }
+
+    #[tokio::test]
+    async fn prepare_rejects_when_cumulative_assets_exceed_total_cap() {
+        // Two huge assets that individually fit (each = MAX_FILE / 2 + 1 byte)
+        // but together exceed MAX_TOTAL.
+        let half_plus_one = (boxpilot_ipc::BUNDLE_MAX_FILE_BYTES / 2 + 1) as usize;
+        // Need to push past MAX_TOTAL with a few large files. With 16 MiB
+        // BUNDLE_MAX_FILE_BYTES and 64 MiB BUNDLE_MAX_TOTAL_BYTES, four
+        // ~16 MiB files = 64 MiB which is exactly the cap; five push past.
+        let big = vec![0u8; boxpilot_ipc::BUNDLE_MAX_FILE_BYTES as usize];
+        let _ = half_plus_one; // silence the warning
+        let fs = MapFs::new();
+        fs.add_file(
+            "/etc/systemd/system/sing-box.service",
+            b"[Service]\nExecStart=/usr/bin/sing-box run -c /etc/sb/c.json\n",
+        );
+        fs.add_file("/etc/sb/c.json", b"{}");
+        for i in 0..5 {
+            let p = format!("/etc/sb/asset{i}");
+            fs.add_file(&p, &big);
+        }
+        let entries: Vec<DirEntry> = (0..5)
+            .map(|i| DirEntry {
+                path: PathBuf::from(format!("/etc/sb/asset{i}")),
+                is_file: true,
+                is_symlink: false,
+            })
+            .chain(std::iter::once(DirEntry {
+                path: PathBuf::from("/etc/sb/c.json"),
+                is_file: true,
+                is_symlink: false,
+            }))
+            .collect();
+        fs.set_dir("/etc/sb", entries);
+        let sd = systemd_with_fragment(boxpilot_ipc::UnitState::Known {
+            active_state: "active".into(),
+            sub_state: "running".into(),
+            load_state: "loaded".into(),
+            n_restarts: 0,
+            exec_main_status: 0,
+        });
+        let deps = PrepareDeps {
+            systemd: &sd,
+            fs_read: &fs,
+            config_reader: &fs,
+        };
+        let r = prepare(&cfg(), &deps).await;
+        assert!(matches!(r, Err(HelperError::LegacyAssetTooLarge { .. })));
     }
 }
