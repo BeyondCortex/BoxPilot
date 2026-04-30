@@ -141,10 +141,11 @@ pub async fn rollback_release(
         }
         VerifyOutcome::NotFound => {
             // Spec §7: NotFound means the unit file is missing entirely —
-            // surface honestly instead of attempting a futile rollback. Put
-            // the symlink back to whatever was active before so the toml and
-            // symlink stay in sync; if there was no previous symlink, remove
-            // ours so recovery::reconcile flags `active_corrupt` next boot.
+            // surface honestly instead of attempting a futile rollback. Undo
+            // the half-applied symlink swap so toml and symlink stay in sync.
+            // The reconcile pre-check guarantees that, at entry, toml and
+            // symlink agreed; restoring (Some) or dropping (None) here
+            // returns us to that consistent prior state.
             match prev_active_target.as_ref() {
                 Some(p) => {
                     let _ = swap_active_symlink(&deps.paths.active_symlink(), p);
@@ -165,10 +166,12 @@ pub async fn rollback_release(
                 Some(p) => p,
                 None => {
                     let _ = control::run(Verb::Stop, &target_service, deps.systemd).await;
-                    // Same masking risk as activate.rs's analogous arm: with
-                    // no previous to restore, leaving the symlink pointed at
-                    // the failed target lets reconcile mark a broken state
-                    // healthy. Drop the symlink so reconcile flags it.
+                    // Same shape as activate.rs's analogous arm: with no
+                    // previous to restore, drop the half-applied symlink so
+                    // we end up in the clean fresh-install state rather than
+                    // leaving an orphan symlink at the failed target. The
+                    // reconcile pre-check guarantees toml.active_release_id
+                    // was None at entry, so this end state is consistent.
                     let _ = std::fs::remove_file(deps.paths.active_symlink());
                     return Ok(ActivateBundleResponse {
                         outcome: ActivateOutcome::RollbackTargetMissing,

@@ -205,12 +205,15 @@ pub async fn activate_bundle(
         VerifyOutcome::NotFound => {
             // Spec §7: NotFound means the unit isn't installed — rolling back
             // would just hit the same condition. Surface the missing unit
-            // honestly. recovery::reconcile only checks symlink-resolves and
-            // target-exists, not toml/symlink agreement, so we have to put
-            // the symlink back ourselves: restore it to whatever it was
-            // before so toml and symlink stay in sync, or remove it if
-            // there was no previous target (so reconcile flags
-            // `active_corrupt` next boot).
+            // honestly, but first undo the half-applied symlink swap from
+            // step 7 so we don't leave toml and symlink diverged.
+            // - prev_active_target = Some(p): restore to p — toml's
+            //   active_release_id (unchanged, no StateCommit ran) still
+            //   matches p's release id.
+            // - None: this branch is only reachable on a fresh-install
+            //   first activation (the reconcile pre-check enforces that
+            //   toml+symlink can't be divergent at entry). Drop the symlink
+            //   so we end up back in the clean fresh-install state.
             match prev_active_target.as_ref() {
                 Some(p) => {
                     let _ = swap_active_symlink(&deps.paths.active_symlink(), p);
@@ -300,12 +303,13 @@ async fn rollback_after_verify_failure(
         Some(p) => p,
         None => {
             let _ = control::run(Verb::Stop, target_service, deps.systemd).await;
-            // The active symlink was already swapped to the failed release in
-            // step 7. With no previous release to fall back to, leaving it in
-            // place would silently mask a broken state on next startup —
-            // recovery::reconcile resolves it as a valid existing dir. Remove
-            // it so reconcile flags `active_corrupt` and the operator must
-            // re-activate explicitly.
+            // First-activation Stuck with no prior to fall back to. Drop the
+            // half-applied symlink (still pointing at the failed release from
+            // step 7) so we end up back in the clean fresh-install state
+            // rather than leaving an orphan symlink at a non-running release.
+            // The reconcile pre-check guarantees toml.active_release_id was
+            // None at entry, so toml is already consistent with this end
+            // state.
             let _ = std::fs::remove_file(deps.paths.active_symlink());
             return Ok(ActivateBundleResponse {
                 outcome: ActivateOutcome::RollbackTargetMissing,

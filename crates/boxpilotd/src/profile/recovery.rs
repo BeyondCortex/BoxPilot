@@ -82,11 +82,26 @@ pub async fn reconcile(paths: &Paths) -> RecoveryReport {
 async fn toml_claims_active(paths: &Paths) -> bool {
     let cfg_text = match tokio::fs::read_to_string(paths.boxpilot_toml()).await {
         Ok(s) => s,
-        Err(_) => return false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Fresh install before service.install_managed has run — no toml
+            // is the expected state, not a diagnostic.
+            return false;
+        }
+        Err(e) => {
+            warn!("read boxpilot.toml during reconcile: {e}; assuming no active claim");
+            return false;
+        }
     };
-    BoxpilotConfig::parse(&cfg_text)
-        .map(|cfg| cfg.active_release_id.is_some())
-        .unwrap_or(false)
+    match BoxpilotConfig::parse(&cfg_text) {
+        Ok(cfg) => cfg.active_release_id.is_some(),
+        Err(e) => {
+            // Includes UnsupportedSchemaVersion: stays safe (no false-positive
+            // active_corrupt) but logs so a future schema rollover doesn't
+            // silently disable this tripwire.
+            warn!("parse boxpilot.toml during reconcile: {e}; assuming no active claim");
+            false
+        }
+    }
 }
 
 #[cfg(test)]
