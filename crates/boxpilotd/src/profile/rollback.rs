@@ -468,7 +468,10 @@ mod tests {
     #[tokio::test]
     async fn rollback_notfound_with_no_prev_removes_active_symlink() {
         // NotFound on first verify, no previous active to restore to →
-        // remove the symlink so reconcile flags `active_corrupt` next boot.
+        // drop the half-applied symlink so the system returns to the clean
+        // fresh-install state (toml had no active_release_id at entry, so
+        // reconcile won't flag anything; the cleanup is about not leaving
+        // a stray symlink at the failed target).
         let tmp = tempdir().unwrap();
         let paths = Paths::with_root(tmp.path());
         std::fs::create_dir_all(paths.etc_dir()).unwrap();

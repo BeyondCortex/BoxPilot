@@ -527,8 +527,11 @@ mod tests {
             .unwrap();
         assert_eq!(resp.outcome, ActivateOutcome::RollbackTargetMissing);
         assert!(paths.release_dir("act-3").exists());
-        // active symlink must be removed so recovery::reconcile flags
-        // active_corrupt on next startup rather than masking the dead release.
+        // The half-applied symlink (swapped to act-3 then orphaned by the
+        // failed verify) must be cleaned up so the system returns to the
+        // clean fresh-install state — the test toml has no
+        // active_release_id, so reconcile would otherwise see a stray
+        // symlink with nothing in toml to validate it against.
         assert!(
             !paths.active_symlink().exists()
                 && std::fs::symlink_metadata(paths.active_symlink()).is_err(),
