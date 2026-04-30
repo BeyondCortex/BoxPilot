@@ -24,7 +24,10 @@ pub struct RemotesFile {
 
 impl Default for RemotesFile {
     fn default() -> Self {
-        Self { schema_version: REMOTES_SCHEMA_VERSION, remotes: BTreeMap::new() }
+        Self {
+            schema_version: REMOTES_SCHEMA_VERSION,
+            remotes: BTreeMap::new(),
+        }
     }
 }
 
@@ -63,7 +66,11 @@ mod tests {
         let mut f = RemotesFile::default();
         f.remotes.insert(
             "r-abc".into(),
-            RemoteEntry { url: "https://x?token=t".into(), last_fetched_at: None, last_etag: None },
+            RemoteEntry {
+                url: "https://x?token=t".into(),
+                last_fetched_at: None,
+                last_etag: None,
+            },
         );
         let s = serde_json::to_string(&f).unwrap();
         let back: RemotesFile = serde_json::from_str(&s).unwrap();

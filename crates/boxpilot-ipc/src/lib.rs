@@ -23,15 +23,15 @@ pub use install_state::{
 
 pub mod service;
 pub use service::{
-    ServiceControlResponse, ServiceInstallManagedResponse, ServiceLogsRequest,
-    ServiceLogsResponse, SERVICE_LOGS_DEFAULT_LINES, SERVICE_LOGS_MAX_LINES,
+    ServiceControlResponse, ServiceInstallManagedResponse, ServiceLogsRequest, ServiceLogsResponse,
+    SERVICE_LOGS_DEFAULT_LINES, SERVICE_LOGS_MAX_LINES,
 };
 
 pub mod profile;
 pub use profile::{
-    ActivationManifest, AssetEntry, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION,
-    BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT, BUNDLE_MAX_NESTING_DEPTH,
-    BUNDLE_MAX_TOTAL_BYTES,
+    ActivateBundleRequest, ActivateBundleResponse, ActivateOutcome, ActivationManifest, AssetEntry,
+    RollbackRequest, SourceKind, VerifySummary, ACTIVATION_MANIFEST_SCHEMA_VERSION,
+    BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT, BUNDLE_MAX_NESTING_DEPTH, BUNDLE_MAX_TOTAL_BYTES,
 };
 
 #[cfg(test)]

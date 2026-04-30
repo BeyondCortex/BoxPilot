@@ -25,11 +25,23 @@ pub const SINGLE_JSON_MAX_BYTES: u64 = boxpilot_ipc::BUNDLE_MAX_FILE_BYTES;
 pub fn slugify(name: &str) -> String {
     let mut s: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
-    while s.contains("--") { s = s.replace("--", "-"); }
+    while s.contains("--") {
+        s = s.replace("--", "-");
+    }
     let trimmed = s.trim_matches('-');
-    if trimmed.is_empty() { "profile".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "profile".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Stable-but-unique-on-this-machine. `name` only contributes the slug;
@@ -61,7 +73,10 @@ pub fn import_local_file(
 ) -> Result<ProfileMetadata, ImportError> {
     let meta = std::fs::metadata(src_path)?;
     if meta.len() > SINGLE_JSON_MAX_BYTES {
-        return Err(ImportError::TooLarge { size: meta.len(), limit: SINGLE_JSON_MAX_BYTES });
+        return Err(ImportError::TooLarge {
+            size: meta.len(),
+            limit: SINGLE_JSON_MAX_BYTES,
+        });
     }
     let bytes = std::fs::read(src_path)?;
     serde_json::from_slice::<serde_json::Value>(&bytes).map_err(ImportError::InvalidJson)?;
@@ -105,7 +120,11 @@ pub enum DirImportError {
     #[error("non-regular file rejected at {0}")]
     NotRegular(std::path::PathBuf),
     #[error("file {path} too large ({size} bytes; per-file limit {limit})")]
-    FileTooLarge { path: std::path::PathBuf, size: u64, limit: u64 },
+    FileTooLarge {
+        path: std::path::PathBuf,
+        size: u64,
+        limit: u64,
+    },
     #[error("bundle exceeds total size {total} > {limit}")]
     TotalTooLarge { total: u64, limit: u64 },
     #[error("bundle exceeds file count {count} > {limit}")]
@@ -153,12 +172,16 @@ pub fn import_local_dir(
     }
 
     // Walk to enumerate assets (every regular file in src_dir except the chosen config).
-    struct WalkEntry { rel: std::path::PathBuf, abs: std::path::PathBuf }
+    struct WalkEntry {
+        rel: std::path::PathBuf,
+        abs: std::path::PathBuf,
+    }
     let mut entries: Vec<WalkEntry> = Vec::new();
     let mut total_bytes: u64 = config_size;
     if total_bytes > BUNDLE_MAX_TOTAL_BYTES {
         return Err(DirImportError::TotalTooLarge {
-            total: total_bytes, limit: BUNDLE_MAX_TOTAL_BYTES,
+            total: total_bytes,
+            limit: BUNDLE_MAX_TOTAL_BYTES,
         });
     }
     let mut file_count: u32 = 1;
@@ -190,7 +213,9 @@ pub fn import_local_dir(
                 return Err(DirImportError::NotRegular(abs));
             }
             // Skip the chosen config file (we already loaded it).
-            if abs == config_path { continue; }
+            if abs == config_path {
+                continue;
+            }
             // Skip a stray sibling of the chosen config to avoid double-importing.
             if abs == src_dir.join("source.json") || abs == src_dir.join("config.json") {
                 continue;
@@ -198,19 +223,23 @@ pub fn import_local_dir(
             let size = entry.metadata()?.len();
             if size > BUNDLE_MAX_FILE_BYTES {
                 return Err(DirImportError::FileTooLarge {
-                    path: abs, size, limit: BUNDLE_MAX_FILE_BYTES,
+                    path: abs,
+                    size,
+                    limit: BUNDLE_MAX_FILE_BYTES,
                 });
             }
             total_bytes = total_bytes.saturating_add(size);
             file_count = file_count.saturating_add(1);
             if total_bytes > BUNDLE_MAX_TOTAL_BYTES {
                 return Err(DirImportError::TotalTooLarge {
-                    total: total_bytes, limit: BUNDLE_MAX_TOTAL_BYTES,
+                    total: total_bytes,
+                    limit: BUNDLE_MAX_TOTAL_BYTES,
                 });
             }
             if file_count > BUNDLE_MAX_FILE_COUNT {
                 return Err(DirImportError::TooManyFiles {
-                    count: file_count, limit: BUNDLE_MAX_FILE_COUNT,
+                    count: file_count,
+                    limit: BUNDLE_MAX_FILE_COUNT,
                 });
             }
             let rel = abs.strip_prefix(src_dir).unwrap().to_path_buf();
@@ -232,7 +261,9 @@ pub fn import_local_dir(
 
     for e in &entries {
         let dst = assets_root.join(&e.rel);
-        if let Some(p) = dst.parent() { ensure_dir_0700(p)?; }
+        if let Some(p) = dst.parent() {
+            ensure_dir_0700(p)?;
+        }
         let bytes = std::fs::read(&e.abs)?;
         write_file_0600_atomic(&dst, &bytes)?;
     }
@@ -291,18 +322,27 @@ mod tests {
         assert!(m.id.starts_with("hello-"));
 
         // source.json mode 0600
-        let src_mode = std::fs::metadata(s.paths().profile_source(&m.id)).unwrap()
-            .permissions().mode() & 0o7777;
+        let src_mode = std::fs::metadata(s.paths().profile_source(&m.id))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
         assert_eq!(src_mode, 0o600);
 
         // assets/ mode 0700
-        let assets_mode = std::fs::metadata(s.paths().profile_assets_dir(&m.id)).unwrap()
-            .permissions().mode() & 0o7777;
+        let assets_mode = std::fs::metadata(s.paths().profile_assets_dir(&m.id))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
         assert_eq!(assets_mode, 0o700);
 
         // metadata.json mode 0600
-        let mm = std::fs::metadata(s.paths().profile_metadata(&m.id)).unwrap()
-            .permissions().mode() & 0o7777;
+        let mm = std::fs::metadata(s.paths().profile_metadata(&m.id))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
         assert_eq!(mm, 0o600);
     }
 
@@ -311,7 +351,10 @@ mod tests {
         let (tmp, s) = fixture();
         let src = tmp.path().join("bad.json");
         std::fs::write(&src, b"{not json").unwrap();
-        assert!(matches!(import_local_file(&s, &src, "n"), Err(ImportError::InvalidJson(_))));
+        assert!(matches!(
+            import_local_file(&s, &src, "n"),
+            Err(ImportError::InvalidJson(_))
+        ));
     }
 
     #[test]
@@ -337,7 +380,10 @@ mod tests {
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("config.json"), r#"{}"#).unwrap();
         std::os::unix::fs::symlink("/etc/passwd", src.join("evil")).unwrap();
-        assert!(matches!(import_local_dir(&s, &src, "B"), Err(DirImportError::SymlinkRejected(_))));
+        assert!(matches!(
+            import_local_dir(&s, &src, "B"),
+            Err(DirImportError::SymlinkRejected(_))
+        ));
     }
 
     #[test]
@@ -346,7 +392,10 @@ mod tests {
         let src = tmp.path().join("bundle");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("geosite.db"), b"x").unwrap();
-        assert!(matches!(import_local_dir(&s, &src, "B"), Err(DirImportError::MissingConfig)));
+        assert!(matches!(
+            import_local_dir(&s, &src, "B"),
+            Err(DirImportError::MissingConfig)
+        ));
     }
 
     #[test]

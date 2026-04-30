@@ -1,6 +1,6 @@
 //! `app.boxpilot.Helper1` D-Bus interface. Each method goes through
-//! [`crate::dispatch::authorize`] before doing any work — including the 18
-//! stubs awaiting plans #2-#9. Authorization on stubs avoids leaking which
+//! [`crate::dispatch::authorize`] before doing any work — including the
+//! stubs awaiting later plans. Authorization on stubs avoids leaking which
 //! methods exist to unauthorized callers and exercises the §6 contract for
 //! every method from day one.
 //!
@@ -39,6 +39,15 @@ fn to_zbus_err(e: HelperError) -> zbus::fdo::Error {
         HelperError::Busy => "app.boxpilot.Helper1.Busy",
         HelperError::Systemd { .. } => "app.boxpilot.Helper1.Systemd",
         HelperError::Ipc { .. } => "app.boxpilot.Helper1.Ipc",
+        HelperError::BundleTooLarge { .. } => "app.boxpilot.Helper1.BundleTooLarge",
+        HelperError::BundleEntryRejected { .. } => "app.boxpilot.Helper1.BundleEntryRejected",
+        HelperError::BundleAssetMismatch { .. } => "app.boxpilot.Helper1.BundleAssetMismatch",
+        HelperError::SingboxCheckFailed { .. } => "app.boxpilot.Helper1.SingboxCheckFailed",
+        HelperError::RollbackTargetMissing => "app.boxpilot.Helper1.RollbackTargetMissing",
+        HelperError::RollbackUnstartable { .. } => "app.boxpilot.Helper1.RollbackUnstartable",
+        HelperError::ActiveCorrupt => "app.boxpilot.Helper1.ActiveCorrupt",
+        HelperError::ReleaseAlreadyActive => "app.boxpilot.Helper1.ReleaseAlreadyActive",
+        HelperError::ReleaseNotFound { .. } => "app.boxpilot.Helper1.ReleaseNotFound",
     };
     let msg = e.to_string();
     // We use zbus::fdo::Error::Failed as the carrier; the precise mapping
@@ -77,9 +86,9 @@ impl Helper {
         })
     }
 
-    // ----- Stubs for the other 18 actions (filled in by plans #2-#9). -----
+    // ----- Stubs for the remaining actions (filled in by later plans). -----
     // Each goes through dispatch::authorize first — an unauthorized caller
-    // sees NotAuthorized, not NotImplemented. Plans #2-#9 replace each body
+    // sees NotAuthorized, not NotImplemented. Later plans replace each body
     // with the real implementation while keeping the authorize chokepoint.
 
     async fn service_start(
@@ -109,7 +118,10 @@ impl Helper {
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
         let sender = extract_sender(&header)?;
-        let resp = self.do_service_restart(&sender).await.map_err(to_zbus_err)?;
+        let resp = self
+            .do_service_restart(&sender)
+            .await
+            .map_err(to_zbus_err)?;
         serde_json::to_string(&resp).map_err(|e| {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
@@ -131,7 +143,10 @@ impl Helper {
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
         let sender = extract_sender(&header)?;
-        let resp = self.do_service_disable(&sender).await.map_err(to_zbus_err)?;
+        let resp = self
+            .do_service_disable(&sender)
+            .await
+            .map_err(to_zbus_err)?;
         serde_json::to_string(&resp).map_err(|e| {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
@@ -171,16 +186,39 @@ impl Helper {
     async fn profile_activate_bundle(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
+        bundle_fd: zbus::zvariant::OwnedFd,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ProfileActivateBundle)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::ActivateBundleRequest = serde_json::from_str(&request_json)
+            .map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_profile_activate_bundle(&sender, req, bundle_fd.into())
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn profile_rollback_release(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ProfileRollbackRelease)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::RollbackRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_profile_rollback_release(&sender, req)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn core_discover(
         &self,
@@ -390,7 +428,8 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceInstallManagedResponse, HelperError> {
-        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceInstallManaged).await?;
+        let call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceInstallManaged).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
             call.caller_uid,
@@ -553,6 +592,48 @@ impl Helper {
         };
         crate::core::adopt::adopt(&req, &deps, controller).await
     }
+
+    async fn do_profile_activate_bundle(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::ActivateBundleRequest,
+        fd: std::os::fd::OwnedFd,
+    ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
+        let call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileActivateBundle).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
+        let deps = crate::profile::activate::ActivateDeps {
+            paths: self.ctx.paths.clone(),
+            systemd: &*self.ctx.systemd,
+            verifier: &*self.ctx.verifier,
+            checker: &*self.ctx.checker,
+        };
+        crate::profile::activate::activate_bundle(req, fd, controller, &deps).await
+    }
+
+    async fn do_profile_rollback_release(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::RollbackRequest,
+    ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
+        let call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileRollbackRelease).await?;
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            call.caller_uid,
+            &*self.ctx.user_lookup,
+        )?;
+        let deps = crate::profile::rollback::RollbackDeps {
+            paths: self.ctx.paths.clone(),
+            systemd: &*self.ctx.systemd,
+            verifier: &*self.ctx.verifier,
+        };
+        crate::profile::rollback::rollback_release(req, controller, &deps).await
+    }
 }
 
 #[cfg(test)]
@@ -638,7 +719,7 @@ mod tests {
         let h = Helper::new(ctx);
         // We can't construct a real zbus::message::Header in unit tests, so
         // we test through the inner dispatch path. The interface-level
-        // wiring is mechanically identical for all 18 stubs (verified in
+        // wiring is mechanically identical for every stub (verified in
         // the file above by inspection).
         let r = dispatch::authorize(&h.ctx, ":1.42", HelperMethod::CoreDiscover).await;
         assert!(matches!(r, Err(HelperError::NotAuthorized)));
@@ -646,7 +727,7 @@ mod tests {
 
     /// An authorized stub call passes the §6 chokepoint and reaches the
     /// stub body, which returns NotImplemented. Confirms the ordering
-    /// (authorize first, then NotImplemented) for plan #2-#9 to rely on.
+    /// (authorize first, then NotImplemented) for later plans to rely on.
     #[tokio::test]
     async fn stub_authorized_reaches_not_implemented() {
         let tmp = tempdir().unwrap();
@@ -703,7 +784,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_start(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::StartUnit(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::StartUnit(_))));
     }
 
     #[tokio::test]
@@ -719,7 +803,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_stop(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::StopUnit(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::StopUnit(_))));
     }
 
     #[tokio::test]
@@ -735,7 +822,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_restart(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::RestartUnit(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::RestartUnit(_))));
     }
 
     #[tokio::test]
@@ -751,7 +841,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_enable(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::EnableUnitFiles(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::EnableUnitFiles(_))));
     }
 
     #[tokio::test]
@@ -767,7 +860,10 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         h.do_service_disable(":1.42").await.unwrap();
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::DisableUnitFiles(_))));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::DisableUnitFiles(_))));
     }
 
     #[tokio::test]
@@ -792,8 +888,13 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         let resp = h.do_service_install_managed(":1.42").await.unwrap();
-        assert!(resp.generated_unit_path.ends_with("etc/systemd/system/boxpilot-sing-box.service"));
-        assert!(rec.calls().iter().any(|c| matches!(c, RecordedCall::Reload)));
+        assert!(resp
+            .generated_unit_path
+            .ends_with("etc/systemd/system/boxpilot-sing-box.service"));
+        assert!(rec
+            .calls()
+            .iter()
+            .any(|c| matches!(c, RecordedCall::Reload)));
     }
 
     #[tokio::test]

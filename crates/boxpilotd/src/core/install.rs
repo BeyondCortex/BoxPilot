@@ -232,6 +232,7 @@ pub async fn install_or_upgrade(
                     .to_string(),
             ),
             core_state: Some(CoreState::ManagedInstalled),
+            ..TomlUpdates::default()
         },
         controller,
         install_state: state.clone(),

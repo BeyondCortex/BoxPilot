@@ -21,6 +21,7 @@ tempfile.workspace = true
 reqwest = { workspace = true }
 async-trait.workspace = true
 url.workspace = true
+tar.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

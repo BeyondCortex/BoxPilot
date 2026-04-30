@@ -4,8 +4,14 @@
   "version": "0.1.0",
   "identifier": "app.boxpilot",
   "build": {
-    "beforeDevCommand": "npm --prefix ../../frontend run dev",
-    "beforeBuildCommand": "npm --prefix ../../frontend run build",
+    "beforeDevCommand": {
+      "script": "npm install && npm run dev",
+      "cwd": "../../frontend"
+    },
+    "beforeBuildCommand": {
+      "script": "npm install && npm run build",
+      "cwd": "../../frontend"
+    },
     "devUrl": "http://localhost:1420",
     "frontendDist": "../../frontend/dist"
   },

@@ -29,7 +29,9 @@ fn walk_refs(v: &Value, out: &mut BTreeSet<String>) {
             }
         }
         Value::Array(arr) => {
-            for child in arr { walk_refs(child, out); }
+            for child in arr {
+                walk_refs(child, out);
+            }
         }
         _ => {}
     }
@@ -64,7 +66,11 @@ fn walk_abs(v: &Value, out: &mut Vec<String>) {
                 }
             }
         }
-        Value::Array(arr) => for c in arr { walk_abs(c, out); }
+        Value::Array(arr) => {
+            for c in arr {
+                walk_abs(c, out);
+            }
+        }
         _ => {}
     }
 }
@@ -93,7 +99,8 @@ pub fn verify_asset_refs(
     let missing: Vec<String> = needed.difference(&present).cloned().collect();
     if !missing.is_empty() {
         return Err(AssetCheckError::MissingFromBundle {
-            missing: missing.len(), paths: missing,
+            missing: missing.len(),
+            paths: missing,
         });
     }
     Ok(())
@@ -103,11 +110,17 @@ fn walk_present_assets(root: &std::path::Path) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let read = match std::fs::read_dir(&dir) { Ok(r) => r, Err(_) => continue };
+        let read = match std::fs::read_dir(&dir) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
         for entry in read.flatten() {
             let p = entry.path();
             if let Ok(ft) = std::fs::symlink_metadata(&p).map(|m| m.file_type()) {
-                if ft.is_dir() { stack.push(p); continue; }
+                if ft.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
                 if ft.is_file() {
                     if let Ok(rel) = p.strip_prefix(root) {
                         if let Some(s) = rel.to_str() {

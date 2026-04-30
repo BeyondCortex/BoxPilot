@@ -42,6 +42,13 @@ trait Helper {
     fn service_install_managed(&self) -> zbus::Result<String>;
     #[zbus(name = "ServiceLogs")]
     fn service_logs(&self, request_json: &str) -> zbus::Result<String>;
+
+    // ProfileActivateBundle is intentionally NOT in this typed proxy: it
+    // takes a `UNIX_FD` payload which the `#[proxy]` macro can't express
+    // cleanly. Activation goes through `profile_cmds::profile_activate`
+    // which constructs a raw `zbus::Proxy` for that one method.
+    #[zbus(name = "ProfileRollbackRelease")]
+    fn profile_rollback_release(&self, request_json: &str) -> zbus::Result<String>;
 }
 
 #[derive(Debug, Error)]
@@ -176,19 +183,25 @@ impl HelperClient {
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    pub async fn service_restart(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+    pub async fn service_restart(
+        &self,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_restart().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    pub async fn service_enable(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+    pub async fn service_enable(
+        &self,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_enable().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 
-    pub async fn service_disable(&self) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
+    pub async fn service_disable(
+        &self,
+    ) -> Result<boxpilot_ipc::ServiceControlResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_disable().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
@@ -209,6 +222,17 @@ impl HelperClient {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy
             .service_logs(&serde_json::to_string(req).unwrap())
+            .await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn profile_rollback_release(
+        &self,
+        req: &boxpilot_ipc::RollbackRequest,
+    ) -> Result<boxpilot_ipc::ActivateBundleResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy
+            .profile_rollback_release(&serde_json::to_string(req).unwrap())
             .await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }

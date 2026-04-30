@@ -94,6 +94,31 @@ impl Paths {
         self.root
             .join("etc/polkit-1/rules.d/48-boxpilot-controller.rules")
     }
+
+    /// `/etc/boxpilot/releases` — root of versioned release dirs.
+    pub fn releases_dir(&self) -> PathBuf {
+        self.root.join("etc/boxpilot/releases")
+    }
+
+    /// `/etc/boxpilot/.staging` — short-lived per-activation unpack dirs.
+    pub fn staging_dir(&self) -> PathBuf {
+        self.root.join("etc/boxpilot/.staging")
+    }
+
+    /// `/etc/boxpilot/active` — symlink to the currently-active release.
+    pub fn active_symlink(&self) -> PathBuf {
+        self.root.join("etc/boxpilot/active")
+    }
+
+    /// `/etc/boxpilot/releases/<activation_id>`.
+    pub fn release_dir(&self, activation_id: &str) -> PathBuf {
+        self.releases_dir().join(activation_id)
+    }
+
+    /// `/etc/boxpilot/.staging/<activation_id>`.
+    pub fn staging_subdir(&self, activation_id: &str) -> PathBuf {
+        self.staging_dir().join(activation_id)
+    }
 }
 
 #[cfg(test)]
@@ -139,6 +164,31 @@ mod tests {
         assert_eq!(
             p.polkit_controller_dropin_path(),
             PathBuf::from("/etc/polkit-1/rules.d/48-boxpilot-controller.rules")
+        );
+    }
+
+    #[test]
+    fn release_paths_under_etc_boxpilot() {
+        let p = Paths::with_root("/tmp/fake");
+        assert_eq!(
+            p.releases_dir(),
+            PathBuf::from("/tmp/fake/etc/boxpilot/releases")
+        );
+        assert_eq!(
+            p.staging_dir(),
+            PathBuf::from("/tmp/fake/etc/boxpilot/.staging")
+        );
+        assert_eq!(
+            p.active_symlink(),
+            PathBuf::from("/tmp/fake/etc/boxpilot/active")
+        );
+        assert_eq!(
+            p.release_dir("2026-04-30T00-00-00Z-abc"),
+            PathBuf::from("/tmp/fake/etc/boxpilot/releases/2026-04-30T00-00-00Z-abc"),
+        );
+        assert_eq!(
+            p.staging_subdir("2026-04-30T00-00-00Z-abc"),
+            PathBuf::from("/tmp/fake/etc/boxpilot/.staging/2026-04-30T00-00-00Z-abc"),
         );
     }
 }

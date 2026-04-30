@@ -140,8 +140,11 @@ mod tests {
         let out = run_singbox_check(&fake_core, tmp.path()).unwrap();
         assert!(out.success);
         // Each line of seq 1..=100000 contributes 1-6 bytes + newline; 600KB+ guaranteed.
-        assert!(out.stdout.len() > 64 * 1024,
-            "expected stdout > 64 KiB, got {} bytes", out.stdout.len());
+        assert!(
+            out.stdout.len() > 64 * 1024,
+            "expected stdout > 64 KiB, got {} bytes",
+            out.stdout.len()
+        );
     }
 
     #[test]

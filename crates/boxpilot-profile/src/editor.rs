@@ -55,8 +55,7 @@ pub fn patch_in_place(
     let bytes = std::fs::read(store.paths().profile_source(profile_id))?;
     let mut value: Value = serde_json::from_slice(&bytes).map_err(EditError::InvalidJson)?;
     apply_patch(&mut value, patch);
-    let new_bytes = serde_json::to_vec_pretty(&value)
-        .map_err(EditError::InvalidJson)?;
+    let new_bytes = serde_json::to_vec_pretty(&value).map_err(EditError::InvalidJson)?;
     save_edits(store, profile_id, &new_bytes)
 }
 

@@ -55,7 +55,9 @@ mod tests {
     fn render_substitutes_core_path_in_exec_start() {
         let s = render(&PathBuf::from("/var/lib/boxpilot/cores/current/sing-box"));
         assert!(s.contains("ExecStart=/var/lib/boxpilot/cores/current/sing-box run -c config.json"));
-        assert!(s.contains("ExecStartPre=/var/lib/boxpilot/cores/current/sing-box check -c config.json"));
+        assert!(s.contains(
+            "ExecStartPre=/var/lib/boxpilot/cores/current/sing-box check -c config.json"
+        ));
     }
 
     #[test]

@@ -10,6 +10,7 @@ mod dispatch;
 mod iface;
 mod lock;
 mod paths;
+mod profile;
 mod service;
 mod systemd;
 
@@ -64,6 +65,21 @@ async fn run_startup_recovery(paths: &paths::Paths) -> anyhow::Result<()> {
         Ok(false) => {} // already present, nothing to backfill, etc.
         Err(e) => warn!("polkit drop-in backfill failed: {e}"),
     }
+
+    // Plan #5 §10 crash recovery: clean stale .staging/ subdirs (always
+    // mid-call when present) and validate /etc/boxpilot/active resolves
+    // under /etc/boxpilot/releases. Logged here; activation/rollback
+    // verbs re-check `active_corrupt` themselves on each call.
+    let activation_recovery = crate::profile::recovery::reconcile(paths).await;
+    if activation_recovery.staging_dirs_swept > 0 {
+        info!(
+            count = activation_recovery.staging_dirs_swept,
+            "swept stale activation .staging entries"
+        );
+    }
+    if activation_recovery.active_corrupt {
+        warn!("/etc/boxpilot/active is corrupt; activation/rollback will refuse until repaired");
+    }
     Ok(())
 }
 
@@ -107,6 +123,8 @@ async fn main() -> Result<()> {
         downloader,
         fs_meta,
         version_checker,
+        Arc::new(crate::profile::checker::ProcessChecker),
+        Arc::new(crate::profile::verifier::DefaultVerifier),
     ));
 
     let helper = iface::Helper::new(ctx);

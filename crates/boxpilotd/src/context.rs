@@ -9,6 +9,8 @@ use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use crate::paths::Paths;
+use crate::profile::checker::SingboxChecker;
+use crate::profile::verifier::ServiceVerifier;
 use crate::systemd::{JournalReader, Systemd};
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult};
 use std::sync::Arc;
@@ -24,6 +26,8 @@ pub struct HelperContext {
     pub downloader: Arc<dyn Downloader>,
     pub fs_meta: Arc<dyn FsMetadataProvider>,
     pub version_checker: Arc<dyn VersionChecker>,
+    pub checker: Arc<dyn SingboxChecker>,
+    pub verifier: Arc<dyn ServiceVerifier>,
     // Cache is intentionally absent. `load_config` reads the file each call;
     // call sites are infrequent (one disk read per `service.status` poll, or
     // per privileged action). When SIGHUP-style reload lands in a later
@@ -33,7 +37,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 10 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 12 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -45,6 +49,8 @@ impl HelperContext {
         downloader: Arc<dyn Downloader>,
         fs_meta: Arc<dyn FsMetadataProvider>,
         version_checker: Arc<dyn VersionChecker>,
+        checker: Arc<dyn SingboxChecker>,
+        verifier: Arc<dyn ServiceVerifier>,
     ) -> Self {
         Self {
             paths,
@@ -57,6 +63,8 @@ impl HelperContext {
             downloader,
             fs_meta,
             version_checker,
+            checker,
+            verifier,
         }
     }
 
@@ -78,6 +86,10 @@ impl HelperContext {
                 active_profile_sha256: None,
                 active_release_id: None,
                 activated_at: None,
+                previous_release_id: None,
+                previous_profile_id: None,
+                previous_profile_sha256: None,
+                previous_activated_at: None,
             }),
             Err(e) => Err(HelperError::Ipc {
                 message: format!("read {path:?}: {e}"),
@@ -141,6 +153,10 @@ pub mod testing {
             downloader,
             fs_meta,
             version_checker,
+            Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
+                vec![],
+            )),
         )
     }
 
@@ -163,7 +179,9 @@ pub mod testing {
             latest: Ok("1.10.0".into()),
             sha256sums: Ok(None),
         });
-        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(Vec::new()));
+        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(
+            Vec::new(),
+        ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
         HelperContext::new(
             paths,
@@ -175,8 +193,14 @@ pub mod testing {
             github,
             downloader,
             Arc::new(PermissiveTestFs),
-            Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
-                "sing-box version 1.10.0",
+            Arc::new(
+                crate::core::trust::version_testing::FixedVersionChecker::ok(
+                    "sing-box version 1.10.0",
+                ),
+            ),
+            Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
+                vec![],
             )),
         )
     }
@@ -200,20 +224,30 @@ pub mod testing {
             latest: Ok("1.10.0".into()),
             sha256sums: Ok(None),
         });
-        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(Vec::new()));
+        let downloader = Arc::new(crate::core::download::testing::FixedDownloader::new(
+            Vec::new(),
+        ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines });
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
-            Arc::new(crate::systemd::testing::FixedSystemd { answer: systemd_answer }),
+            Arc::new(crate::systemd::testing::FixedSystemd {
+                answer: systemd_answer,
+            }),
             journal,
             Arc::new(PasswdLookup),
             github,
             downloader,
             Arc::new(PermissiveTestFs),
-            Arc::new(crate::core::trust::version_testing::FixedVersionChecker::ok(
-                "sing-box version 1.10.0",
+            Arc::new(
+                crate::core::trust::version_testing::FixedVersionChecker::ok(
+                    "sing-box version 1.10.0",
+                ),
+            ),
+            Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
+                vec![],
             )),
         )
     }

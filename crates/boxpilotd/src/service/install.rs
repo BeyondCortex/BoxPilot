@@ -11,9 +11,7 @@ use crate::core::trust::{
 use crate::paths::Paths;
 use crate::service::unit;
 use crate::systemd::Systemd;
-use boxpilot_ipc::{
-    BoxpilotConfig, HelperError, HelperResult, ServiceInstallManagedResponse,
-};
+use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult, ServiceInstallManagedResponse};
 use std::path::PathBuf;
 
 pub struct InstallDeps<'a> {
@@ -109,7 +107,12 @@ mod tests {
             } else {
                 FileKind::Directory
             };
-            Ok(FileStat { uid: 0, gid: 0, mode: 0o755, kind })
+            Ok(FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind,
+            })
         }
         fn read_link(&self, _: &Path) -> std::io::Result<std::path::PathBuf> {
             Err(std::io::Error::new(
@@ -131,6 +134,10 @@ mod tests {
             active_profile_sha256: None,
             active_release_id: None,
             activated_at: None,
+            previous_release_id: None,
+            previous_profile_id: None,
+            previous_profile_sha256: None,
+            previous_activated_at: None,
         }
     }
 
@@ -147,16 +154,25 @@ mod tests {
         });
         let fs = PermissiveFs;
         let cfg = cfg_with_core("/usr/bin/sing-box");
-        let deps = InstallDeps { paths: paths.clone(), systemd: &systemd, fs: &fs };
+        let deps = InstallDeps {
+            paths: paths.clone(),
+            systemd: &systemd,
+            fs: &fs,
+        };
 
         let resp = install_managed(&cfg, &deps).await.unwrap();
 
-        let written = tokio::fs::read_to_string(paths.systemd_unit_path("boxpilot-sing-box.service")).await.unwrap();
+        let written =
+            tokio::fs::read_to_string(paths.systemd_unit_path("boxpilot-sing-box.service"))
+                .await
+                .unwrap();
         assert!(written.contains("ExecStart=/usr/bin/sing-box run -c config.json"));
         assert!(matches!(resp.unit_state, UnitState::Known { .. }));
         let calls = systemd.calls();
         assert!(
-            calls.iter().any(|c| matches!(c, crate::systemd::testing::RecordedCall::Reload)),
+            calls
+                .iter()
+                .any(|c| matches!(c, crate::systemd::testing::RecordedCall::Reload)),
             "expected daemon-reload, got {calls:?}"
         );
     }
@@ -165,11 +181,17 @@ mod tests {
     async fn install_without_core_path_returns_explicit_error() {
         let tmp = tempdir().unwrap();
         let paths = Paths::with_root(tmp.path());
-        let systemd = FixedSystemd { answer: UnitState::NotFound };
+        let systemd = FixedSystemd {
+            answer: UnitState::NotFound,
+        };
         let fs = PermissiveFs;
         let mut cfg = cfg_with_core("/x");
         cfg.core_path = None;
-        let deps = InstallDeps { paths, systemd: &systemd, fs: &fs };
+        let deps = InstallDeps {
+            paths,
+            systemd: &systemd,
+            fs: &fs,
+        };
         let r = install_managed(&cfg, &deps).await;
         assert!(matches!(r, Err(HelperError::Ipc { .. })));
     }
@@ -178,7 +200,9 @@ mod tests {
     async fn install_with_untrusted_core_path_aborts_before_writing() {
         let tmp = tempdir().unwrap();
         let paths = Paths::with_root(tmp.path());
-        let systemd = FixedSystemd { answer: UnitState::NotFound };
+        let systemd = FixedSystemd {
+            answer: UnitState::NotFound,
+        };
         // Reject everything — simulates §6.5 failure.
         struct DenyFs;
         impl FsMetadataProvider for DenyFs {
@@ -191,10 +215,16 @@ mod tests {
         }
         let fs = DenyFs;
         let cfg = cfg_with_core("/home/evil/sing-box");
-        let deps = InstallDeps { paths: paths.clone(), systemd: &systemd, fs: &fs };
+        let deps = InstallDeps {
+            paths: paths.clone(),
+            systemd: &systemd,
+            fs: &fs,
+        };
         let r = install_managed(&cfg, &deps).await;
         assert!(matches!(r, Err(HelperError::Ipc { .. })));
         // Critical: the unit file must NOT have been written.
-        assert!(!paths.systemd_unit_path("boxpilot-sing-box.service").exists());
+        assert!(!paths
+            .systemd_unit_path("boxpilot-sing-box.service")
+            .exists());
     }
 }
