@@ -49,6 +49,11 @@ trait Helper {
     // which constructs a raw `zbus::Proxy` for that one method.
     #[zbus(name = "ProfileRollbackRelease")]
     fn profile_rollback_release(&self, request_json: &str) -> zbus::Result<String>;
+
+    #[zbus(name = "LegacyObserveService")]
+    fn legacy_observe_service(&self) -> zbus::Result<String>;
+    #[zbus(name = "LegacyMigrateService")]
+    fn legacy_migrate_service(&self, request_json: &str) -> zbus::Result<String>;
 }
 
 #[derive(Debug, Error)]
@@ -233,6 +238,25 @@ impl HelperClient {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy
             .profile_rollback_release(&serde_json::to_string(req).unwrap())
+            .await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn legacy_observe_service(
+        &self,
+    ) -> Result<boxpilot_ipc::LegacyObserveServiceResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.legacy_observe_service().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn legacy_migrate_service(
+        &self,
+        req: &boxpilot_ipc::LegacyMigrateRequest,
+    ) -> Result<boxpilot_ipc::LegacyMigrateResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy
+            .legacy_migrate_service(&serde_json::to_string(req).unwrap())
             .await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
