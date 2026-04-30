@@ -334,9 +334,20 @@ impl Helper {
     async fn legacy_migrate_service(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
+        request_json: String,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::LegacyMigrateService)
+        let sender = extract_sender(&header)?;
+        let req: boxpilot_ipc::LegacyMigrateRequest =
+            serde_json::from_str(&request_json).map_err(|e| {
+                zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: parse: {e}"))
+            })?;
+        let resp = self
+            .do_legacy_migrate_service(&sender, req)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
     async fn controller_transfer(
         &self,
@@ -666,6 +677,28 @@ impl Helper {
         };
         crate::legacy::observe::observe(&cfg, &deps).await
     }
+
+    async fn do_legacy_migrate_service(
+        &self,
+        sender: &str,
+        req: boxpilot_ipc::LegacyMigrateRequest,
+    ) -> Result<boxpilot_ipc::LegacyMigrateResponse, HelperError> {
+        let _call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::LegacyMigrateService).await?;
+        let cfg = self.ctx.load_config().await?;
+        let prep = crate::legacy::migrate::PrepareDeps {
+            systemd: &*self.ctx.systemd,
+            fs_read: &*self.ctx.fs_fragment_reader,
+            config_reader: &*self.ctx.config_reader,
+        };
+        let backups_dir = self.ctx.paths.backups_units_dir();
+        let cut = crate::legacy::migrate::CutoverDeps {
+            systemd: &*self.ctx.systemd,
+            backups_units_dir: &backups_dir,
+            now_iso: || chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string(),
+        };
+        crate::legacy::migrate::run(&cfg, req, &prep, &cut).await
+    }
 }
 
 #[cfg(test)]
@@ -974,5 +1007,22 @@ mod tests {
         let h = Helper::new(ctx);
         let r = h.do_legacy_observe_service(":1.42").await;
         assert!(matches!(r, Err(HelperError::NotAuthorized)));
+    }
+
+    #[tokio::test]
+    async fn legacy_migrate_prepare_passes_dispatch_then_returns_unit_not_found_when_absent() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::allowing(&["app.boxpilot.helper.legacy.migrate-service"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let r = h
+            .do_legacy_migrate_service(":1.42", boxpilot_ipc::LegacyMigrateRequest::Prepare)
+            .await;
+        assert!(matches!(r, Err(HelperError::LegacyUnitNotFound { .. })));
     }
 }

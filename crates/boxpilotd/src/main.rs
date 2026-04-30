@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
     let version_checker = Arc::new(ProcessVersionChecker);
 
     let fragment_reader = Arc::new(crate::legacy::observe::StdFsFragmentReader);
+    let config_reader = Arc::new(crate::legacy::migrate::StdConfigReader);
     let journal = Arc::new(crate::systemd::JournalctlProcess);
     let ctx = Arc::new(context::HelperContext::new(
         paths,
@@ -128,6 +129,7 @@ async fn main() -> Result<()> {
         Arc::new(crate::profile::checker::ProcessChecker),
         Arc::new(crate::profile::verifier::DefaultVerifier),
         fragment_reader,
+        config_reader,
     ));
 
     let helper = iface::Helper::new(ctx);

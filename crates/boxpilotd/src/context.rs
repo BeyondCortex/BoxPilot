@@ -29,6 +29,7 @@ pub struct HelperContext {
     pub checker: Arc<dyn SingboxChecker>,
     pub verifier: Arc<dyn ServiceVerifier>,
     pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+    pub config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
     // Cache is intentionally absent. `load_config` reads the file each call;
     // call sites are infrequent (one disk read per `service.status` poll, or
     // per privileged action). When SIGHUP-style reload lands in a later
@@ -38,7 +39,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 13 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 14 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -53,6 +54,7 @@ impl HelperContext {
         checker: Arc<dyn SingboxChecker>,
         verifier: Arc<dyn ServiceVerifier>,
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+        config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
     ) -> Self {
         Self {
             paths,
@@ -68,6 +70,7 @@ impl HelperContext {
             checker,
             verifier,
             fs_fragment_reader,
+            config_reader,
         }
     }
 
@@ -163,6 +166,7 @@ pub mod testing {
                 vec![],
             )),
             Arc::new(NoFragments),
+            Arc::new(NoConfig),
         )
     }
 
@@ -209,6 +213,7 @@ pub mod testing {
                 vec![],
             )),
             Arc::new(NoFragments),
+            Arc::new(NoConfig),
         )
     }
 
@@ -259,6 +264,7 @@ pub mod testing {
                 vec![],
             )),
             Arc::new(NoFragments),
+            Arc::new(NoConfig),
         )
     }
 
@@ -272,6 +278,35 @@ pub mod testing {
             Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "test fragment reader",
+            ))
+        }
+    }
+
+    /// A `ConfigReader` that always returns `NotFound` — used by tests
+    /// whose flow doesn't reach the legacy.migrate_service path. Returning
+    /// errors instead of empty Vecs avoids tests masking real failures.
+    pub struct NoConfig;
+
+    impl crate::legacy::migrate::ConfigReader for NoConfig {
+        fn read_file(&self, _path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test config reader",
+            ))
+        }
+        fn read_dir(
+            &self,
+            _path: &std::path::Path,
+        ) -> std::io::Result<Vec<crate::legacy::migrate::DirEntry>> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test config reader",
+            ))
+        }
+        fn metadata_len(&self, _path: &std::path::Path) -> std::io::Result<u64> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test config reader",
             ))
         }
     }
