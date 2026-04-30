@@ -119,6 +119,20 @@ impl Paths {
     pub fn staging_subdir(&self, activation_id: &str) -> PathBuf {
         self.staging_dir().join(activation_id)
     }
+
+    /// `/var/lib/boxpilot/backups/units` — destination for legacy-unit
+    /// fragment backups taken before migrate-cutover. Spec §5.4.
+    pub fn backups_units_dir(&self) -> PathBuf {
+        self.root.join("var/lib/boxpilot/backups/units")
+    }
+
+    /// `/var/lib/boxpilot/backups/units/<unit>-<timestamp>` — full path of
+    /// a single backup. Caller supplies the timestamp string (RFC3339 with
+    /// `:` replaced by `-` so the filename is shell-friendly).
+    pub fn backup_unit_path(&self, unit_name: &str, timestamp: &str) -> PathBuf {
+        self.backups_units_dir()
+            .join(format!("{unit_name}-{timestamp}"))
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +203,27 @@ mod tests {
         assert_eq!(
             p.staging_subdir("2026-04-30T00-00-00Z-abc"),
             PathBuf::from("/tmp/fake/etc/boxpilot/.staging/2026-04-30T00-00-00Z-abc"),
+        );
+    }
+
+    #[test]
+    fn backups_units_dir_under_var_lib_boxpilot() {
+        let p = Paths::with_root("/tmp/fake");
+        assert_eq!(
+            p.backups_units_dir(),
+            PathBuf::from("/tmp/fake/var/lib/boxpilot/backups/units")
+        );
+    }
+
+    #[test]
+    fn backup_unit_path_includes_timestamp_suffix() {
+        let p = Paths::with_root("/tmp/fake");
+        let out = p.backup_unit_path("sing-box.service", "2026-04-29T00-00-00Z");
+        assert_eq!(
+            out,
+            PathBuf::from(
+                "/tmp/fake/var/lib/boxpilot/backups/units/sing-box.service-2026-04-29T00-00-00Z"
+            )
         );
     }
 }
