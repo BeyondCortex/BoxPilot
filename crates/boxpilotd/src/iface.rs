@@ -60,6 +60,10 @@ fn to_zbus_err(e: HelperError) -> zbus::fdo::Error {
         }
         HelperError::LegacyAssetTooLarge { .. } => "app.boxpilot.Helper1.LegacyAssetTooLarge",
         HelperError::LegacyTooManyAssets { .. } => "app.boxpilot.Helper1.LegacyTooManyAssets",
+        HelperError::DiagnosticsIoFailed { .. } => "app.boxpilot.Helper1.DiagnosticsIoFailed",
+        HelperError::DiagnosticsEncodeFailed { .. } => {
+            "app.boxpilot.Helper1.DiagnosticsEncodeFailed"
+        }
     };
     let msg = e.to_string();
     // We use zbus::fdo::Error::Failed as the carrier; the precise mapping
@@ -376,8 +380,14 @@ impl Helper {
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::DiagnosticsExportRedacted)
+        let sender = extract_sender(&header)?;
+        let resp = self
+            .do_diagnostics_export_redacted(&sender)
             .await
+            .map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
     }
 }
 
@@ -776,6 +786,23 @@ impl Helper {
         crate::legacy::observe::observe(&cfg, &deps).await
     }
 
+    async fn do_diagnostics_export_redacted(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::DiagnosticsExportResponse, HelperError> {
+        let _call =
+            dispatch::authorize(&self.ctx, sender, HelperMethod::DiagnosticsExportRedacted).await?;
+        let cfg = self.ctx.load_config().await?;
+        crate::diagnostics::compose(crate::diagnostics::ComposeInputs {
+            paths: &self.ctx.paths,
+            unit_name: &cfg.target_service,
+            journal: &*self.ctx.journal,
+            os_release_path: std::path::Path::new("/etc/os-release"),
+            now_iso: || chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string(),
+        })
+        .await
+    }
+
     async fn do_legacy_migrate_service(
         &self,
         sender: &str,
@@ -1137,6 +1164,63 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         let r = h.do_legacy_observe_service(":1.42").await;
+        assert!(matches!(r, Err(HelperError::NotAuthorized)));
+    }
+
+    #[tokio::test]
+    async fn diagnostics_export_redacted_writes_bundle() {
+        let tmp = tempdir().unwrap();
+        // Set up the minimal filesystem the composer needs.
+        let paths = crate::paths::Paths::with_root(tmp.path());
+        let active = paths.releases_dir().join("rel-1");
+        std::fs::create_dir_all(&active).unwrap();
+        std::fs::write(
+            active.join("config.json"),
+            br#"{"outbounds":[{"type":"vless","tag":"main","password":"x"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(active.join("manifest.json"), b"{}").unwrap();
+        std::fs::create_dir_all(paths.etc_dir()).unwrap();
+        std::os::unix::fs::symlink(&active, paths.active_symlink()).unwrap();
+        std::fs::create_dir_all(paths.cores_dir().parent().unwrap()).unwrap();
+        std::fs::write(
+            paths.install_state_json(),
+            b"{\"schema_version\":1,\"managed_cores\":[]}",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("etc/systemd/system")).unwrap();
+        std::fs::write(
+            paths.systemd_unit_path("boxpilot-sing-box.service"),
+            b"[Service]\nExecStart=/usr/bin/sing-box\n",
+        )
+        .unwrap();
+
+        let ctx = Arc::new(ctx_with_journal_lines(
+            &tmp,
+            Some("schema_version = 1\ncontroller_uid = 1000\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.diagnostics.export-redacted"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+            vec!["a".into(), "b".into()],
+        ));
+        let h = Helper::new(ctx);
+        let resp = h.do_diagnostics_export_redacted(":1.42").await.unwrap();
+        assert!(std::path::Path::new(&resp.bundle_path).exists());
+        assert!(resp.bundle_size_bytes > 0);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_export_redacted_denied_returns_not_authorized() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::denying(&["app.boxpilot.helper.diagnostics.export-redacted"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let r = h.do_diagnostics_export_redacted(":1.42").await;
         assert!(matches!(r, Err(HelperError::NotAuthorized)));
     }
 

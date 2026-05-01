@@ -46,6 +46,15 @@ pub use home::{
     ActiveProfileSnapshot, CoreSnapshot, HomeStatusResponse, HOME_STATUS_SCHEMA_VERSION,
 };
 
+pub mod redact;
+pub use redact::{redact_singbox_config, MAX_DEPTH as REDACT_MAX_DEPTH, REDACTED};
+
+pub mod diagnostics;
+pub use diagnostics::{
+    DiagnosticsExportResponse, DIAGNOSTICS_BUNDLE_CAP_BYTES, DIAGNOSTICS_JOURNAL_TAIL_LINES,
+    DIAGNOSTICS_SCHEMA_VERSION,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]

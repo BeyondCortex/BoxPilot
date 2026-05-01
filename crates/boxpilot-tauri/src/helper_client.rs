@@ -57,6 +57,9 @@ trait Helper {
     fn legacy_observe_service(&self) -> zbus::Result<String>;
     #[zbus(name = "LegacyMigrateService")]
     fn legacy_migrate_service(&self, request_json: &str) -> zbus::Result<String>;
+
+    #[zbus(name = "DiagnosticsExportRedacted")]
+    fn diagnostics_export_redacted(&self) -> zbus::Result<String>;
 }
 
 #[derive(Debug, Error)]
@@ -267,6 +270,14 @@ impl HelperClient {
         let json = proxy
             .legacy_migrate_service(&serde_json::to_string(req).unwrap())
             .await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn diagnostics_export_redacted(
+        &self,
+    ) -> Result<boxpilot_ipc::DiagnosticsExportResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.diagnostics_export_redacted().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 }

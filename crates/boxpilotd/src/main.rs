@@ -6,6 +6,7 @@ mod context;
 mod controller;
 mod core;
 mod credentials;
+mod diagnostics;
 mod dispatch;
 mod iface;
 mod legacy;

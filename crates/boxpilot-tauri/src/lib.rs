@@ -38,6 +38,7 @@ pub fn run() {
             commands::helper_legacy_observe_service,
             commands::helper_legacy_migrate_prepare,
             commands::helper_legacy_migrate_cutover,
+            commands::helper_diagnostics_export,
             profile_cmds::profile_list,
             profile_cmds::profile_get_source,
             profile_cmds::profile_import_file,

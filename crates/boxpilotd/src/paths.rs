@@ -125,6 +125,12 @@ impl Paths {
     pub fn backups_units_dir(&self) -> PathBuf {
         self.root.join("var/lib/boxpilot/backups/units")
     }
+
+    /// `/var/cache/boxpilot/diagnostics` — root of redacted diagnostics
+    /// bundles, capped at `DIAGNOSTICS_BUNDLE_CAP_BYTES` (§5.5).
+    pub fn cache_diagnostics_dir(&self) -> PathBuf {
+        self.root.join("var/cache/boxpilot/diagnostics")
+    }
 }
 
 #[cfg(test)]
@@ -204,6 +210,24 @@ mod tests {
         assert_eq!(
             p.backups_units_dir(),
             PathBuf::from("/tmp/fake/var/lib/boxpilot/backups/units")
+        );
+    }
+
+    #[test]
+    fn cache_diagnostics_dir_under_var_cache_boxpilot() {
+        let p = Paths::with_root("/tmp/fake");
+        assert_eq!(
+            p.cache_diagnostics_dir(),
+            PathBuf::from("/tmp/fake/var/cache/boxpilot/diagnostics")
+        );
+    }
+
+    #[test]
+    fn cache_diagnostics_dir_in_system_paths() {
+        let p = Paths::system();
+        assert_eq!(
+            p.cache_diagnostics_dir(),
+            PathBuf::from("/var/cache/boxpilot/diagnostics")
         );
     }
 }

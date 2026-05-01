@@ -167,3 +167,10 @@ pub async fn helper_legacy_migrate_cutover(
         }),
     }
 }
+
+#[tauri::command]
+pub async fn helper_diagnostics_export(
+) -> Result<boxpilot_ipc::DiagnosticsExportResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    Ok(c.diagnostics_export_redacted().await?)
+}

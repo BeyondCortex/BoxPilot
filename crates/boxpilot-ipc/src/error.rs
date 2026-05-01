@@ -115,6 +115,15 @@ pub enum HelperError {
     /// sibling files.
     #[error("legacy config directory has too many siblings ({count} > {limit})")]
     LegacyTooManyAssets { count: u32, limit: u32 },
+
+    /// Diagnostics export failed at an i/o boundary (could not list/read/write
+    /// a file under `/var/cache/boxpilot/diagnostics/`).
+    #[error("diagnostics i/o failed at {step}: {cause}")]
+    DiagnosticsIoFailed { step: String, cause: String },
+
+    /// Diagnostics export failed encoding the bundle manifest or a JSON artifact.
+    #[error("diagnostics encode failed: {cause}")]
+    DiagnosticsEncodeFailed { cause: String },
 }
 
 pub type HelperResult<T> = Result<T, HelperError>;
@@ -164,6 +173,24 @@ mod tests {
             ReleaseAlreadyActive,
             ReleaseNotFound {
                 activation_id: "id".into(),
+            },
+        ] {
+            let s = serde_json::to_string(&v).unwrap();
+            let back: HelperError = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn diagnostics_variants_round_trip() {
+        use HelperError::*;
+        for v in [
+            DiagnosticsIoFailed {
+                step: "write tarball".into(),
+                cause: "ENOSPC".into(),
+            },
+            DiagnosticsEncodeFailed {
+                cause: "manifest serialize".into(),
             },
         ] {
             let s = serde_json::to_string(&v).unwrap();
