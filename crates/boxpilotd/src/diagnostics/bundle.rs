@@ -125,7 +125,7 @@ pub fn write_tarball(
 }
 
 fn io_err(e: serde_json::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, e)
+    std::io::Error::other(e)
 }
 
 /// Drop journal/stderr lines that contain markers correlated with secrets.

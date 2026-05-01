@@ -268,15 +268,27 @@ mod tests {
             }
         });
         redact_singbox_config(&mut v);
-        let s0 = v["dns"]["servers"][0]["address"].as_str().unwrap().to_string();
-        let s1 = v["dns"]["servers"][1]["address"].as_str().unwrap().to_string();
-        let s2 = v["dns"]["servers"][2]["address"].as_str().unwrap().to_string();
+        let s0 = v["dns"]["servers"][0]["address"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let s1 = v["dns"]["servers"][1]["address"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let s2 = v["dns"]["servers"][2]["address"]
+            .as_str()
+            .unwrap()
+            .to_string();
         // url::Url percent-encodes asterisks in host, so check for either form.
         let host_redacted = |s: &str| s.contains("***") || s.contains("%2A%2A%2A");
         assert!(host_redacted(&s0), "url-shaped: {s0}");
         assert!(!s0.contains("1.1.1.1"), "url-shaped should hide host: {s0}");
         assert!(host_redacted(&s1), "tls scheme: {s1}");
-        assert!(!s1.contains("example.com"), "tls scheme should hide host: {s1}");
+        assert!(
+            !s1.contains("example.com"),
+            "tls scheme should hide host: {s1}"
+        );
         assert_eq!(s2, "***", "bare host falls back to whole-string redaction");
     }
 
@@ -354,7 +366,10 @@ mod tests {
         assert_eq!(v["outbounds"][0]["domain_strategy"], json!("ipv4_only"));
         assert_eq!(v["outbounds"][0]["detour"], json!("next"));
         assert_eq!(v["outbounds"][0]["transport"]["type"], json!("ws"));
-        assert_eq!(v["outbounds"][0]["tls"]["server_name"], json!("example.com"));
+        assert_eq!(
+            v["outbounds"][0]["tls"]["server_name"],
+            json!("example.com")
+        );
         assert_eq!(v["outbounds"][0]["multiplex"]["enabled"], json!(true));
     }
 }

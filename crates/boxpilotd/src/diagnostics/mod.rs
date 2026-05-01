@@ -215,7 +215,11 @@ mod tests {
         )
         .unwrap();
         let os_release = tmp.path().join("os-release");
-        fs::write(&os_release, b"ID=test\nVERSION_ID=1\nPRETTY_NAME=\"Test\"\n").unwrap();
+        fs::write(
+            &os_release,
+            b"ID=test\nVERSION_ID=1\nPRETTY_NAME=\"Test\"\n",
+        )
+        .unwrap();
 
         let journal = FixedJournal {
             lines: vec!["starting".into(), "password=leak".into(), "running".into()],
