@@ -178,7 +178,7 @@ dependencies = [
 
 [[package]]
 name = "boxpilot"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "boxpilot-ipc",
  "boxpilot-profile",
@@ -195,7 +195,7 @@ dependencies = [
 
 [[package]]
 name = "boxpilot-ipc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pretty_assertions",
  "serde",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "boxpilot-profile"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "boxpilot-ipc",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "boxpilotd"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
