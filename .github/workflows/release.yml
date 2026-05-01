@@ -73,8 +73,14 @@ jobs:
         # than the >= 1.78 declared in debian/control's Build-Depends.
         run: dpkg-buildpackage -b -uc -us -d
 
-      - name: List build output
-        run: ls -la ../boxpilot_*.deb
+      - name: Stage build output inside workspace
+        # actions/upload-artifact rejects '..' in path globs, so copy the
+        # dpkg-buildpackage outputs (which land in the parent dir) into
+        # ./dist/ inside the workspace before any later step references them.
+        run: |
+          mkdir -p dist
+          cp ../boxpilot_*.deb dist/
+          ls -la dist/
 
       - name: Upload .deb to GitHub Release
         env:
@@ -82,7 +88,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           REPO: ${{ github.repository }}
         run: |
-          DEB=$(ls ../boxpilot_*.deb | head -n 1)
+          DEB=$(ls dist/boxpilot_*.deb | head -n 1)
           if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release create "$TAG" --repo "$REPO" --generate-notes
           fi
@@ -92,6 +98,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: boxpilot-deb-${{ steps.tag.outputs.tag }}
-          path: ../boxpilot_*.deb
+          path: dist/boxpilot_*.deb
           if-no-files-found: error
           retention-days: 30
