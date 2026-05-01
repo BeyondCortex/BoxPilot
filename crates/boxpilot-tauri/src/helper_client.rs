@@ -13,6 +13,9 @@ use zbus::{proxy, Connection};
 trait Helper {
     fn service_status(&self) -> zbus::Result<String>;
 
+    #[zbus(name = "HomeStatus")]
+    fn home_status(&self) -> zbus::Result<String>;
+
     #[zbus(name = "CoreDiscover")]
     fn core_discover(&self) -> zbus::Result<String>;
 
@@ -123,6 +126,12 @@ impl HelperClient {
     pub async fn service_status(&self) -> Result<ServiceStatusResponse, ClientError> {
         let proxy = HelperProxy::new(&self.conn).await?;
         let json = proxy.service_status().await?;
+        serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn home_status(&self) -> Result<boxpilot_ipc::HomeStatusResponse, ClientError> {
+        let proxy = HelperProxy::new(&self.conn).await?;
+        let json = proxy.home_status().await?;
         serde_json::from_str(&json).map_err(|e| ClientError::Decode(e.to_string()))
     }
 

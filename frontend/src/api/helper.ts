@@ -7,6 +7,7 @@ import type {
   LegacyObserveServiceResponse,
   LegacyMigratePrepareResponse,
   LegacyMigrateCutoverResponse,
+  HomeStatusResponse,
 } from "./types";
 
 export async function serviceStatus(): Promise<ServiceStatusResponse> {
@@ -73,4 +74,8 @@ export async function legacyMigratePrepare(): Promise<LegacyMigratePrepareRespon
 
 export async function legacyMigrateCutover(): Promise<LegacyMigrateCutoverResponse> {
   return await invoke<LegacyMigrateCutoverResponse>("helper_legacy_migrate_cutover");
+}
+
+export async function homeStatus(): Promise<HomeStatusResponse> {
+  return await invoke<HomeStatusResponse>("helper_home_status");
 }

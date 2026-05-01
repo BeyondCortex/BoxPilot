@@ -21,6 +21,7 @@ pub fn run() {
         .manage(profile_state)
         .invoke_handler(tauri::generate_handler![
             commands::helper_service_status,
+            commands::helper_home_status,
             commands::helper_ping,
             commands::helper_core_discover,
             commands::helper_core_install_managed,

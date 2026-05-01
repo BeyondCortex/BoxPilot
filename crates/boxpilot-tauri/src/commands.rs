@@ -33,6 +33,12 @@ pub async fn helper_service_status() -> Result<ServiceStatusResponse, CommandErr
 }
 
 #[tauri::command]
+pub async fn helper_home_status() -> Result<boxpilot_ipc::HomeStatusResponse, CommandError> {
+    let client = HelperClient::connect().await?;
+    Ok(client.home_status().await?)
+}
+
+#[tauri::command]
 pub async fn helper_ping() -> Result<&'static str, CommandError> {
     let _client = HelperClient::connect().await?;
     Ok("ok")

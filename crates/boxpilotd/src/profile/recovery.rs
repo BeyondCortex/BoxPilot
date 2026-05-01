@@ -44,6 +44,26 @@ pub async fn reconcile(paths: &Paths) -> RecoveryReport {
         }
     }
 
+    let status = check_active_status(paths).await;
+    report.active_corrupt = status.corrupt;
+    report.active_target = status.target;
+    report
+}
+
+/// Result of evaluating `/etc/boxpilot/active` against `releases/` + the
+/// `boxpilot.toml` `active_release_id` claim. Both the daemon-startup
+/// recovery path (`reconcile`) and the GUI's `home.status` rely on this
+/// shared predicate so they can never disagree about what "corrupt" means.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ActiveStatus {
+    pub corrupt: bool,
+    pub target: Option<PathBuf>,
+}
+
+/// Read-only check; does not mutate disk. Safe to call from a polling
+/// `home.status` loop.
+pub async fn check_active_status(paths: &Paths) -> ActiveStatus {
+    let mut status = ActiveStatus::default();
     let active = paths.active_symlink();
     if active.symlink_metadata().is_ok() {
         match tokio::fs::read_link(&active).await {
@@ -56,15 +76,15 @@ pub async fn reconcile(paths: &Paths) -> RecoveryReport {
                 let resolves_under_releases = resolved.starts_with(paths.releases_dir());
                 let target_exists = tokio::fs::metadata(&resolved).await.is_ok();
                 if resolves_under_releases && target_exists {
-                    report.active_target = Some(resolved);
+                    status.target = Some(resolved);
                 } else {
                     warn!(target = %resolved.display(), "active symlink corrupt");
-                    report.active_corrupt = true;
+                    status.corrupt = true;
                 }
             }
             Err(e) => {
                 warn!("read_link active: {e}");
-                report.active_corrupt = true;
+                status.corrupt = true;
             }
         }
     } else if toml_claims_active(paths).await {
@@ -74,9 +94,9 @@ pub async fn reconcile(paths: &Paths) -> RecoveryReport {
         // re-activate explicitly rather than silently accepting a
         // half-committed state.
         warn!("active symlink missing but toml has active_release_id; flagging corrupt");
-        report.active_corrupt = true;
+        status.corrupt = true;
     }
-    report
+    status
 }
 
 async fn toml_claims_active(paths: &Paths) -> bool {

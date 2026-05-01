@@ -35,6 +35,11 @@
     <message>Authentication is required to observe an existing sing-box service</message>
     <defaults><allow_any>yes</allow_any><allow_inactive>yes</allow_inactive><allow_active>yes</allow_active></defaults>
   </action>
+  <action id="app.boxpilot.helper.home.status">
+    <description>View BoxPilot home status</description>
+    <message>Authentication is required to view BoxPilot home status</message>
+    <defaults><allow_any>yes</allow_any><allow_inactive>yes</allow_inactive><allow_active>yes</allow_active></defaults>
+  </action>
 
   <!-- Mutating: admin auth, cached for the session. -->
   <action id="app.boxpilot.helper.service.start">

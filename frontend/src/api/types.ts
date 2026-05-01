@@ -161,3 +161,52 @@ export interface LegacyMigrateCutoverResponse {
   backup_unit_path: string;
   final_unit_state: UnitState;
 }
+
+export type CoreState = "external" | "managed-installed" | "managed-adopted";
+
+export interface ActiveProfileSnapshot {
+  profile_id: string;
+  profile_name: string | null;
+  profile_sha256: string;
+  release_id: string;
+  activated_at: string;
+}
+
+export interface CoreSnapshot {
+  path: string | null;
+  state: CoreState | null;
+  version: string;
+}
+
+export interface HomeStatusResponse {
+  schema_version: number;
+  service: ServiceStatusResponse;
+  active_profile: ActiveProfileSnapshot | null;
+  core: CoreSnapshot;
+  active_corrupt: boolean;
+}
+
+export interface RollbackArgs {
+  target_activation_id: string;
+  verify_window_secs?: number | null;
+}
+
+export interface ActivateRequest {
+  profile_id: string;
+  core_path: string;
+  core_version: string;
+  verify_window_secs?: number | null;
+}
+
+export interface ActivateResponse {
+  outcome:
+    | "active"
+    | "rolled_back"
+    | "rollback_target_missing"
+    | "rollback_unstartable";
+  activation_id: string;
+  previous_activation_id: string | null;
+  n_restarts_pre: number;
+  n_restarts_post: number;
+  window_used_ms: number;
+}

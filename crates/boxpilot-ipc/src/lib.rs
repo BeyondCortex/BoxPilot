@@ -41,6 +41,11 @@ pub use legacy::{
     LEGACY_UNIT_NAME,
 };
 
+pub mod home;
+pub use home::{
+    ActiveProfileSnapshot, CoreSnapshot, HomeStatusResponse, HOME_STATUS_SCHEMA_VERSION,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]
