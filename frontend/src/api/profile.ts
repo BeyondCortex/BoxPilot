@@ -3,6 +3,7 @@ import type {
   CheckRequest, CheckResponse,
   PrepareBundleRequest, PrepareBundleResponse,
   ProfileSummary,
+  ActivateRequest, ActivateResponse, RollbackArgs,
 } from "./types";
 
 export async function profileList(): Promise<ProfileSummary[]> {
@@ -37,4 +38,10 @@ export async function profilePrepareBundle(req: PrepareBundleRequest): Promise<P
 }
 export async function profileCheck(req: CheckRequest): Promise<CheckResponse> {
   return await invoke<CheckResponse>("profile_check", { request: req });
+}
+export async function profileActivate(req: ActivateRequest): Promise<ActivateResponse> {
+  return await invoke<ActivateResponse>("profile_activate", { request: req });
+}
+export async function profileRollback(req: RollbackArgs): Promise<ActivateResponse> {
+  return await invoke<ActivateResponse>("profile_rollback", { request: req });
 }
