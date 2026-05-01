@@ -98,6 +98,22 @@ impl Helper {
         })
     }
 
+    /// Returns spec §3.1 first-paint bundle. Read-only; no controller
+    /// required. Bundles service status, active profile fields from
+    /// boxpilot.toml, core path/version, and the active-symlink corruption
+    /// flag so the GUI can render Home in one round-trip.
+    #[instrument(skip(self, header))]
+    async fn home_status(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        let sender = extract_sender(&header)?;
+        let resp = self.do_home_status(&sender).await.map_err(to_zbus_err)?;
+        serde_json::to_string(&resp).map_err(|e| {
+            zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
+        })
+    }
+
     // ----- Stubs for the remaining actions (filled in by later plans). -----
     // Each goes through dispatch::authorize first — an unauthorized caller
     // sees NotAuthorized, not NotImplemented. Later plans replace each body
@@ -381,6 +397,94 @@ impl Helper {
             unit_state,
             controller,
         })
+    }
+
+    async fn do_home_status(
+        &self,
+        sender_bus_name: &str,
+    ) -> Result<boxpilot_ipc::HomeStatusResponse, HelperError> {
+        let call =
+            dispatch::authorize(&self.ctx, sender_bus_name, HelperMethod::HomeStatus).await?;
+
+        // Service: same shape as do_service_status, using the call we just
+        // authorized so we don't re-run polkit.
+        let cfg = self.ctx.load_config().await?;
+        let unit_name = cfg.target_service.clone();
+        let unit_state = self.ctx.systemd.unit_state(&unit_name).await?;
+        let controller = call.controller.to_status();
+        let service = ServiceStatusResponse {
+            unit_name,
+            unit_state,
+            controller,
+        };
+
+        // Active profile: read straight from boxpilot.toml. All four
+        // identity fields must be populated for the snapshot to count as
+        // "activated"; otherwise it's None.
+        let active_profile = match (
+            cfg.active_profile_id.as_ref(),
+            cfg.active_profile_sha256.as_ref(),
+            cfg.active_release_id.as_ref(),
+            cfg.activated_at.as_ref(),
+        ) {
+            (Some(id), Some(sha), Some(rel), Some(at)) => {
+                Some(boxpilot_ipc::ActiveProfileSnapshot {
+                    profile_id: id.clone(),
+                    profile_name: cfg.active_profile_name.clone(),
+                    profile_sha256: sha.clone(),
+                    release_id: rel.clone(),
+                    activated_at: at.clone(),
+                })
+            }
+            _ => None,
+        };
+
+        // Core: discover and find the entry whose path matches cfg.core_path.
+        // Discovery failure is non-fatal — the rest of the page still renders.
+        let core_version = match self.discover_for_home().await {
+            Ok(list) => cfg
+                .core_path
+                .as_deref()
+                .and_then(|p| list.cores.iter().find(|c| c.path == p))
+                .map(|c| c.version.clone())
+                .unwrap_or_else(|| "unknown".to_string()),
+            Err(_) => "unknown".to_string(),
+        };
+        let core = boxpilot_ipc::CoreSnapshot {
+            path: cfg.core_path.clone(),
+            state: cfg.core_state,
+            version: core_version,
+        };
+
+        // Active corrupt: /etc/boxpilot/active should resolve under
+        // releases/. Mirrors the daemon-startup recovery check.
+        let paths = self.ctx.paths.clone();
+        let active_corrupt = match tokio::fs::read_link(paths.active_symlink()).await {
+            Ok(target) => {
+                let releases = paths.releases_dir();
+                !target.starts_with(&releases) || tokio::fs::metadata(&target).await.is_err()
+            }
+            Err(_) => false, // never activated: not corrupt, just absent
+        };
+
+        Ok(boxpilot_ipc::HomeStatusResponse {
+            schema_version: boxpilot_ipc::HOME_STATUS_SCHEMA_VERSION,
+            service,
+            active_profile,
+            core,
+            active_corrupt,
+        })
+    }
+
+    async fn discover_for_home(
+        &self,
+    ) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
+        let deps = crate::core::discover::DiscoverDeps {
+            paths: self.ctx.paths.clone(),
+            fs: &*self.ctx.fs_meta,
+            version_checker: &*self.ctx.version_checker,
+        };
+        crate::core::discover::discover(&deps).await
     }
 
     async fn do_service_start(
@@ -762,6 +866,39 @@ mod tests {
         ));
         let h = Helper::new(ctx);
         let r = h.do_service_status(":1.42").await;
+        assert!(matches!(r, Err(HelperError::NotAuthorized)));
+    }
+
+    #[tokio::test]
+    async fn home_status_returns_unactivated_when_config_lacks_active_fields() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::allowing(&["app.boxpilot.helper.home.status"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let resp = h.do_home_status(":1.42").await.unwrap();
+        assert!(resp.active_profile.is_none());
+        assert_eq!(resp.schema_version, 1);
+        assert!(!resp.active_corrupt);
+        assert_eq!(resp.service.unit_name, "boxpilot-sing-box.service");
+    }
+
+    #[tokio::test]
+    async fn home_status_denied_by_polkit_returns_not_authorized() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::denying(&["app.boxpilot.helper.home.status"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        ));
+        let h = Helper::new(ctx);
+        let r = h.do_home_status(":1.42").await;
         assert!(matches!(r, Err(HelperError::NotAuthorized)));
     }
 
