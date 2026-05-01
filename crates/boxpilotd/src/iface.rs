@@ -476,9 +476,7 @@ impl Helper {
         })
     }
 
-    async fn discover_for_home(
-        &self,
-    ) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
+    async fn discover_for_home(&self) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
         let deps = crate::core::discover::DiscoverDeps {
             paths: self.ctx.paths.clone(),
             fs: &*self.ctx.fs_meta,
