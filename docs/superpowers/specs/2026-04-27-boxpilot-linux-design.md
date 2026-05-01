@@ -602,7 +602,11 @@ Managed core operations:
 
 Linux v1.0 supported architectures: `x86_64`, `aarch64`. Asset naming follows upstream's `sing-box-<version>-linux-<arch>.tar.gz` convention. `armv7` and other architectures may be added post-1.0 once a tested install path exists.
 
-If upstream provides checksums or digests for release assets, BoxPilot verifies them. If not, BoxPilot records the computed SHA256 of the downloaded asset and installed binary in `install-source.json` and surfaces the source URL and digest to the user before completing the install.
+**Linux v1.0**: SagerNet does not publish per-release `checksums.txt` files alongside `sing-box` GitHub assets. BoxPilot therefore does not verify upstream checksums; the `install-source.json::upstream_sha256_match` field is reserved and remains `null` for every install. Trust rests on TLS to `github.com`, GitHub asset immutability, and post-install audit by the user via the SHA-8 prefix shown in the cores list (full SHA256 is recorded in `install-source.json` for the determined).
+
+The verification code path is preserved: should SagerNet (or a future fork BoxPilot tracks) publish a `checksums.txt` again, BoxPilot will fetch and verify it without a daemon update — the `upstream_sha256_match` field will start populating with `Some(true)` for matching installs.
+
+A future revision may migrate to GitHub Artifact Attestations for cryptographic per-asset provenance once upstream enables them; that would be a stronger primitive than `checksums.txt` and would supersede the field semantics here.
 
 ## 12. Runtime and Clash-like API
 

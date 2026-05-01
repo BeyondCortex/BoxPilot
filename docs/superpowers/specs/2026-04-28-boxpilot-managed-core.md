@@ -118,7 +118,7 @@ pub struct CoreInstallRequest {
 pub struct CoreInstallResponse {
     pub installed: DiscoveredCore,
     pub became_current: bool,
-    pub upstream_sha256_match: bool,       // false → UI surfaces "no upstream digest" warning
+    pub upstream_sha256_match: Option<bool>, // Reserved (always `None` for v1.0; SagerNet does not publish checksums.txt — see top-spec §11.3)
     pub claimed_controller: bool,          // true if this call made the caller the controller
 }
 
@@ -166,7 +166,7 @@ The wire format remains JSON-encoded `String` per plan #1's convention
   "architecture": "x86_64",
   "url": "https://github.com/SagerNet/sing-box/releases/download/v1.10.1/sing-box-1.10.1-linux-amd64.tar.gz",
   "source_path": null,              // for adopted: original source path; for managed: null
-  "upstream_sha256_match": true,    // null when upstream has no sha256sum.txt
+  "upstream_sha256_match": null,    // reserved field; null for every v1.0 install (see top-spec §11.3) — would be true if SagerNet published checksums.txt
   "computed_sha256_tarball": "<hex>",
   "computed_sha256_binary": "<hex>",
   "installed_at": "2026-04-28T10:00:00-07:00",
@@ -274,12 +274,15 @@ Entry: `core::install::run(req, ctx, authorized)`.
    `/var/lib/boxpilot/.staging-cores/<version>-<random>/tarball.tar.gz`
    with a User-Agent of `boxpilot/<crate-version>`.
 5. `core::github::fetch_sha256sums(version)` GETs `sha256sum.txt`
-   from the same release. On 404, returns `None`. On success, parses
-   the table and looks for the line matching our tarball filename.
+   from the same release. On 404, returns `None` — **this is the v1.0
+   reality** because SagerNet stopped publishing the file in 2025
+   (see top-spec §11.3). On success (preserved code path for the day
+   upstream restores it, or for forks BoxPilot tracks), parses the
+   table and looks for the line matching our tarball filename.
 6. If found, compare to a streaming SHA256 of the downloaded tarball;
    mismatch → abort and clean up. If matched, set
-   `upstream_sha256_match: true`. If sha256sum.txt absent, set
-   `upstream_sha256_match: null`.
+   `upstream_sha256_match: Some(true)`. If sha256sum.txt absent (the
+   universal v1.0 case), set `upstream_sha256_match: None`.
 7. Compute local SHA256 of the tarball (recorded either way).
 8. Extract `sing-box` from the tarball into `staging_dir/sing-box`
    (only this file; ignore LICENSE / docs).
@@ -495,8 +498,12 @@ Behavior:
 - "Adopt" path-input → `helper_core_adopt(path)`. Bad paths (failing
   trust check) return `HelperError::Ipc` with the rejection reason;
   the panel surfaces it inline.
-- The "no upstream digest" warning appears next to any managed entry
-  whose `install-source.json` records `upstream_sha256_match: null`.
+- No per-entry "no upstream digest" warning is surfaced in v1.0:
+  `upstream_sha256_match` is always `null` (see top-spec §11.3), so
+  a per-row warning would fire on every managed entry. Trust at the
+  GUI layer rests on showing the source URL and the SHA-8 prefix of
+  the installed binary, plus the recorded full SHA256 in
+  `install-source.json` for users who want to audit out-of-band.
 
 ## 11. Acceptance criteria
 
