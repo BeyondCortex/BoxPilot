@@ -27,6 +27,35 @@ use crate::core::trust::{ProcessVersionChecker, StdFsMetadataProvider};
 const BUS_NAME: &str = "app.boxpilot.Helper";
 const OBJECT_PATH: &str = "/app/boxpilot/Helper";
 
+/// Spec §7.6: validate `install-state.json`'s `schema_version` against the
+/// compiled-in `INSTALL_STATE_SCHEMA_VERSION`. Returns `Some(got)` only on
+/// version mismatch — that signal is plumbed into [`context::HelperContext`]
+/// and consulted by [`dispatch::authorize`] to refuse mutating verbs until
+/// a migration runs. The check intentionally treats *only* schema mismatch
+/// as "block writes" — generic IO/JSON errors fall through to a warn-log
+/// so a transient read failure does not paint the daemon as unwritable
+/// (the next mutating call will surface the real error if it persists).
+/// File-missing → `read_state` returns `InstallState::empty()` (schema=1)
+/// which matches the constant; this is the fresh-install case and must
+/// not block.
+async fn check_install_state_schema(paths: &paths::Paths) -> Option<u32> {
+    match crate::core::state::read_state(&paths.install_state_json()).await {
+        Ok(_) => None,
+        Err(boxpilot_ipc::HelperError::UnsupportedSchemaVersion { got }) => {
+            error!(
+                got,
+                expected = boxpilot_ipc::INSTALL_STATE_SCHEMA_VERSION,
+                "install-state.json schema mismatch — refusing mutating IPC until migration"
+            );
+            Some(got)
+        }
+        Err(e) => {
+            warn!("install-state read at startup: {e:?}");
+            None
+        }
+    }
+}
+
 async fn run_startup_recovery(paths: &paths::Paths) -> anyhow::Result<()> {
     let staging = paths.cores_staging_dir();
     if staging.exists() {
@@ -99,6 +128,7 @@ async fn main() -> Result<()> {
     if let Err(e) = run_startup_recovery(&paths).await {
         error!("startup recovery failed: {e}");
     }
+    let state_schema_mismatch = check_install_state_schema(&paths).await;
 
     let conn = zbus::connection::Builder::system()
         .context("connect to system bus")?
@@ -131,6 +161,7 @@ async fn main() -> Result<()> {
         Arc::new(crate::profile::verifier::DefaultVerifier),
         fragment_reader,
         config_reader,
+        state_schema_mismatch,
     ));
 
     let helper = iface::Helper::new(ctx);

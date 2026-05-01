@@ -30,6 +30,13 @@ pub struct HelperContext {
     pub verifier: Arc<dyn ServiceVerifier>,
     pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
     pub config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
+    /// Set when `install-state.json` parsed at startup with a
+    /// `schema_version` other than the compiled-in
+    /// `INSTALL_STATE_SCHEMA_VERSION` (spec §7.6). `dispatch::authorize`
+    /// reads this to refuse mutating calls until a migration runs;
+    /// read-only verbs still succeed and surface the value via
+    /// `service.status` so the GUI can show a single banner.
+    pub state_schema_mismatch: Option<u32>,
     // Cache is intentionally absent. `load_config` reads the file each call;
     // call sites are infrequent (one disk read per `service.status` poll, or
     // per privileged action). When SIGHUP-style reload lands in a later
@@ -39,7 +46,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 14 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 15 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -55,6 +62,7 @@ impl HelperContext {
         verifier: Arc<dyn ServiceVerifier>,
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
         config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
+        state_schema_mismatch: Option<u32>,
     ) -> Self {
         Self {
             paths,
@@ -71,6 +79,7 @@ impl HelperContext {
             verifier,
             fs_fragment_reader,
             config_reader,
+            state_schema_mismatch,
         }
     }
 
@@ -167,6 +176,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            None,
         )
     }
 
@@ -214,6 +224,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            None,
         )
     }
 
@@ -265,6 +276,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            None,
         )
     }
 

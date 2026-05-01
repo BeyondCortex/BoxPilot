@@ -406,6 +406,7 @@ impl Helper {
             unit_name,
             unit_state,
             controller,
+            state_schema_mismatch: self.ctx.state_schema_mismatch,
         })
     }
 
@@ -426,6 +427,7 @@ impl Helper {
             unit_name,
             unit_state,
             controller,
+            state_schema_mismatch: self.ctx.state_schema_mismatch,
         };
 
         // Active profile: read straight from boxpilot.toml. All four
@@ -873,6 +875,28 @@ mod tests {
         let h = Helper::new(ctx);
         let resp = h.do_service_status(":1.42").await.unwrap();
         assert_eq!(resp.unit_state, known);
+    }
+
+    #[tokio::test]
+    async fn service_status_surfaces_state_schema_mismatch() {
+        // Issue #8: when boxpilotd starts up and finds an install-state.json
+        // with an incompatible schema_version, it records the version on
+        // HelperContext. service.status (read-only) must echo it back so
+        // the GUI can show a single banner instead of every mutating call
+        // failing with the same error.
+        let tmp = tempdir().unwrap();
+        let mut inner = ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.status"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        );
+        inner.state_schema_mismatch = Some(99);
+        let ctx = Arc::new(inner);
+        let h = Helper::new(ctx);
+        let resp = h.do_service_status(":1.42").await.unwrap();
+        assert_eq!(resp.state_schema_mismatch, Some(99));
     }
 
     #[tokio::test]

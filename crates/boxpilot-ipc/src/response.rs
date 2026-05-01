@@ -23,6 +23,15 @@ pub struct ServiceStatusResponse {
     /// Snapshot of `controller_uid` resolution at call time. Useful for the
     /// Home page to surface `controller_orphaned` (§6.6) without a second RTT.
     pub controller: ControllerStatus,
+    /// Spec §7.6 startup recovery: the schema_version the daemon found in
+    /// `install-state.json` at startup if it did not match the compiled-in
+    /// `INSTALL_STATE_SCHEMA_VERSION`. `None` for the matching case (also
+    /// when the file is missing, which is the fresh-install state). When
+    /// `Some`, `dispatch::authorize` short-circuits all mutating verbs with
+    /// `UnsupportedSchemaVersion`, so the GUI can surface a single banner
+    /// rather than collecting per-action errors.
+    #[serde(default)]
+    pub state_schema_mismatch: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -42,6 +42,16 @@ pub async fn authorize(
         }
     }
 
+    // Spec §7.6: refuse mutating verbs when `install-state.json`'s
+    // schema_version is incompatible with the compiled-in version. Mirrors
+    // the orphan-controller pattern above — read-only verbs still succeed
+    // so the GUI can surface the mismatch via service.status.
+    if let Some(got) = ctx.state_schema_mismatch {
+        if method.is_mutating() {
+            return Err(HelperError::UnsupportedSchemaVersion { got });
+        }
+    }
+
     let action_id = method.polkit_action_id();
     let allowed = ctx.authority.check(action_id, sender_bus_name).await?;
     if !allowed {
@@ -156,6 +166,41 @@ mod tests {
         );
         let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStart).await;
         assert!(matches!(r, Err(HelperError::ControllerOrphaned)));
+    }
+
+    #[tokio::test]
+    async fn mutating_call_with_state_schema_mismatch_returns_unsupported_schema_version() {
+        let tmp = tempdir().unwrap();
+        let mut ctx = ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.start"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        );
+        ctx.state_schema_mismatch = Some(99);
+        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStart).await;
+        assert!(matches!(
+            r,
+            Err(HelperError::UnsupportedSchemaVersion { got: 99 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_only_call_with_state_schema_mismatch_still_succeeds() {
+        let tmp = tempdir().unwrap();
+        let mut ctx = ctx_with(
+            &tmp,
+            None,
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.status"]),
+            UnitState::NotFound,
+            &[(":1.42", 1000)],
+        );
+        ctx.state_schema_mismatch = Some(99);
+        // Read-only verbs must still work so the GUI can fetch service.status
+        // and surface the mismatch via its `state_schema_mismatch` field.
+        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStatus).await;
+        assert!(r.is_ok());
     }
 
     #[tokio::test]
