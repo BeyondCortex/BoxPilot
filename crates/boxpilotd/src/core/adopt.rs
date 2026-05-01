@@ -108,6 +108,11 @@ pub async fn adopt(
     })?;
 
     // Promote
+    tokio::fs::create_dir_all(deps.paths.cores_dir())
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("create cores_dir: {e}"),
+        })?;
     let target_dir = deps.paths.cores_dir().join(&label);
     tokio::fs::rename(&staging, &target_dir)
         .await

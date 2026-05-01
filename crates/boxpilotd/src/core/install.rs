@@ -195,6 +195,11 @@ pub async fn install_or_upgrade(
     // re-use the existing managed core so repeated install/upgrade calls
     // for the same version (e.g. periodic "is `latest` newer?" checks)
     // succeed and still update current/state.
+    tokio::fs::create_dir_all(deps.paths.cores_dir())
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("create cores_dir: {e}"),
+        })?;
     let target_dir = deps.paths.cores_dir().join(&version);
     if target_dir.is_dir() && target_dir.join("sing-box").exists() {
         let _ = tokio::fs::remove_dir_all(&staging).await;
@@ -367,6 +372,14 @@ mod pipeline_tests {
     fn mk_paths(tmp: &tempfile::TempDir) -> Paths {
         std::fs::create_dir_all(tmp.path().join("etc/boxpilot")).unwrap();
         std::fs::create_dir_all(tmp.path().join("var/lib/boxpilot/cores")).unwrap();
+        Paths::with_root(tmp.path())
+    }
+
+    /// Like `mk_paths` but does NOT pre-create `var/lib/boxpilot/cores/`.
+    /// Used by the issue #6 regression test, which exercises the fresh-install
+    /// case where the parent of the rename target does not exist yet.
+    fn mk_paths_no_cores(tmp: &tempfile::TempDir) -> Paths {
+        std::fs::create_dir_all(tmp.path().join("etc/boxpilot")).unwrap();
         Paths::with_root(tmp.path())
     }
 
@@ -599,6 +612,67 @@ mod pipeline_tests {
         let state = read_state(&paths.install_state_json()).await.unwrap();
         assert_eq!(state.managed_cores.len(), 1);
         assert_eq!(state.current_managed_core.as_deref(), Some("1.10.0"));
+    }
+
+    /// Issue #6 regression: install must succeed on a fresh machine where
+    /// `/var/lib/boxpilot/cores/` does not yet exist. Pre-fix, the bare
+    /// `rename(staging, cores/<version>)` raised ENOENT because rename(2)
+    /// will not auto-create the destination's parent.
+    #[tokio::test]
+    async fn install_creates_cores_dir_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = mk_paths_no_cores(&tmp);
+        assert!(!paths.cores_dir().exists(), "precondition: cores_dir absent");
+
+        let tarball = fake_singbox_tarball();
+        let downloader = FixedDownloader::new(tarball);
+        let github = CannedGithubClient {
+            latest: Ok("1.10.0".into()),
+            sha256sums: Ok(None),
+        };
+
+        struct PermissiveFs;
+        impl FsMetadataProvider for PermissiveFs {
+            fn stat(&self, p: &std::path::Path) -> std::io::Result<crate::core::trust::FileStat> {
+                use crate::core::trust::{FileKind, FileStat};
+                let kind = if p.file_name().map(|n| n == "sing-box").unwrap_or(false) {
+                    FileKind::Regular
+                } else {
+                    FileKind::Directory
+                };
+                Ok(FileStat {
+                    uid: 0,
+                    gid: 0,
+                    mode: 0o755,
+                    kind,
+                })
+            }
+            fn read_link(&self, _: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "no symlinks",
+                ))
+            }
+        }
+        let fs = PermissiveFs;
+        let vc = FixedVersionChecker::ok("sing-box version 1.10.0");
+        let deps = InstallDeps {
+            paths: paths.clone(),
+            github: &github,
+            downloader: &downloader,
+            fs: &fs,
+            version_checker: &vc,
+        };
+        let req = CoreInstallRequest {
+            version: VersionRequest::Exact {
+                version: "1.10.0".into(),
+            },
+            architecture: ArchRequest::Exact {
+                arch: "x86_64".into(),
+            },
+        };
+        install_or_upgrade(&req, &deps, None).await.unwrap();
+        assert!(paths.cores_dir().join("1.10.0").join("sing-box").exists());
     }
 }
 
