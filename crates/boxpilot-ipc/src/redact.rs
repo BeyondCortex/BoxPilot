@@ -49,6 +49,7 @@ const OUTBOUND_PUBLIC_ALLOWLIST: &[&str] = &[
 ];
 
 fn walk(value: &mut Value, depth: usize) {
+    tracing::debug!(target: "redact", depth, "redact walk entering");
     if depth >= MAX_DEPTH {
         *value = Value::String(REDACTED.to_string());
         tracing::warn!(target: "redact", "depth cap hit; replacing subtree");
@@ -307,6 +308,26 @@ mod tests {
         redact_singbox_config(&mut v);
         assert_eq!(v["endpoints"][0]["private_key"], json!("***"));
         assert_eq!(v["endpoints"][0]["peer_public_key"], json!("p="));
+    }
+
+    #[test]
+    fn deep_nesting_does_not_panic() {
+        // The walker only recurses into the named top-level branches today,
+        // so a synthetic nested object inside an outbound's "tls" key would
+        // not exercise the depth guard. We assert "no panic" as the
+        // contract; if a future task adds nested redaction, this test
+        // should be updated to assert the depth-cap replacement.
+        let mut deep = json!({});
+        for _ in 0..(MAX_DEPTH + 4) {
+            deep = json!({"nested": deep});
+        }
+        let mut v = json!({
+            "outbounds": [
+                {"type": "vless", "tls": deep}
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["type"], json!("vless"));
     }
 
     #[test]
