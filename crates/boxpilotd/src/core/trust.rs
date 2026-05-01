@@ -1,8 +1,10 @@
 //! §6.5 trust checks. Used before promoting any binary to be invoked by
 //! the privileged daemon (downloaded sing-box, adopted external binaries).
 
+use std::collections::VecDeque;
+use std::ffi::{OsStr, OsString};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,19 +315,27 @@ pub fn default_allowed_prefixes() -> Vec<PathBuf> {
 ///
 /// **Does not run the `sing-box version` check** — that runs at a higher
 /// layer because it requires process-spawn capability.
+///
+/// The path is fully canonicalized (every component, not just the leaf)
+/// before checks. This is required for the spec §11.2 deployment where
+/// the unit's `ExecStart` resolves to `/var/lib/boxpilot/cores/current/sing-box`
+/// — `current` is a symlink ancestor, and a per-component lstat would
+/// reject it with "not a directory". Canonicalization first, then
+/// `allowed_prefixes` last, preserves the §6.5 safety property: a malicious
+/// symlink that resolves outside the allowed roots is still rejected.
 pub fn verify_executable_path(
     fs: &dyn FsMetadataProvider,
     path: &Path,
     allowed_prefixes: &[PathBuf],
 ) -> Result<PathBuf, TrustError> {
-    let resolved = resolve_symlinks(fs, path)?;
-    let bin_stat = fs.stat(&resolved).map_err(|e| match e.kind() {
-        io::ErrorKind::NotFound => TrustError::NotFound(resolved.clone()),
+    let canonical = canonicalize_path(fs, path)?;
+    let bin_stat = fs.stat(&canonical).map_err(|e| match e.kind() {
+        io::ErrorKind::NotFound => TrustError::NotFound(canonical.clone()),
         _ => TrustError::SymlinkResolution(format!("{e}")),
     })?;
-    check_binary_stat(&resolved, &bin_stat)?;
+    check_binary_stat(&canonical, &bin_stat)?;
 
-    let mut current = resolved
+    let mut current = canonical
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("/"));
@@ -343,41 +353,101 @@ pub fn verify_executable_path(
             .unwrap_or_else(|| PathBuf::from("/"));
     }
 
-    if !allowed_prefixes.iter().any(|p| resolved.starts_with(p)) {
-        return Err(TrustError::DisallowedPrefix(resolved));
+    if !allowed_prefixes.iter().any(|p| canonical.starts_with(p)) {
+        return Err(TrustError::DisallowedPrefix(canonical));
     }
-    Ok(resolved)
+    Ok(canonical)
 }
 
-fn resolve_symlinks(fs: &dyn FsMetadataProvider, path: &Path) -> Result<PathBuf, TrustError> {
-    // Bounded resolution to defend against symlink loops.
-    const MAX_HOPS: u32 = 16;
-    let mut current = path.to_path_buf();
-    for _ in 0..MAX_HOPS {
-        let stat = fs.stat(&current);
-        match stat {
+/// Resolve every symlink along `path` (not just the leaf) using the trait's
+/// stat / read_link primitives. Uses a deque-based component walker:
+/// when a component resolves to a symlink, the target's components are
+/// prepended to the remaining input so they are re-canonicalized in turn.
+/// `MAX_HOPS` bounds total components processed across the entire walk
+/// (input + every expansion), defending against symlink loops.
+///
+/// The walker — rather than `std::fs::canonicalize` — keeps test code
+/// (`FakeFs`) and production code (`StdFsMetadataProvider`) traversing
+/// the same logic, eliminating drift between mock and real-fs behavior.
+pub(crate) fn canonicalize_path(
+    fs: &dyn FsMetadataProvider,
+    path: &Path,
+) -> Result<PathBuf, TrustError> {
+    if !path.is_absolute() {
+        return Err(TrustError::SymlinkResolution(format!(
+            "path is not absolute: {}",
+            path.display()
+        )));
+    }
+
+    let mut remaining: VecDeque<OsString> = path
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(n) => Some(n.to_os_string()),
+            Component::ParentDir => Some(OsString::from("..")),
+            // RootDir, CurDir, Prefix(Windows) — skip; absolute path
+            // anchors result at "/" below.
+            _ => None,
+        })
+        .collect();
+
+    let mut result = PathBuf::from("/");
+    let mut hops: u32 = 0;
+    const MAX_HOPS: u32 = 256;
+
+    while let Some(name) = remaining.pop_front() {
+        if hops >= MAX_HOPS {
+            return Err(TrustError::SymlinkResolution(
+                "symlink chain too deep".into(),
+            ));
+        }
+        hops += 1;
+
+        if name == OsStr::new("..") {
+            result.pop();
+            continue;
+        }
+
+        result.push(&name);
+
+        match fs.stat(&result) {
             Ok(s) if matches!(s.kind, FileKind::Symlink) => {
                 let target = fs
-                    .read_link(&current)
+                    .read_link(&result)
                     .map_err(|e| TrustError::SymlinkResolution(format!("{e}")))?;
-                // POSIX symlinks: relative targets are interpreted against
-                // the symlink's parent directory, not the daemon's cwd.
-                current = if target.is_absolute() {
-                    target
-                } else {
-                    current.parent().map(|p| p.join(&target)).unwrap_or(target)
-                };
+                // Pop the symlink itself; we replace it with the target's
+                // components.
+                result.pop();
+                if target.is_absolute() {
+                    result = PathBuf::from("/");
+                }
+                let target_components: Vec<OsString> = target
+                    .components()
+                    .filter_map(|c| match c {
+                        Component::Normal(n) => Some(n.to_os_string()),
+                        Component::ParentDir => Some(OsString::from("..")),
+                        _ => None,
+                    })
+                    .collect();
+                for c in target_components.into_iter().rev() {
+                    remaining.push_front(c);
+                }
             }
-            Ok(_) => return Ok(current),
+            Ok(_) => {} // regular file or directory; keep walking
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                return Err(TrustError::NotFound(current));
+                return Err(TrustError::NotFound(result.clone()));
             }
-            Err(e) => return Err(TrustError::SymlinkResolution(format!("{e}"))),
+            Err(e) => {
+                return Err(TrustError::SymlinkResolution(format!(
+                    "{}: {}",
+                    result.display(),
+                    e
+                )));
+            }
         }
     }
-    Err(TrustError::SymlinkResolution(
-        "symlink chain too deep".into(),
-    ))
+
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -487,6 +557,119 @@ mod verify_tests {
         prefixes.push(PathBuf::from("/usr/bin/lib"));
         let r = verify_executable_path(&fs, Path::new("/usr/bin/sing-box"), &prefixes);
         assert!(r.is_ok(), "expected relative symlink to resolve, got {r:?}");
+    }
+
+    /// Issue #7 regression: spec §11.2 deployment uses
+    /// `/var/lib/boxpilot/cores/current/sing-box` where `current` is a
+    /// symlink ancestor pointing at the active versioned dir. Pre-fix, the
+    /// per-component lstat in the parent walk saw `current` as a symlink
+    /// (FileKind::Symlink) and rejected with "not a directory". Now the
+    /// path is fully canonicalized first, so the parent walk sees only
+    /// real directories.
+    #[test]
+    fn symlink_ancestor_under_cores_resolves_and_passes() {
+        let fs = FakeFs::default();
+        // Real chain: /var/lib/boxpilot/cores/1.10.0/sing-box
+        fs.put("/", FakeFs::root_dir());
+        fs.put("/var", FakeFs::root_dir());
+        fs.put("/var/lib", FakeFs::root_dir());
+        fs.put("/var/lib/boxpilot", FakeFs::root_dir());
+        fs.put("/var/lib/boxpilot/cores", FakeFs::root_dir());
+        fs.put("/var/lib/boxpilot/cores/1.10.0", FakeFs::root_dir());
+        fs.put("/var/lib/boxpilot/cores/1.10.0/sing-box", FakeFs::root_bin());
+        // Symlink ancestor: cores/current -> 1.10.0
+        fs.put(
+            "/var/lib/boxpilot/cores/current",
+            FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Symlink,
+            },
+        );
+        fs.links.lock().unwrap().insert(
+            PathBuf::from("/var/lib/boxpilot/cores/current"),
+            PathBuf::from("1.10.0"),
+        );
+
+        let r = verify_executable_path(
+            &fs,
+            Path::new("/var/lib/boxpilot/cores/current/sing-box"),
+            &default_allowed_prefixes(),
+        );
+        assert!(r.is_ok(), "{r:?}");
+        assert_eq!(
+            r.unwrap(),
+            PathBuf::from("/var/lib/boxpilot/cores/1.10.0/sing-box")
+        );
+    }
+
+    /// Defense-in-depth: a symlink that resolves outside the allowed prefix
+    /// list must still be rejected. Canonicalization first means we see
+    /// the real target; the prefix check at the end catches escapes.
+    #[test]
+    fn symlink_escaping_allowed_prefix_is_rejected() {
+        let fs = FakeFs::default();
+        fs.put("/", FakeFs::root_dir());
+        fs.put("/usr", FakeFs::root_dir());
+        fs.put("/usr/bin", FakeFs::root_dir());
+        fs.put("/tmp", FakeFs::root_dir());
+        fs.put("/tmp/sing-box", FakeFs::root_bin());
+        // /usr/bin/sing-box is a symlink to /tmp/sing-box (escapes allowed prefixes)
+        fs.put(
+            "/usr/bin/sing-box",
+            FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Symlink,
+            },
+        );
+        fs.links.lock().unwrap().insert(
+            PathBuf::from("/usr/bin/sing-box"),
+            PathBuf::from("/tmp/sing-box"),
+        );
+
+        let r = verify_executable_path(
+            &fs,
+            Path::new("/usr/bin/sing-box"),
+            &default_allowed_prefixes(),
+        );
+        assert!(
+            matches!(r, Err(TrustError::DisallowedPrefix(_))),
+            "expected DisallowedPrefix on canonical /tmp/sing-box, got {r:?}"
+        );
+    }
+
+    /// `canonicalize_path` must terminate on a self-loop (a -> a) rather
+    /// than running until stack overflow. The bound is MAX_HOPS internal
+    /// to the walker.
+    #[test]
+    fn symlink_self_loop_is_rejected() {
+        let fs = FakeFs::default();
+        fs.put("/", FakeFs::root_dir());
+        fs.put("/usr", FakeFs::root_dir());
+        fs.put("/usr/bin", FakeFs::root_dir());
+        fs.put(
+            "/usr/bin/sing-box",
+            FileStat {
+                uid: 0,
+                gid: 0,
+                mode: 0o755,
+                kind: FileKind::Symlink,
+            },
+        );
+        // self-loop
+        fs.links.lock().unwrap().insert(
+            PathBuf::from("/usr/bin/sing-box"),
+            PathBuf::from("sing-box"),
+        );
+
+        let r = canonicalize_path(&fs, Path::new("/usr/bin/sing-box"));
+        assert!(
+            matches!(r, Err(TrustError::SymlinkResolution(ref s)) if s.contains("too deep")),
+            "{r:?}"
+        );
     }
 }
 
