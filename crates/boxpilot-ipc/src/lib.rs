@@ -46,6 +46,9 @@ pub use home::{
     ActiveProfileSnapshot, CoreSnapshot, HomeStatusResponse, HOME_STATUS_SCHEMA_VERSION,
 };
 
+pub mod redact;
+pub use redact::{redact_singbox_config, MAX_DEPTH as REDACT_MAX_DEPTH, REDACTED};
+
 #[cfg(test)]
 mod tests {
     #[test]
