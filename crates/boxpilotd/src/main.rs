@@ -8,6 +8,7 @@ mod core;
 mod credentials;
 mod dispatch;
 mod iface;
+mod legacy;
 mod lock;
 mod paths;
 mod profile;
@@ -111,6 +112,8 @@ async fn main() -> Result<()> {
     let fs_meta = Arc::new(StdFsMetadataProvider);
     let version_checker = Arc::new(ProcessVersionChecker);
 
+    let fragment_reader = Arc::new(crate::legacy::observe::StdFsFragmentReader);
+    let config_reader = Arc::new(crate::legacy::migrate::StdConfigReader);
     let journal = Arc::new(crate::systemd::JournalctlProcess);
     let ctx = Arc::new(context::HelperContext::new(
         paths,
@@ -125,6 +128,8 @@ async fn main() -> Result<()> {
         version_checker,
         Arc::new(crate::profile::checker::ProcessChecker),
         Arc::new(crate::profile::verifier::DefaultVerifier),
+        fragment_reader,
+        config_reader,
     ));
 
     let helper = iface::Helper::new(ctx);

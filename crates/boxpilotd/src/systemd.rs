@@ -17,6 +17,17 @@ pub trait Systemd: Send + Sync {
     /// Equivalent to `systemctl daemon-reload`. Required after writing a
     /// new unit file so systemd parses it before the next StartUnit.
     async fn reload(&self) -> Result<(), HelperError>;
+
+    /// `org.freedesktop.systemd1.Unit::FragmentPath` — the on-disk unit file
+    /// for `unit_name`. `None` for transient units or when the fragment has
+    /// been deleted from disk.
+    async fn fragment_path(&self, unit_name: &str) -> Result<Option<String>, HelperError>;
+
+    /// `systemctl is-enabled` view: `enabled` / `disabled` / `static` /
+    /// `masked` / `not-found`. Surfaced as a string because the systemd
+    /// vocabulary is itself open-ended; consumers branch on the canonical
+    /// values they care about.
+    async fn unit_file_state(&self, unit_name: &str) -> Result<Option<String>, HelperError>;
 }
 
 #[proxy(
@@ -59,6 +70,8 @@ trait SystemdManager {
     ) -> zbus::Result<Vec<(String, String, String)>>;
 
     fn reload(&self) -> zbus::Result<()>;
+
+    fn get_unit_file_state(&self, name: &str) -> zbus::Result<String>;
 }
 
 #[proxy(interface = "org.freedesktop.systemd1.Unit")]
@@ -219,6 +232,58 @@ impl Systemd for DBusSystemd {
             .map_err(systemd_err)?;
         mgr.reload().await.map_err(systemd_err)
     }
+
+    async fn fragment_path(&self, unit_name: &str) -> Result<Option<String>, HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        let unit_path = match mgr.get_unit(unit_name).await {
+            Ok(p) => p,
+            Err(zbus::Error::MethodError(name, _, _))
+                if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit" =>
+            {
+                return Ok(None);
+            }
+            Err(e) => return Err(systemd_err(e)),
+        };
+        // FragmentPath lives on the Unit interface; we read it via a generic
+        // Properties.Get so we don't have to add yet another typed property.
+        let props = zbus::fdo::PropertiesProxy::builder(&self.conn)
+            .destination("org.freedesktop.systemd1")
+            .map_err(systemd_err)?
+            .path(unit_path)
+            .map_err(systemd_err)?
+            .build()
+            .await
+            .map_err(systemd_err)?;
+        let iface =
+            zbus::names::InterfaceName::from_static_str_unchecked("org.freedesktop.systemd1.Unit");
+        let v = props
+            .get(iface, "FragmentPath")
+            .await
+            .map_err(|e| HelperError::Systemd {
+                message: format!("FragmentPath: {e}"),
+            })?;
+        let s: String = v.try_into().map_err(|e| HelperError::Systemd {
+            message: format!("FragmentPath decode: {e}"),
+        })?;
+        if s.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(s))
+        }
+    }
+
+    async fn unit_file_state(&self, unit_name: &str) -> Result<Option<String>, HelperError> {
+        let mgr = SystemdManagerProxy::new(&self.conn)
+            .await
+            .map_err(systemd_err)?;
+        match mgr.get_unit_file_state(unit_name).await {
+            Ok(s) => Ok(Some(s)),
+            Err(zbus::Error::MethodError(_, _, _)) => Ok(None),
+            Err(e) => Err(systemd_err(e)),
+        }
+    }
 }
 
 fn systemd_err(e: zbus::Error) -> HelperError {
@@ -277,6 +342,22 @@ pub mod testing {
 
     pub struct FixedSystemd {
         pub answer: UnitState,
+        pub fragment_path: Option<String>,
+        pub unit_file_state: Option<String>,
+    }
+
+    impl FixedSystemd {
+        pub fn new_with_fragment(
+            answer: UnitState,
+            fragment_path: Option<String>,
+            unit_file_state: Option<String>,
+        ) -> Self {
+            Self {
+                answer,
+                fragment_path,
+                unit_file_state,
+            }
+        }
     }
 
     #[async_trait]
@@ -302,6 +383,12 @@ pub mod testing {
         async fn reload(&self) -> Result<(), HelperError> {
             Ok(())
         }
+        async fn fragment_path(&self, _: &str) -> Result<Option<String>, HelperError> {
+            Ok(self.fragment_path.clone())
+        }
+        async fn unit_file_state(&self, _: &str) -> Result<Option<String>, HelperError> {
+            Ok(self.unit_file_state.clone())
+        }
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +403,8 @@ pub mod testing {
 
     pub struct RecordingSystemd {
         pub answer: UnitState,
+        pub fragment_path: Mutex<Option<String>>,
+        pub unit_file_state: Mutex<Option<String>>,
         pub calls: Mutex<Vec<RecordedCall>>,
     }
 
@@ -323,8 +412,17 @@ pub mod testing {
         pub fn new(answer: UnitState) -> Self {
             Self {
                 answer,
+                fragment_path: Mutex::new(None),
+                unit_file_state: Mutex::new(None),
                 calls: Mutex::new(Vec::new()),
             }
+        }
+        pub fn set_fragment_path(&self, path: Option<String>) {
+            *self.fragment_path.lock().unwrap() = path;
+        }
+        #[allow(dead_code)] // wired by future plans (test-only fixture setter)
+        pub fn set_unit_file_state(&self, state: Option<String>) {
+            *self.unit_file_state.lock().unwrap() = state;
         }
         pub fn calls(&self) -> Vec<RecordedCall> {
             self.calls.lock().unwrap().clone()
@@ -375,12 +473,20 @@ pub mod testing {
             self.calls.lock().unwrap().push(RecordedCall::Reload);
             Ok(())
         }
+        async fn fragment_path(&self, _: &str) -> Result<Option<String>, HelperError> {
+            Ok(self.fragment_path.lock().unwrap().clone())
+        }
+        async fn unit_file_state(&self, _: &str) -> Result<Option<String>, HelperError> {
+            Ok(self.unit_file_state.lock().unwrap().clone())
+        }
     }
 
     #[tokio::test]
     async fn fixed_returns_canned_state() {
         let q = FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         };
         assert_eq!(q.unit_state("anything").await.unwrap(), UnitState::NotFound);
     }
@@ -393,6 +499,36 @@ pub mod testing {
             s.calls(),
             vec![RecordedCall::StartUnit("boxpilot-sing-box.service".into())]
         );
+    }
+
+    #[tokio::test]
+    async fn fixed_systemd_returns_canned_fragment_path() {
+        let q = FixedSystemd::new_with_fragment(
+            UnitState::NotFound,
+            Some("/etc/systemd/system/sing-box.service".into()),
+            Some("enabled".into()),
+        );
+        assert_eq!(
+            q.fragment_path("sing-box.service").await.unwrap(),
+            Some("/etc/systemd/system/sing-box.service".into())
+        );
+        assert_eq!(
+            q.unit_file_state("sing-box.service").await.unwrap(),
+            Some("enabled".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn fixed_systemd_default_constructor_keeps_fragment_unset() {
+        // Existing tests construct FixedSystemd { answer: ... } directly;
+        // check that style still works and returns None for the new methods.
+        let q = FixedSystemd {
+            answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
+        };
+        assert!(q.fragment_path("u").await.unwrap().is_none());
+        assert!(q.unit_file_state("u").await.unwrap().is_none());
     }
 
     pub struct FixedJournal {

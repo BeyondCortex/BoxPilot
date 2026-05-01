@@ -34,6 +34,13 @@ pub use profile::{
     BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT, BUNDLE_MAX_NESTING_DEPTH, BUNDLE_MAX_TOTAL_BYTES,
 };
 
+pub mod legacy;
+pub use legacy::{
+    ConfigPathKind, LegacyMigrateCutoverResponse, LegacyMigratePrepareResponse,
+    LegacyMigrateRequest, LegacyMigrateResponse, LegacyObserveServiceResponse, MigratedAsset,
+    LEGACY_UNIT_NAME,
+};
+
 #[cfg(test)]
 mod tests {
     #[test]

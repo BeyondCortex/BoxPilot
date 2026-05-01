@@ -183,6 +183,8 @@ mod tests {
         let paths = Paths::with_root(tmp.path());
         let systemd = FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         };
         let fs = PermissiveFs;
         let mut cfg = cfg_with_core("/x");
@@ -202,6 +204,8 @@ mod tests {
         let paths = Paths::with_root(tmp.path());
         let systemd = FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         };
         // Reject everything — simulates §6.5 failure.
         struct DenyFs;

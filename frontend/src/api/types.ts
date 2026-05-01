@@ -128,3 +128,36 @@ export interface PrepareBundleResponse {
 
 export interface CheckRequest { profile_id: string; core_path: string; }
 export interface CheckResponse { success: boolean; stdout: string; stderr: string; }
+
+export type ConfigPathKind = "system_path" | "user_or_ephemeral" | "unknown";
+
+export interface LegacyObserveServiceResponse {
+  detected: boolean;
+  unit_name: string | null;
+  fragment_path: string | null;
+  unit_file_state: string | null;
+  exec_start_raw: string | null;
+  config_path: string | null;
+  config_path_kind: ConfigPathKind;
+  unit_state: UnitState;
+  conflicts_with_managed: boolean;
+}
+
+export interface MigratedAsset {
+  filename: string;
+  bytes: number[];
+}
+
+export interface LegacyMigratePrepareResponse {
+  unit_name: string;
+  config_path_was: string;
+  config_filename: string;
+  config_bytes: number[];
+  assets: MigratedAsset[];
+}
+
+export interface LegacyMigrateCutoverResponse {
+  unit_name: string;
+  backup_unit_path: string;
+  final_unit_state: UnitState;
+}

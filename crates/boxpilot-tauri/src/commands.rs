@@ -122,3 +122,42 @@ pub async fn helper_service_logs(
     let c = HelperClient::connect().await?;
     Ok(c.service_logs(&request).await?)
 }
+
+#[tauri::command]
+pub async fn helper_legacy_observe_service(
+) -> Result<boxpilot_ipc::LegacyObserveServiceResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    Ok(c.legacy_observe_service().await?)
+}
+
+#[tauri::command]
+pub async fn helper_legacy_migrate_prepare(
+) -> Result<boxpilot_ipc::LegacyMigratePrepareResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    let r = c
+        .legacy_migrate_service(&boxpilot_ipc::LegacyMigrateRequest::Prepare)
+        .await?;
+    match r {
+        boxpilot_ipc::LegacyMigrateResponse::Prepare(p) => Ok(p),
+        boxpilot_ipc::LegacyMigrateResponse::Cutover(_) => Err(CommandError {
+            code: "decode".into(),
+            message: "expected Prepare response, got Cutover".into(),
+        }),
+    }
+}
+
+#[tauri::command]
+pub async fn helper_legacy_migrate_cutover(
+) -> Result<boxpilot_ipc::LegacyMigrateCutoverResponse, CommandError> {
+    let c = HelperClient::connect().await?;
+    let r = c
+        .legacy_migrate_service(&boxpilot_ipc::LegacyMigrateRequest::Cutover)
+        .await?;
+    match r {
+        boxpilot_ipc::LegacyMigrateResponse::Cutover(p) => Ok(p),
+        boxpilot_ipc::LegacyMigrateResponse::Prepare(_) => Err(CommandError {
+            code: "decode".into(),
+            message: "expected Cutover response, got Prepare".into(),
+        }),
+    }
+}

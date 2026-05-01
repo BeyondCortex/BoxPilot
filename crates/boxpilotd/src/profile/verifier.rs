@@ -82,6 +82,8 @@ mod tests {
         ]);
         let s = crate::systemd::testing::FixedSystemd {
             answer: boxpilot_ipc::UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         };
         let r1 = v
             .wait_for_running("u", 0, Duration::from_millis(1), &s)

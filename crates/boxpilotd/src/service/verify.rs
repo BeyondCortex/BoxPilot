@@ -67,6 +67,8 @@ mod tests {
                 n_restarts: 0,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         };
         let o = wait_for_running("u", 0, Duration::from_millis(50), &s)
             .await
@@ -84,6 +86,8 @@ mod tests {
                 n_restarts: 0,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         };
         let o = wait_for_running("u", 0, Duration::from_millis(100), &s)
             .await
@@ -95,6 +99,8 @@ mod tests {
     async fn returns_not_found_when_unit_missing() {
         let s = FixedSystemd {
             answer: UnitState::NotFound,
+            fragment_path: None,
+            unit_file_state: None,
         };
         let o = wait_for_running("u", 0, Duration::from_millis(50), &s)
             .await
@@ -114,6 +120,8 @@ mod tests {
                 n_restarts: 3,
                 exec_main_status: 0,
             },
+            fragment_path: None,
+            unit_file_state: None,
         };
         let o = wait_for_running("u", 0, Duration::from_millis(50), &s)
             .await

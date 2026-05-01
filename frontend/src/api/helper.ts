@@ -4,6 +4,9 @@ import type {
   CoreInstallResponse, CoreRollbackRequest, ServiceStatusResponse, CommandError,
   ServiceControlResponse, ServiceInstallManagedResponse,
   ServiceLogsRequest, ServiceLogsResponse,
+  LegacyObserveServiceResponse,
+  LegacyMigratePrepareResponse,
+  LegacyMigrateCutoverResponse,
 } from "./types";
 
 export async function serviceStatus(): Promise<ServiceStatusResponse> {
@@ -58,4 +61,16 @@ export async function serviceInstallManaged(): Promise<ServiceInstallManagedResp
 }
 export async function serviceLogs(req: ServiceLogsRequest): Promise<ServiceLogsResponse> {
   return await invoke<ServiceLogsResponse>("helper_service_logs", { request: req });
+}
+
+export async function legacyObserveService(): Promise<LegacyObserveServiceResponse> {
+  return await invoke<LegacyObserveServiceResponse>("helper_legacy_observe_service");
+}
+
+export async function legacyMigratePrepare(): Promise<LegacyMigratePrepareResponse> {
+  return await invoke<LegacyMigratePrepareResponse>("helper_legacy_migrate_prepare");
+}
+
+export async function legacyMigrateCutover(): Promise<LegacyMigrateCutoverResponse> {
+  return await invoke<LegacyMigrateCutoverResponse>("helper_legacy_migrate_cutover");
 }

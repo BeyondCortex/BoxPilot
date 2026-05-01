@@ -80,6 +80,41 @@ pub enum HelperError {
     /// Manual rollback target is not present under `/etc/boxpilot/releases/`.
     #[error("release {activation_id} not found")]
     ReleaseNotFound { activation_id: String },
+
+    /// Spec §8 — legacy unit's config path is under /home, /tmp, /run/user, etc.
+    #[error("legacy config path is not under a system location: {path}")]
+    LegacyConfigPathUnsafe { path: String },
+
+    /// `sing-box.service` is not loaded by systemd.
+    #[error("legacy unit not found: {unit}")]
+    LegacyUnitNotFound { unit: String },
+
+    /// `ExecStart=` could not be parsed out of the legacy fragment, or no
+    /// `-c <path>` / `--config <path>` argument was found.
+    #[error("could not parse ExecStart: {reason}")]
+    LegacyExecStartUnparseable { reason: String },
+
+    /// `StopUnit` for the legacy service failed or the unit refused to settle.
+    #[error("failed to stop {unit}: {message}")]
+    LegacyStopFailed { unit: String, message: String },
+
+    /// `DisableUnitFiles` refused after a successful stop.
+    #[error("failed to disable {unit}: {message}")]
+    LegacyDisableFailed { unit: String, message: String },
+
+    /// Defensive — refuse to migrate a unit whose name happens to equal
+    /// `boxpilot.toml::target_service`.
+    #[error("legacy unit {unit} is the same as the managed target_service")]
+    LegacyConflictsWithManaged { unit: String },
+
+    /// One sibling file in the legacy config dir exceeds BUNDLE_MAX_FILE_BYTES.
+    #[error("legacy asset {path} exceeds per-file limit ({size} > {limit})")]
+    LegacyAssetTooLarge { path: String, size: u64, limit: u64 },
+
+    /// Direct parent of the legacy config has more than BUNDLE_MAX_FILE_COUNT-1
+    /// sibling files.
+    #[error("legacy config directory has too many siblings ({count} > {limit})")]
+    LegacyTooManyAssets { count: u32, limit: u32 },
 }
 
 pub type HelperResult<T> = Result<T, HelperError>;
@@ -129,6 +164,46 @@ mod tests {
             ReleaseAlreadyActive,
             ReleaseNotFound {
                 activation_id: "id".into(),
+            },
+        ] {
+            let s = serde_json::to_string(&v).unwrap();
+            let back: HelperError = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, v);
+        }
+    }
+
+    #[test]
+    fn legacy_variants_round_trip() {
+        use HelperError::*;
+        for v in [
+            LegacyConfigPathUnsafe {
+                path: "/home/alice/sb.json".into(),
+            },
+            LegacyUnitNotFound {
+                unit: "sing-box.service".into(),
+            },
+            LegacyExecStartUnparseable {
+                reason: "no -c flag".into(),
+            },
+            LegacyStopFailed {
+                unit: "sing-box.service".into(),
+                message: "still running after 2s".into(),
+            },
+            LegacyDisableFailed {
+                unit: "sing-box.service".into(),
+                message: "DisableUnitFiles refused".into(),
+            },
+            LegacyConflictsWithManaged {
+                unit: "sing-box.service".into(),
+            },
+            LegacyAssetTooLarge {
+                path: "/etc/sing-box/huge.db".into(),
+                size: 99,
+                limit: 50,
+            },
+            LegacyTooManyAssets {
+                count: 99,
+                limit: 50,
             },
         ] {
             let s = serde_json::to_string(&v).unwrap();

@@ -28,6 +28,8 @@ pub struct HelperContext {
     pub version_checker: Arc<dyn VersionChecker>,
     pub checker: Arc<dyn SingboxChecker>,
     pub verifier: Arc<dyn ServiceVerifier>,
+    pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+    pub config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
     // Cache is intentionally absent. `load_config` reads the file each call;
     // call sites are infrequent (one disk read per `service.status` poll, or
     // per privileged action). When SIGHUP-style reload lands in a later
@@ -37,7 +39,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 12 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 14 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -51,6 +53,8 @@ impl HelperContext {
         version_checker: Arc<dyn VersionChecker>,
         checker: Arc<dyn SingboxChecker>,
         verifier: Arc<dyn ServiceVerifier>,
+        fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+        config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
     ) -> Self {
         Self {
             paths,
@@ -65,6 +69,8 @@ impl HelperContext {
             version_checker,
             checker,
             verifier,
+            fs_fragment_reader,
+            config_reader,
         }
     }
 
@@ -146,6 +152,8 @@ pub mod testing {
             Arc::new(authority),
             Arc::new(FixedSystemd {
                 answer: systemd_answer,
+                fragment_path: None,
+                unit_file_state: None,
             }),
             journal,
             Arc::new(PasswdLookup),
@@ -157,6 +165,8 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            Arc::new(NoFragments),
+            Arc::new(NoConfig),
         )
     }
 
@@ -202,6 +212,8 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            Arc::new(NoFragments),
+            Arc::new(NoConfig),
         )
     }
 
@@ -234,6 +246,8 @@ pub mod testing {
             Arc::new(authority),
             Arc::new(crate::systemd::testing::FixedSystemd {
                 answer: systemd_answer,
+                fragment_path: None,
+                unit_file_state: None,
             }),
             journal,
             Arc::new(PasswdLookup),
@@ -249,7 +263,52 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            Arc::new(NoFragments),
+            Arc::new(NoConfig),
         )
+    }
+
+    /// A `FragmentReader` that pretends every fragment is missing — used
+    /// by tests that don't care about ExecStart parsing. Returns
+    /// `ErrorKind::NotFound` for every read.
+    pub struct NoFragments;
+
+    impl crate::legacy::observe::FragmentReader for NoFragments {
+        fn read_to_string(&self, _path: &std::path::Path) -> std::io::Result<String> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test fragment reader",
+            ))
+        }
+    }
+
+    /// A `ConfigReader` that always returns `NotFound` — used by tests
+    /// whose flow doesn't reach the legacy.migrate_service path. Returning
+    /// errors instead of empty Vecs avoids tests masking real failures.
+    pub struct NoConfig;
+
+    impl crate::legacy::migrate::ConfigReader for NoConfig {
+        fn read_file(&self, _path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test config reader",
+            ))
+        }
+        fn read_dir(
+            &self,
+            _path: &std::path::Path,
+        ) -> std::io::Result<Vec<crate::legacy::migrate::DirEntry>> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test config reader",
+            ))
+        }
+        fn metadata_len(&self, _path: &std::path::Path) -> std::io::Result<u64> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "test config reader",
+            ))
+        }
     }
 
     /// A permissive test `FsMetadataProvider` that reports every path as a
