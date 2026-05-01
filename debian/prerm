@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+# Lifecycle is handled in postrm. boxpilot-sing-box.service (if present)
+# is intentionally left running across upgrade/remove and is only cleaned
+# on purge, per the plan #9 design (§11).
+
+#DEBHELPER#
+
+exit 0

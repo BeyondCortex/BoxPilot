@@ -1,0 +1,25 @@
+#!/usr/bin/make -f
+export DH_VERBOSE = 1
+export CARGO_HOME = $(CURDIR)/debian/cargo-home
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+%:
+	dh $@
+
+override_dh_auto_clean:
+	cargo clean || true
+	rm -rf debian/cargo-home frontend/dist frontend/node_modules
+
+override_dh_auto_build:
+	cargo build --release --locked -p boxpilotd
+	cd frontend && npm install --no-audit --no-fund && npm run build
+	cd crates/boxpilot-tauri && cargo build --release --locked
+
+override_dh_auto_test:
+	# Tests run pre-PR via cargo test --workspace; not at package build.
+
+override_dh_auto_install:
+	install -D -m 0755 target/release/boxpilotd \
+	    debian/boxpilot/usr/lib/boxpilot/boxpilotd
+	install -D -m 0755 target/release/boxpilot \
+	    debian/boxpilot/usr/lib/boxpilot/boxpilot

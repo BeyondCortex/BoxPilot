@@ -13,3 +13,14 @@
 *.log
 /rust_out
 .claude/
+
+# Debian packaging build artefacts
+debian/.debhelper/
+debian/boxpilot/
+debian/boxpilot.substvars
+debian/boxpilot.debhelper.log
+debian/cargo-home/
+debian/files
+debian/debhelper-build-stamp
+*.buildinfo
+*.changes

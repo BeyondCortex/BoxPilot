@@ -1,0 +1,10 @@
+packaging/linux/dbus/system-services/app.boxpilot.Helper.service usr/share/dbus-1/system-services/
+packaging/linux/dbus/system.d/app.boxpilot.helper.conf            usr/share/dbus-1/system.d/
+packaging/linux/polkit-1/actions/app.boxpilot.helper.policy       usr/share/polkit-1/actions/
+packaging/linux/polkit-1/rules.d/49-boxpilot.rules                usr/share/polkit-1/rules.d/
+packaging/linux/systemd/boxpilotd.service                         usr/lib/systemd/system/
+packaging/linux/desktop/app.boxpilot.desktop                      usr/share/applications/
+packaging/linux/icons/hicolor/32x32/apps/boxpilot.png             usr/share/icons/hicolor/32x32/apps/
+packaging/linux/icons/hicolor/128x128/apps/boxpilot.png           usr/share/icons/hicolor/128x128/apps/
+packaging/linux/icons/hicolor/256x256/apps/boxpilot.png           usr/share/icons/hicolor/256x256/apps/
+README.md                                                          usr/share/doc/boxpilot/

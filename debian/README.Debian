@@ -1,0 +1,18 @@
+boxpilot for Debian
+-------------------
+
+Helper logs:
+    journalctl -u boxpilotd.service
+
+Managed sing-box logs (when a profile is active):
+    journalctl -u boxpilot-sing-box.service
+
+Runtime trees (cleared on `apt purge`, preserved on `apt remove`):
+    /etc/boxpilot/        - controller name, active profile symlink
+    /var/lib/boxpilot/    - managed core releases
+    /var/cache/boxpilot/  - diagnostics bundles
+
+The package never modifies an external /etc/systemd/system/sing-box.service.
+That unit is observed only; see plan #6 for migration semantics.
+
+ -- Conn Johnson <johnson.connor.97815@gmail.com>

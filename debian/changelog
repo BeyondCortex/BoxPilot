@@ -1,0 +1,11 @@
+boxpilot (0.1.0-1) unstable; urgency=medium
+
+  * Initial Debian package.
+  * Plans #1-#8 ship together as v0.1.0:
+    - skeleton + helperd, managed core, managed service, profile store,
+      activation pipeline, legacy sing-box.service handling, GUI shell,
+      diagnostics export with schema-aware redaction.
+  * Plan #9: install / upgrade / remove / purge wired through dpkg
+    maintainer scripts; D-Bus helper now activated via systemd.
+
+ -- Conn Johnson <johnson.connor.97815@gmail.com>  Thu, 30 Apr 2026 23:00:00 +0000

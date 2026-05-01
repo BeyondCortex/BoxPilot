@@ -1,0 +1,44 @@
+Source: boxpilot
+Section: net
+Priority: optional
+Maintainer: Conn Johnson <johnson.connor.97815@gmail.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo (>= 1.78) | rustc (>= 1.78),
+ rustc (>= 1.78),
+ nodejs (>= 20),
+ npm,
+ pkg-config,
+ libssl-dev,
+ libgtk-3-dev,
+ libwebkit2gtk-4.1-dev,
+ libayatana-appindicator3-dev,
+ librsvg2-dev,
+ libsoup-3.0-dev
+Standards-Version: 4.6.2
+Homepage: https://github.com/BeyondCortex/BoxPilot
+Vcs-Git: https://github.com/BeyondCortex/BoxPilot.git
+Vcs-Browser: https://github.com/BeyondCortex/BoxPilot
+Rules-Requires-Root: binary-targets
+
+Package: boxpilot
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends},
+ dbus,
+ libpolkit-gobject-1-0,
+ policykit-1 | polkitd,
+ systemd,
+ libwebkit2gtk-4.1-0,
+ libgtk-3-0,
+ libayatana-appindicator3-1
+Description: Linux desktop control panel for system sing-box
+ BoxPilot is a Tauri-based desktop application for managing the
+ system-installed sing-box service. It imports, validates, activates and
+ rolls back sing-box-native JSON profiles, and wraps every privileged
+ operation behind a polkit-guarded D-Bus helper running as root.
+ .
+ BoxPilot does not embed sing-box; it manages either a system-provided
+ binary or a release fetched from upstream and installed under
+ /var/lib/boxpilot/cores.
