@@ -25,10 +25,24 @@ pub fn redact_singbox_config(value: &mut Value) {
     walk(value, 0);
 }
 
-/// Keys whose value under `outbounds[*]` is always replaced with
-/// [`REDACTED`]. We list these explicitly even though default-deny would
-/// catch them so the test suite has a stable expectation.
-const OUTBOUND_SECRET_KEYS: &[&str] = &["password", "uuid", "private_key"];
+/// Keys whose presence inside an `outbounds[*]` object is allowed to pass
+/// through without modification. Everything else is redacted (default-deny).
+const OUTBOUND_PUBLIC_ALLOWLIST: &[&str] = &[
+    "type",
+    "tag",
+    "network",
+    "transport",
+    "domain_strategy",
+    "detour",
+    "fallback",
+    "fallback_delay",
+    "udp_over_tcp",
+    "packet_encoding",
+    "tls",
+    "multiplex",
+    // Numerics / structural that are explicitly *not* secret in §14.
+    "ip_version",
+];
 
 fn walk(value: &mut Value, depth: usize) {
     if depth >= MAX_DEPTH {
@@ -40,23 +54,27 @@ fn walk(value: &mut Value, depth: usize) {
         if let Some(Value::Array(outbounds)) = map.get_mut("outbounds") {
             for ob in outbounds {
                 if let Value::Object(ob_map) = ob {
-                    for key in OUTBOUND_SECRET_KEYS {
-                        if let Some(v) = ob_map.get_mut(*key) {
-                            *v = Value::String(REDACTED.to_string());
+                    let keys: Vec<String> = ob_map.keys().cloned().collect();
+                    for key in keys {
+                        match key.as_str() {
+                            // Numeric ports redact to 0 (preserves type so consumers can parse).
+                            "server_port" | "override_port" => {
+                                ob_map.insert(key, Value::Number(0u64.into()));
+                            }
+                            // Strings always redacted to "***".
+                            "server" | "override_address" => {
+                                ob_map.insert(key, Value::String(REDACTED.to_string()));
+                            }
+                            // Default-deny under outbounds[*]: pass-through only the allowlist.
+                            k if OUTBOUND_PUBLIC_ALLOWLIST.contains(&k) => {
+                                // leave as-is
+                            }
+                            // Everything else (including known-secret keys like
+                            // password / uuid / private_key) is redacted.
+                            _ => {
+                                ob_map.insert(key, Value::String(REDACTED.to_string()));
+                            }
                         }
-                    }
-                    if let Some(v) = ob_map.get_mut("server") {
-                        *v = Value::String(REDACTED.to_string());
-                    }
-                    if ob_map.contains_key("server_port") {
-                        ob_map.insert("server_port".to_string(), Value::Number(0u64.into()));
-                    }
-                    // override_address / override_port follow §14 server-redaction
-                    if let Some(v) = ob_map.get_mut("override_address") {
-                        *v = Value::String(REDACTED.to_string());
-                    }
-                    if ob_map.contains_key("override_port") {
-                        ob_map.insert("override_port".to_string(), Value::Number(0u64.into()));
                     }
                 }
             }
@@ -125,5 +143,44 @@ mod tests {
         redact_singbox_config(&mut v);
         assert_eq!(v["outbounds"][0]["type"], json!("vless"));
         assert_eq!(v["outbounds"][0]["tag"], json!("main"));
+    }
+
+    #[test]
+    fn outbound_unknown_key_is_redacted_by_default() {
+        let mut v = json!({
+            "outbounds": [
+                {"type": "future_protocol", "secret_handshake": "leak"},
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["secret_handshake"], json!("***"));
+    }
+
+    #[test]
+    fn outbound_known_structural_keys_pass_through() {
+        let mut v = json!({
+            "outbounds": [
+                {
+                    "type": "vless",
+                    "tag": "main",
+                    "network": "tcp",
+                    "transport": {"type": "ws"},
+                    "tls": {"enabled": true, "server_name": "example.com"},
+                    "multiplex": {"enabled": true, "protocol": "smux"},
+                    "domain_strategy": "ipv4_only",
+                    "detour": "next",
+                    "udp_over_tcp": true
+                }
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["type"], json!("vless"));
+        assert_eq!(v["outbounds"][0]["tag"], json!("main"));
+        assert_eq!(v["outbounds"][0]["network"], json!("tcp"));
+        assert_eq!(v["outbounds"][0]["domain_strategy"], json!("ipv4_only"));
+        assert_eq!(v["outbounds"][0]["detour"], json!("next"));
+        assert_eq!(v["outbounds"][0]["transport"]["type"], json!("ws"));
+        assert_eq!(v["outbounds"][0]["tls"]["server_name"], json!("example.com"));
+        assert_eq!(v["outbounds"][0]["multiplex"]["enabled"], json!(true));
     }
 }
