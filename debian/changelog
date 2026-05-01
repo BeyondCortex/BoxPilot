@@ -1,3 +1,25 @@
+boxpilot (0.1.1-1) unstable; urgency=medium
+
+  * Bug-fix release covering the four issues filed against v0.1.0:
+    - boxpilotd: create cores_dir before promote rename so install /
+      adopt succeed on a fresh machine where /var/lib/boxpilot/cores/
+      does not yet exist (#6).
+    - boxpilotd: canonicalize all path components before the §6.5 trust
+      check so the spec-recommended core_path
+      /var/lib/boxpilot/cores/current/sing-box (with `current` as a
+      symlink ancestor) passes verification (#7).
+    - boxpilotd: validate install-state.json schema_version at startup
+      and refuse mutating IPC verbs on mismatch; surface the version
+      via service.status so the GUI can show a single banner rather
+      than collecting per-action failures (#8).
+  * docs: rewrite §11.3 to acknowledge that SagerNet no longer
+    publishes upstream checksums; document that
+    install-source.json::upstream_sha256_match is reserved and v1.0
+    integrity rests on TLS + GitHub asset immutability + post-install
+    audit via the recorded SHA256 (#9).
+
+ -- Conn Johnson <johnson.connor.97815@gmail.com>  Fri, 01 May 2026 12:00:00 +0000
+
 boxpilot (0.1.0-1) unstable; urgency=medium
 
   * Initial Debian package.
