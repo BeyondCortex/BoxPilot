@@ -33,7 +33,8 @@ polkit.addRule(function(action, subject) {
     if (id === "app.boxpilot.helper.service.status" ||
         id === "app.boxpilot.helper.service.logs" ||
         id === "app.boxpilot.helper.core.discover" ||
-        id === "app.boxpilot.helper.legacy.observe-service") {
+        id === "app.boxpilot.helper.legacy.observe-service" ||
+        id === "app.boxpilot.helper.home.status") {
         return polkit.Result.YES;
     }
 

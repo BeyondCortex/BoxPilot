@@ -6,6 +6,7 @@ import {
 import { profileImportFile, profileImportDir } from "../../api/profile";
 import { useBusy } from "../../composables/useBusy";
 import { useToast } from "../../composables/useToast";
+import { useHomeStatus } from "../../composables/useHomeStatus";
 import type { LegacyObserveServiceResponse } from "../../api/types";
 
 const observed = ref<LegacyObserveServiceResponse | null>(null);
@@ -14,6 +15,7 @@ const importedProfileId = ref<string | null>(null);
 const cutoverDone = ref(false);
 const { busy, run } = useBusy();
 const toast = useToast();
+const { data: home } = useHomeStatus();
 
 async function scan() {
   await run(async () => {
@@ -56,7 +58,11 @@ async function importDirFromParent() {
 }
 
 async function cutover() {
-  if (!confirm("Stop and disable the legacy unit? Make sure you have an active BoxPilot profile first.")) return;
+  const haveActive = home.value?.active_profile != null;
+  const message = haveActive
+    ? "Stop and disable the legacy unit? Your active BoxPilot profile will take over."
+    : "WARNING: no BoxPilot profile is currently active. Stopping the legacy unit will leave NO sing-box running on this system. Continue anyway?";
+  if (!confirm(message)) return;
   await run(async () => {
     try {
       await legacyMigrateCutover();

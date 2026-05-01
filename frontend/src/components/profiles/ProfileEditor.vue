@@ -60,6 +60,11 @@ async function revert() {
 }
 
 async function enableClash() {
+  if (dirty.value) {
+    if (!confirm("You have unsaved edits. Enabling Clash API will reload the file from disk and discard them. Continue?")) {
+      return;
+    }
+  }
   await run(async () => {
     try {
       const patch = JSON.stringify({

@@ -456,16 +456,12 @@ impl Helper {
             version: core_version,
         };
 
-        // Active corrupt: /etc/boxpilot/active should resolve under
-        // releases/. Mirrors the daemon-startup recovery check.
-        let paths = self.ctx.paths.clone();
-        let active_corrupt = match tokio::fs::read_link(paths.active_symlink()).await {
-            Ok(target) => {
-                let releases = paths.releases_dir();
-                !target.starts_with(&releases) || tokio::fs::metadata(&target).await.is_err()
-            }
-            Err(_) => false, // never activated: not corrupt, just absent
-        };
+        // Active corrupt: identical predicate to the daemon-startup
+        // recovery path so the GUI banner can never disagree with the
+        // recovery report. Read-only; safe to call on every poll.
+        let active_corrupt = crate::profile::recovery::check_active_status(&self.ctx.paths)
+            .await
+            .corrupt;
 
         Ok(boxpilot_ipc::HomeStatusResponse {
             schema_version: boxpilot_ipc::HOME_STATUS_SCHEMA_VERSION,
