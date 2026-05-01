@@ -210,3 +210,10 @@ export interface ActivateResponse {
   n_restarts_post: number;
   window_used_ms: number;
 }
+
+export interface DiagnosticsExportResponse {
+  schema_version: number;
+  bundle_path: string;
+  bundle_size_bytes: number;
+  generated_at: string;
+}
