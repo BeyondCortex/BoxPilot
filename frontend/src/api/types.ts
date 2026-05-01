@@ -18,6 +18,12 @@ export interface ServiceStatusResponse {
   unit_name: string;
   unit_state: UnitState;
   controller: ControllerStatus;
+  /** Spec §7.6: present when the daemon detected an `install-state.json`
+   * schema_version it cannot read (compiled-in version != on-disk
+   * version). When set, all mutating helper calls return
+   * UnsupportedSchemaVersion until a migration runs; the GUI should
+   * surface a banner. */
+  state_schema_mismatch?: number | null;
 }
 
 export interface CommandError {

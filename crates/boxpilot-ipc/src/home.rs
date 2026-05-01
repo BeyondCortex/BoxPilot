@@ -44,6 +44,7 @@ mod tests {
             unit_name: "boxpilot-sing-box.service".into(),
             unit_state: UnitState::NotFound,
             controller: crate::response::ControllerStatus::Unset,
+            state_schema_mismatch: None,
         }
     }
 
