@@ -115,6 +115,27 @@ fn walk(value: &mut Value, depth: usize) {
                 }
             }
         }
+
+        if let Some(Value::Object(exp)) = map.get_mut("experimental") {
+            if let Some(Value::Object(clash)) = exp.get_mut("clash_api") {
+                if clash.contains_key("secret") {
+                    clash.insert("secret".to_string(), Value::String(REDACTED.to_string()));
+                }
+            }
+        }
+
+        if let Some(Value::Array(endpoints)) = map.get_mut("endpoints") {
+            for ep in endpoints {
+                if let Value::Object(ep_map) = ep {
+                    if ep_map.contains_key("private_key") {
+                        ep_map.insert(
+                            "private_key".to_string(),
+                            Value::String(REDACTED.to_string()),
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -256,6 +277,36 @@ mod tests {
         assert!(host_redacted(&s1), "tls scheme: {s1}");
         assert!(!s1.contains("example.com"), "tls scheme should hide host: {s1}");
         assert_eq!(s2, "***", "bare host falls back to whole-string redaction");
+    }
+
+    #[test]
+    fn redacts_clash_api_secret() {
+        let mut v = json!({
+            "experimental": {
+                "clash_api": {
+                    "external_controller": "127.0.0.1:9090",
+                    "secret": "topsecret"
+                }
+            }
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["experimental"]["clash_api"]["secret"], json!("***"));
+        assert_eq!(
+            v["experimental"]["clash_api"]["external_controller"],
+            json!("127.0.0.1:9090"),
+        );
+    }
+
+    #[test]
+    fn redacts_endpoint_private_key() {
+        let mut v = json!({
+            "endpoints": [
+                {"type": "wireguard", "private_key": "k=", "peer_public_key": "p="}
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["endpoints"][0]["private_key"], json!("***"));
+        assert_eq!(v["endpoints"][0]["peer_public_key"], json!("p="));
     }
 
     #[test]
