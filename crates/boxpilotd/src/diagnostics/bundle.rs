@@ -68,6 +68,66 @@ pub fn bundle_path(cache_dir: &Path, generated_at: &str) -> PathBuf {
     cache_dir.join(format!("boxpilot-diagnostics-{generated_at}.tar.gz"))
 }
 
+/// Bundle manifest written as `diagnostics-manifest.json` inside the tar.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BundleManifest {
+    pub schema_version: u32,
+    pub generated_at: String,
+    pub boxpilot_version: String,
+    pub host: super::sysinfo::SystemInfo,
+    pub files: Vec<BundleManifestFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BundleManifestFile {
+    pub name: String,
+    pub size: u64,
+    pub redacted: bool,
+}
+
+/// Write the gzip-compressed tar to `out_path`. The tar's top-level
+/// directory equals `bundle_dirname` so unpacking yields a single folder.
+pub fn write_tarball(
+    out_path: &Path,
+    bundle_dirname: &str,
+    manifest: &BundleManifest,
+    entries: &[BundleEntry],
+) -> std::io::Result<()> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::fs::File;
+    use tar::Header;
+
+    let f = File::create(out_path)?;
+    let gz = GzEncoder::new(f, Compression::default());
+    let mut tar = tar::Builder::new(gz);
+
+    let manifest_bytes = serde_json::to_vec_pretty(manifest).map_err(io_err)?;
+    let mut all_entries: Vec<(&str, &[u8])> = Vec::with_capacity(entries.len() + 1);
+    all_entries.push(("diagnostics-manifest.json", manifest_bytes.as_slice()));
+    for e in entries {
+        all_entries.push((e.name.as_str(), e.contents.as_slice()));
+    }
+
+    for (name, body) in all_entries {
+        let mut header = Header::new_gnu();
+        header.set_path(format!("{bundle_dirname}/{name}"))?;
+        header.set_mode(0o600);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_size(body.len() as u64);
+        header.set_cksum();
+        tar.append(&header, body)?;
+    }
+
+    tar.into_inner()?.finish()?;
+    Ok(())
+}
+
+fn io_err(e: serde_json::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, e)
+}
+
 /// Drop journal/stderr lines that contain markers correlated with secrets.
 /// Text-stage redaction is fundamentally heuristic — we cannot parse a
 /// freeform journal line into JSON. Schema-aware walking is reserved for
@@ -178,5 +238,73 @@ mod tests {
             p.to_string_lossy(),
             "/var/cache/boxpilot/diagnostics/boxpilot-diagnostics-2026-04-30T22-00-00Z.tar.gz"
         );
+    }
+
+    use super::super::sysinfo::SystemInfo;
+    use flate2::read::GzDecoder;
+    use std::collections::HashMap;
+    use std::io::Read;
+
+    fn read_tar_entries(path: &Path) -> HashMap<String, Vec<u8>> {
+        let f = std::fs::File::open(path).unwrap();
+        let gz = GzDecoder::new(f);
+        let mut tar = tar::Archive::new(gz);
+        let mut out = HashMap::new();
+        for entry in tar.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let p = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).unwrap();
+            out.insert(p, buf);
+        }
+        out
+    }
+
+    #[test]
+    fn tarball_contains_manifest_and_entries() {
+        let tmp = tempdir().unwrap();
+        let out = tmp.path().join("x.tar.gz");
+        let entries = vec![
+            BundleEntry {
+                name: "a.json".into(),
+                contents: b"{\"x\":1}".to_vec(),
+                redacted: true,
+            },
+            BundleEntry {
+                name: "b.txt".into(),
+                contents: b"hi".to_vec(),
+                redacted: false,
+            },
+        ];
+        let manifest = BundleManifest {
+            schema_version: 1,
+            generated_at: "2026-04-30T22-00-00Z".into(),
+            boxpilot_version: "0.1.0".into(),
+            host: SystemInfo {
+                kernel: "test".into(),
+                os_id: "test".into(),
+                os_version_id: "1".into(),
+                os_pretty_name: "Test".into(),
+                boxpilot_version: "0.1.0".into(),
+            },
+            files: vec![
+                BundleManifestFile {
+                    name: "a.json".into(),
+                    size: 7,
+                    redacted: true,
+                },
+                BundleManifestFile {
+                    name: "b.txt".into(),
+                    size: 2,
+                    redacted: false,
+                },
+            ],
+        };
+        write_tarball(&out, "boxpilot-diagnostics-test", &manifest, &entries).unwrap();
+        assert!(out.exists());
+        let read_back = read_tar_entries(&out);
+        assert!(read_back.contains_key("boxpilot-diagnostics-test/diagnostics-manifest.json"));
+        assert_eq!(read_back["boxpilot-diagnostics-test/a.json"], b"{\"x\":1}");
+        assert_eq!(read_back["boxpilot-diagnostics-test/b.txt"], b"hi");
     }
 }
