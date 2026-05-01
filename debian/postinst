@@ -1,0 +1,29 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            systemctl reload dbus.service 2>/dev/null \
+                || systemctl restart dbus.service 2>/dev/null \
+                || true
+            if systemctl is-enabled polkit.service >/dev/null 2>&1; then
+                systemctl reload polkit.service 2>/dev/null \
+                    || systemctl restart polkit.service 2>/dev/null \
+                    || true
+            fi
+        fi
+
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database /usr/share/applications || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

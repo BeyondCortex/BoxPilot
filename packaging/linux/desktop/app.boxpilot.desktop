@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=BoxPilot
+GenericName=Sing-box Control Panel
+Comment=Manage system sing-box from the desktop
+Exec=boxpilot
+Icon=boxpilot
+Terminal=false
+Categories=Network;
+Keywords=sing-box;proxy;vpn;tun;
+StartupWMClass=BoxPilot
+StartupNotify=true

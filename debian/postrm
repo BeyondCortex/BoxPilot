@@ -1,0 +1,32 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    purge)
+        rm -f  /etc/systemd/system/boxpilot-sing-box.service
+        rm -rf /etc/boxpilot
+        rm -rf /var/lib/boxpilot
+        rm -rf /var/cache/boxpilot
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+        fi
+        ;;
+    remove)
+        if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -f -t /usr/share/icons/hicolor || true
+        fi
+        if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database /usr/share/applications || true
+        fi
+        if [ -d /run/systemd/system ]; then
+            systemctl daemon-reload || true
+            systemctl reload dbus.service 2>/dev/null \
+                || systemctl restart dbus.service 2>/dev/null \
+                || true
+        fi
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

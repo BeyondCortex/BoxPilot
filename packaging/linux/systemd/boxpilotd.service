@@ -1,0 +1,22 @@
+[Unit]
+Description=BoxPilot privileged helper (D-Bus activated)
+Documentation=https://github.com/BeyondCortex/BoxPilot
+After=dbus.service
+Requires=dbus.service
+
+[Service]
+Type=dbus
+BusName=app.boxpilot.Helper
+ExecStart=/usr/lib/boxpilot/boxpilotd
+User=root
+Restart=on-failure
+RestartSec=2s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/boxpilot /var/lib/boxpilot /var/cache/boxpilot /etc/systemd/system /run/systemd /run/dbus
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
+
+[Install]
+# No WantedBy — D-Bus activates this on demand via SystemdService=.
