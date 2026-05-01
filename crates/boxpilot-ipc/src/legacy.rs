@@ -33,8 +33,8 @@ pub struct LegacyObserveServiceResponse {
     /// None when the manager refused to report it.
     #[serde(default)]
     pub unit_file_state: Option<String>,
-    /// Raw `ExecStart=` line (first one, after expansion) as read from
-    /// `fragment_path`. None when the fragment has no ExecStart.
+    /// Raw `ExecStart=` line as read from `fragment_path`. None when the
+    /// fragment has no ExecStart.
     #[serde(default)]
     pub exec_start_raw: Option<String>,
     /// Path extracted from `-c` / `--config` in `exec_start_raw`.
