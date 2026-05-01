@@ -45,6 +45,19 @@ fn walk(value: &mut Value, depth: usize) {
                             *v = Value::String(REDACTED.to_string());
                         }
                     }
+                    if let Some(v) = ob_map.get_mut("server") {
+                        *v = Value::String(REDACTED.to_string());
+                    }
+                    if ob_map.contains_key("server_port") {
+                        ob_map.insert("server_port".to_string(), Value::Number(0u64.into()));
+                    }
+                    // override_address / override_port follow §14 server-redaction
+                    if let Some(v) = ob_map.get_mut("override_address") {
+                        *v = Value::String(REDACTED.to_string());
+                    }
+                    if ob_map.contains_key("override_port") {
+                        ob_map.insert("override_port".to_string(), Value::Number(0u64.into()));
+                    }
                 }
             }
         }
@@ -66,5 +79,51 @@ mod tests {
         });
         redact_singbox_config(&mut v);
         assert_eq!(v["outbounds"][0]["password"], json!("***"));
+    }
+
+    #[test]
+    fn redacts_outbound_uuid_and_private_key() {
+        let mut v = json!({
+            "outbounds": [
+                {"type": "vless", "uuid": "abcd-1234", "private_key": "p="},
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["uuid"], json!("***"));
+        assert_eq!(v["outbounds"][0]["private_key"], json!("***"));
+    }
+
+    #[test]
+    fn redacts_outbound_server_to_string_redacted() {
+        let mut v = json!({
+            "outbounds": [
+                {"type": "vless", "server": "secret.example.com"},
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["server"], json!("***"));
+    }
+
+    #[test]
+    fn redacts_outbound_server_port_to_zero() {
+        let mut v = json!({
+            "outbounds": [
+                {"type": "vless", "server_port": 12345},
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["server_port"], json!(0));
+    }
+
+    #[test]
+    fn keeps_outbound_type_and_tag() {
+        let mut v = json!({
+            "outbounds": [
+                {"type": "vless", "tag": "main", "password": "x"},
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["type"], json!("vless"));
+        assert_eq!(v["outbounds"][0]["tag"], json!("main"));
     }
 }
