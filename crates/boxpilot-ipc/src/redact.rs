@@ -25,6 +25,10 @@ pub fn redact_singbox_config(value: &mut Value) {
     walk(value, 0);
 }
 
+/// Public-allowlist for entries in `inbounds[*].users[*]`. Username is the
+/// only field §14 explicitly leaves through.
+const INBOUND_USER_ALLOWLIST: &[&str] = &["name"];
+
 /// Keys whose presence inside an `outbounds[*]` object is allowed to pass
 /// through without modification. Everything else is redacted (default-deny).
 const OUTBOUND_PUBLIC_ALLOWLIST: &[&str] = &[
@@ -73,6 +77,25 @@ fn walk(value: &mut Value, depth: usize) {
                             // password / uuid / private_key) is redacted.
                             _ => {
                                 ob_map.insert(key, Value::String(REDACTED.to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(Value::Array(inbounds)) = map.get_mut("inbounds") {
+            for ib in inbounds {
+                if let Value::Object(ib_map) = ib {
+                    if let Some(Value::Array(users)) = ib_map.get_mut("users") {
+                        for u in users {
+                            if let Value::Object(u_map) = u {
+                                let keys: Vec<String> = u_map.keys().cloned().collect();
+                                for key in keys {
+                                    if !INBOUND_USER_ALLOWLIST.contains(&key.as_str()) {
+                                        u_map.insert(key, Value::String(REDACTED.to_string()));
+                                    }
+                                }
                             }
                         }
                     }
@@ -154,6 +177,35 @@ mod tests {
         });
         redact_singbox_config(&mut v);
         assert_eq!(v["outbounds"][0]["secret_handshake"], json!("***"));
+    }
+
+    #[test]
+    fn redacts_inbound_user_password_and_uuid() {
+        let mut v = json!({
+            "inbounds": [
+                {"type": "vmess", "users": [
+                    {"name": "alice", "password": "p", "uuid": "u"}
+                ]}
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["inbounds"][0]["users"][0]["password"], json!("***"));
+        assert_eq!(v["inbounds"][0]["users"][0]["uuid"], json!("***"));
+        assert_eq!(v["inbounds"][0]["users"][0]["name"], json!("alice"));
+    }
+
+    #[test]
+    fn inbound_user_unknown_key_is_redacted() {
+        let mut v = json!({
+            "inbounds": [
+                {"type": "vmess", "users": [
+                    {"name": "alice", "future_secret": "x"}
+                ]}
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["inbounds"][0]["users"][0]["future_secret"], json!("***"));
+        assert_eq!(v["inbounds"][0]["users"][0]["name"], json!("alice"));
     }
 
     #[test]
