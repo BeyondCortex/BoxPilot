@@ -52,17 +52,11 @@ impl SingboxChecker for ProcessChecker {
 }
 
 /// Best-effort scrub of the stderr tail before we hand it back to the
-/// caller. Plan #8 will replace this with §14 schema-aware redaction;
-/// for now any line containing one of the known sensitive substrings
-/// is dropped wholesale.
+/// caller. Schema-aware redaction (the §14 walker) only applies to JSON;
+/// stderr is text-only, so a heuristic line-drop stays the right call here.
+/// The shared implementation lives in [`crate::diagnostics::bundle::redact_journal_lines`].
 fn redact_secrets(s: &str) -> String {
-    s.lines()
-        .filter(|line| {
-            let lower = line.to_ascii_lowercase();
-            !(lower.contains("password") || lower.contains("uuid") || lower.contains("private_key"))
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    crate::diagnostics::bundle::redact_journal_lines(s)
 }
 
 #[cfg(test)]
