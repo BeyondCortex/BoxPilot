@@ -43,10 +43,12 @@ pub enum HelperMethod {
     ControllerTransfer,
     #[serde(rename = "diagnostics.export_redacted")]
     DiagnosticsExportRedacted,
+    #[serde(rename = "home.status")]
+    HomeStatus,
 }
 
 impl HelperMethod {
-    pub const ALL: [HelperMethod; 19] = [
+    pub const ALL: [HelperMethod; 20] = [
         HelperMethod::ServiceStatus,
         HelperMethod::ServiceStart,
         HelperMethod::ServiceStop,
@@ -66,6 +68,7 @@ impl HelperMethod {
         HelperMethod::LegacyMigrateService,
         HelperMethod::ControllerTransfer,
         HelperMethod::DiagnosticsExportRedacted,
+        HelperMethod::HomeStatus,
     ];
 
     pub fn as_logical(&self) -> &'static str {
@@ -90,6 +93,7 @@ impl HelperMethod {
             LegacyMigrateService => "legacy.migrate_service",
             ControllerTransfer => "controller.transfer",
             DiagnosticsExportRedacted => "diagnostics.export_redacted",
+            HomeStatus => "home.status",
         }
     }
 }
@@ -102,10 +106,10 @@ mod tests {
     #[test]
     fn count_matches_spec() {
         // Spec §6.3 lists 18 mutating/observing actions plus controller.transfer
-        // and diagnostics.export_redacted — 19 total when we count
-        // legacy.observe_service as observe. Keep this number in sync if
-        // §6.3 ever changes.
-        assert_eq!(HelperMethod::ALL.len(), 19);
+        // and diagnostics.export_redacted; plan #7 adds `home.status` for the
+        // GUI's first-paint round-trip. Keep this number in sync if §6.3 ever
+        // changes.
+        assert_eq!(HelperMethod::ALL.len(), 20);
     }
 
     #[test]
@@ -145,7 +149,7 @@ impl HelperMethod {
     pub fn auth_class(&self) -> AuthClass {
         use HelperMethod::*;
         match self {
-            ServiceStatus | ServiceLogs | CoreDiscover | LegacyObserveService => {
+            ServiceStatus | ServiceLogs | CoreDiscover | LegacyObserveService | HomeStatus => {
                 AuthClass::ReadOnly
             }
             ControllerTransfer | LegacyMigrateService => AuthClass::HighRisk,
@@ -180,6 +184,7 @@ impl HelperMethod {
             LegacyMigrateService => "app.boxpilot.helper.legacy.migrate-service",
             ControllerTransfer => "app.boxpilot.helper.controller.transfer",
             DiagnosticsExportRedacted => "app.boxpilot.helper.diagnostics.export-redacted",
+            HomeStatus => "app.boxpilot.helper.home.status",
         }
     }
 }
