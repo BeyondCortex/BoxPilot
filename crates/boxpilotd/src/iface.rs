@@ -60,6 +60,8 @@ fn to_zbus_err(e: HelperError) -> zbus::fdo::Error {
         }
         HelperError::LegacyAssetTooLarge { .. } => "app.boxpilot.Helper1.LegacyAssetTooLarge",
         HelperError::LegacyTooManyAssets { .. } => "app.boxpilot.Helper1.LegacyTooManyAssets",
+        HelperError::DiagnosticsIoFailed { .. } => "app.boxpilot.Helper1.DiagnosticsIoFailed",
+        HelperError::DiagnosticsEncodeFailed { .. } => "app.boxpilot.Helper1.DiagnosticsEncodeFailed",
     };
     let msg = e.to_string();
     // We use zbus::fdo::Error::Failed as the carrier; the precise mapping
