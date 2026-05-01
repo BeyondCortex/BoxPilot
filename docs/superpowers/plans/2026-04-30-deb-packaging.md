@@ -87,12 +87,20 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/etc/boxpilot /var/lib/boxpilot /var/cache/boxpilot /etc/systemd/system /run/systemd /run/dbus
+RuntimeDirectory=boxpilot
+ReadWritePaths=/etc/boxpilot /var/lib/boxpilot /var/cache/boxpilot /etc/systemd/system /etc/polkit-1/rules.d /run/systemd /run/dbus
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 
-[Install]
-# No WantedBy — D-Bus activates this on demand.
+# No [Install] section: D-Bus activates this on demand via SystemdService=.
 ```
+
+`/etc/polkit-1/rules.d` is in `ReadWritePaths` because
+`core::commit::backfill_polkit_dropin` writes
+`48-boxpilot-controller.rules` at startup. `RuntimeDirectory=boxpilot`
+covers `/run/boxpilot/lock` under `ProtectSystem=strict`. The `[Install]`
+section is omitted so `dh_installsystemd`'s default enable does not emit
+"no installation config" warnings — D-Bus activation is the only
+intended start path.
 
 - [ ] **Step 2: Update D-Bus service file**
 

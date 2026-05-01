@@ -15,8 +15,11 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/etc/boxpilot /var/lib/boxpilot /var/cache/boxpilot /etc/systemd/system /run/systemd /run/dbus
+RuntimeDirectory=boxpilot
+ReadWritePaths=/etc/boxpilot /var/lib/boxpilot /var/cache/boxpilot /etc/systemd/system /etc/polkit-1/rules.d /run/systemd /run/dbus
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 
-[Install]
-# No WantedBy — D-Bus activates this on demand via SystemdService=.
+# No [Install] section: this unit is D-Bus activated on demand via the
+# SystemdService= line in app.boxpilot.Helper.service. It is never enabled
+# at boot, so dh_installsystemd's default `enable` is a no-op (no install
+# directives means systemd has nothing to symlink).

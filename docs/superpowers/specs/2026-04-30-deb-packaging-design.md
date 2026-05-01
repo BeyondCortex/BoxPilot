@@ -321,30 +321,44 @@ Type=dbus
 BusName=app.boxpilot.Helper
 ExecStart=/usr/lib/boxpilot/boxpilotd
 User=root
-# Helper terminates itself on idle (see boxpilotd::idle); systemd
-# restarts it on the next D-Bus call.
 Restart=on-failure
 RestartSec=2s
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/etc/boxpilot /var/lib/boxpilot /var/cache/boxpilot /etc/systemd/system /run/systemd /run/dbus
+RuntimeDirectory=boxpilot
+ReadWritePaths=/etc/boxpilot /var/lib/boxpilot /var/cache/boxpilot /etc/systemd/system /etc/polkit-1/rules.d /run/systemd /run/dbus
 CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER
 
-[Install]
-# No WantedBy — D-Bus activates this on demand.
+# No [Install] section: D-Bus activates this on demand via SystemdService=.
 ```
 
 Rationale on the sandbox profile: this is the **helper** unit, not the
 managed sing-box unit. The helper has to write to multiple system
-locations (the runtime-generated `boxpilot-sing-box.service`, the
-release tree under `/var/lib/boxpilot`, profile bundles under
-`/etc/boxpilot`), reload systemd, and talk to dbus, so its
-`ReadWritePaths=` is broader than the sing-box unit's `ReadWritePaths=
-/etc/boxpilot/active` from §7.1 of the linux design spec. It still keeps
-`ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true` because
-none of the helper's writes touch home or `/usr`.
+locations, so the `ReadWritePaths=` list covers every path the helper
+touches:
+
+- `/etc/boxpilot` — profile store, controller name, active symlink.
+- `/etc/systemd/system` — the runtime-generated `boxpilot-sing-box.service`.
+- `/etc/polkit-1/rules.d` — `48-boxpilot-controller.rules` drop-in,
+  re-written by `core::commit::backfill_polkit_dropin` at startup and by
+  `StateCommit::apply` whenever the controller is claimed/transferred.
+- `/var/lib/boxpilot`, `/var/cache/boxpilot` — release tree, diagnostics
+  bundles.
+- `/run/systemd`, `/run/dbus` — required for systemd / dbus client calls.
+
+`RuntimeDirectory=boxpilot` makes systemd create `/run/boxpilot/` at unit
+start and grants the helper write access to it, so `lock::try_acquire`
+on `/run/boxpilot/lock` works under `ProtectSystem=strict` without
+needing `/run/boxpilot` in the explicit `ReadWritePaths=` list.
+
+The unit keeps `ProtectSystem=strict`, `ProtectHome=true`,
+`PrivateTmp=true` because none of the helper's writes touch home or
+`/usr`. The `[Install]` section is intentionally absent — no `WantedBy=`
+makes sense for a D-Bus activated on-demand service, and an empty
+`[Install]` would only generate "no installation config" warnings under
+`dh_installsystemd`.
 
 ## 8. `app.boxpilot.desktop`
 
