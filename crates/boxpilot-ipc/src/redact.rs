@@ -102,7 +102,33 @@ fn walk(value: &mut Value, depth: usize) {
                 }
             }
         }
+
+        if let Some(Value::Object(dns)) = map.get_mut("dns") {
+            if let Some(Value::Array(servers)) = dns.get_mut("servers") {
+                for srv in servers {
+                    if let Value::Object(s_map) = srv {
+                        if let Some(addr) = s_map.get("address").and_then(|v| v.as_str()) {
+                            let new_addr = redact_dns_address(addr);
+                            s_map.insert("address".to_string(), Value::String(new_addr));
+                        }
+                    }
+                }
+            }
+        }
     }
+}
+
+/// Replace the host portion of a sing-box DNS `address` string while
+/// preserving scheme and path so a support engineer can still see "this
+/// was DoH" vs "this was a bare IP" without seeing *which* one. Falls
+/// back to whole-string [`REDACTED`] when the value is not URL-shaped.
+fn redact_dns_address(s: &str) -> String {
+    if let Ok(mut url) = url::Url::parse(s) {
+        if url.host().is_some() && url.set_host(Some(REDACTED)).is_ok() {
+            return url.to_string();
+        }
+    }
+    REDACTED.to_string()
 }
 
 #[cfg(test)]
@@ -206,6 +232,30 @@ mod tests {
         redact_singbox_config(&mut v);
         assert_eq!(v["inbounds"][0]["users"][0]["future_secret"], json!("***"));
         assert_eq!(v["inbounds"][0]["users"][0]["name"], json!("alice"));
+    }
+
+    #[test]
+    fn redacts_dns_server_address_url() {
+        let mut v = json!({
+            "dns": {
+                "servers": [
+                    {"address": "https://1.1.1.1/dns-query"},
+                    {"address": "tls://example.com:853"},
+                    {"address": "8.8.8.8"}
+                ]
+            }
+        });
+        redact_singbox_config(&mut v);
+        let s0 = v["dns"]["servers"][0]["address"].as_str().unwrap().to_string();
+        let s1 = v["dns"]["servers"][1]["address"].as_str().unwrap().to_string();
+        let s2 = v["dns"]["servers"][2]["address"].as_str().unwrap().to_string();
+        // url::Url percent-encodes asterisks in host, so check for either form.
+        let host_redacted = |s: &str| s.contains("***") || s.contains("%2A%2A%2A");
+        assert!(host_redacted(&s0), "url-shaped: {s0}");
+        assert!(!s0.contains("1.1.1.1"), "url-shaped should hide host: {s0}");
+        assert!(host_redacted(&s1), "tls scheme: {s1}");
+        assert!(!s1.contains("example.com"), "tls scheme should hide host: {s1}");
+        assert_eq!(s2, "***", "bare host falls back to whole-string redaction");
     }
 
     #[test]
