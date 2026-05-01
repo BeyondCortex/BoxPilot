@@ -16,13 +16,27 @@ pub const REDACTED: &str = "***";
 pub const MAX_DEPTH: usize = 32;
 
 /// Replaces sensitive sing-box JSON fields in `value` with [`REDACTED`]
-/// (or `0` for numeric ports). The walk is iterative and bounded by
-/// [`MAX_DEPTH`] — anything deeper is replaced with [`REDACTED`].
+/// (or `0` for numeric ports). Two passes run in order:
+///
+/// 1. **Structural** ([`walk`]): top-level branches handle the §14 fields by
+///    JSON path (e.g. `outbounds[*].server_port` → `0`,
+///    `dns.servers[*].address` → host redacted), with default-deny under
+///    `outbounds[*]` and `inbounds[*].users[*]`.
+/// 2. **Recursive name-based scrub** ([`scrub_nested`]): walks the entire
+///    tree and redacts any object key whose lowercase name appears in
+///    [`NESTED_SENSITIVE_KEYS`] (e.g. `password`, `private_key`, `secret`).
+///    This catches credentials nested inside allowlisted parents — e.g.
+///    `outbounds[*].tls.reality.private_key` and
+///    `outbounds[*].transport.headers.Authorization`.
+///
+/// Both passes are bounded by [`MAX_DEPTH`]; subtrees deeper than that are
+/// collapsed to [`REDACTED`].
 ///
 /// Operates in-place on `&mut Value`. Callers that need to keep the
 /// original should clone first.
 pub fn redact_singbox_config(value: &mut Value) {
     walk(value, 0);
+    scrub_nested(value, 0);
 }
 
 /// Public-allowlist for entries in `inbounds[*].users[*]`. Username is the
@@ -31,6 +45,8 @@ const INBOUND_USER_ALLOWLIST: &[&str] = &["name"];
 
 /// Keys whose presence inside an `outbounds[*]` object is allowed to pass
 /// through without modification. Everything else is redacted (default-deny).
+/// Allowlisted *containers* (`tls`, `multiplex`, `transport`) still get
+/// their nested values scrubbed by [`scrub_nested`].
 const OUTBOUND_PUBLIC_ALLOWLIST: &[&str] = &[
     "type",
     "tag",
@@ -46,6 +62,26 @@ const OUTBOUND_PUBLIC_ALLOWLIST: &[&str] = &[
     "multiplex",
     // Numerics / structural that are explicitly *not* secret in §14.
     "ip_version",
+];
+
+/// Object keys (matched case-insensitively) whose values are redacted
+/// anywhere they appear in the tree. This is the safety net that catches
+/// credentials nested inside containers we otherwise pass through, e.g.
+/// `outbounds[*].tls.reality.private_key` (reality keys), or
+/// `transport.headers.Authorization` (HTTP Authorization headers).
+///
+/// Keep this list narrow on purpose: a too-broad list would also redact
+/// structural fields with similar-looking names. Adding a key here is
+/// always a focused decision tied to a specific sing-box field.
+const NESTED_SENSITIVE_KEYS: &[&str] = &[
+    "password",
+    "uuid",
+    "private_key",
+    "secret",
+    "token",
+    "passphrase",
+    "pre_shared_key",
+    "authorization",
 ];
 
 fn walk(value: &mut Value, depth: usize) {
@@ -137,6 +173,37 @@ fn walk(value: &mut Value, depth: usize) {
                 }
             }
         }
+    }
+}
+
+/// Recursively walk the tree and redact any object key whose lowercase
+/// name is in [`NESTED_SENSITIVE_KEYS`]. This is the second pass after
+/// [`walk`]; it catches credentials nested under allowlisted parents that
+/// the structural pass intentionally lets through.
+fn scrub_nested(value: &mut Value, depth: usize) {
+    if depth >= MAX_DEPTH {
+        *value = Value::String(REDACTED.to_string());
+        tracing::warn!(target: "redact", "scrub_nested depth cap hit");
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                let lower = key.to_ascii_lowercase();
+                if NESTED_SENSITIVE_KEYS.iter().any(|n| *n == lower) {
+                    map.insert(key, Value::String(REDACTED.to_string()));
+                } else if let Some(v) = map.get_mut(&key) {
+                    scrub_nested(v, depth + 1);
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr {
+                scrub_nested(v, depth + 1);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -323,13 +390,13 @@ mod tests {
     }
 
     #[test]
-    fn deep_nesting_does_not_panic() {
-        // The walker only recurses into the named top-level branches today,
-        // so a synthetic nested object inside an outbound's "tls" key would
-        // not exercise the depth guard. We assert "no panic" as the
-        // contract; if a future task adds nested redaction, this test
-        // should be updated to assert the depth-cap replacement.
-        let mut deep = json!({});
+    fn deep_nesting_hits_depth_cap_in_scrub_nested() {
+        // scrub_nested recurses into allowlisted parents like `tls`, so a
+        // synthetic deep object beyond MAX_DEPTH triggers the cap and the
+        // subtree is collapsed to "***". The structural pass leaves `tls`
+        // alone (it's on the allowlist); the nested-scrub pass walks in
+        // and redacts when too deep.
+        let mut deep = json!({"leaf": "value"});
         for _ in 0..(MAX_DEPTH + 4) {
             deep = json!({"nested": deep});
         }
@@ -340,6 +407,107 @@ mod tests {
         });
         redact_singbox_config(&mut v);
         assert_eq!(v["outbounds"][0]["type"], json!("vless"));
+        // Walk down nested chains until we either hit "***" (collapsed) or
+        // run out of `nested` keys. Below the cap we should see the depth
+        // guard fire: the leaf gets replaced with the redacted token.
+        let mut cursor = &v["outbounds"][0]["tls"];
+        let mut steps = 0;
+        while let Some(next) = cursor.get("nested") {
+            cursor = next;
+            steps += 1;
+            if steps > MAX_DEPTH + 8 {
+                break;
+            }
+        }
+        // At some point cursor should be the string "***" (the collapsed
+        // subtree), proving the depth cap fired.
+        assert!(
+            v.to_string().contains("\"***\""),
+            "expected depth cap to fire and produce a *** marker somewhere"
+        );
+    }
+
+    #[test]
+    fn redacts_reality_private_key_nested_under_outbound_tls() {
+        // §14: `private_key` is sensitive. sing-box's reality protocol
+        // places it at `outbounds[*].tls.reality.private_key`, which is
+        // nested *inside* the `tls` allowlist passthrough. The recursive
+        // scrub pass must catch it.
+        let mut v = json!({
+            "outbounds": [
+                {
+                    "type": "vless",
+                    "tls": {
+                        "enabled": true,
+                        "server_name": "example.com",
+                        "reality": {
+                            "enabled": true,
+                            "public_key": "leakable-but-public",
+                            "private_key": "MUST-BE-REDACTED",
+                            "short_id": "abc123"
+                        }
+                    }
+                }
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(
+            v["outbounds"][0]["tls"]["reality"]["private_key"],
+            json!("***")
+        );
+        assert_eq!(
+            v["outbounds"][0]["tls"]["reality"]["public_key"],
+            json!("leakable-but-public"),
+            "public_key is not in NESTED_SENSITIVE_KEYS and should pass"
+        );
+        assert_eq!(
+            v["outbounds"][0]["tls"]["server_name"],
+            json!("example.com")
+        );
+    }
+
+    #[test]
+    fn redacts_authorization_header_nested_under_transport() {
+        let mut v = json!({
+            "outbounds": [
+                {
+                    "type": "vless",
+                    "transport": {
+                        "type": "ws",
+                        "headers": {
+                            "Authorization": "Bearer leak-this-token",
+                            "User-Agent": "harmless"
+                        }
+                    }
+                }
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(
+            v["outbounds"][0]["transport"]["headers"]["Authorization"],
+            json!("***")
+        );
+        assert_eq!(
+            v["outbounds"][0]["transport"]["headers"]["User-Agent"],
+            json!("harmless")
+        );
+    }
+
+    #[test]
+    fn redacts_nested_password_in_multiplex() {
+        let mut v = json!({
+            "outbounds": [
+                {
+                    "type": "vless",
+                    "multiplex": {
+                        "enabled": true,
+                        "password": "shadowtls-password-leak"
+                    }
+                }
+            ]
+        });
+        redact_singbox_config(&mut v);
+        assert_eq!(v["outbounds"][0]["multiplex"]["password"], json!("***"));
     }
 
     #[test]
