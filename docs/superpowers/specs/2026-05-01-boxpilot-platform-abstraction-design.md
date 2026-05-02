@@ -3,106 +3,89 @@
 Sub-project #1 of the BoxPilot Windows port.
 
 Date: 2026-05-01
-Status: design draft (with open issues from review — see "Critical Open Questions")
+Status: design draft (review COQs resolved; see "Critical Open Questions" for resolution log)
 Branch: `feat/windows-support`
 
 # Critical Open Questions
 
-The following items surfaced during skeptical review (see "Review Log" at end
-of doc). Each is a design decision that must be resolved before the
-implementation plan is written, or it will cause rework during PR 10–13.
+These items surfaced during skeptical review (see "Review Log" at end of
+doc). All are now resolved; resolutions are reflected in the spec body.
 
-## COQ1. Bundle wire-protocol shape vs trait shape (blocks PR 10)
+## COQ1 + COQ2 (combined). Bundle protocol & dispatch FD channel
 
-§5.2 declares a two-call shape (`upload() → handle`, then handle is consumed
-by `activate_bundle`), but the Windows wire description in the same section
-streams chunks "over the same Named Pipe connection that issued the IPC call"
-— a one-call streaming shape. These are incompatible. Linux's sealed-memfd +
-FD-pass naturally fits the two-call shape because the FD is durable across
-calls; Windows Named Pipe streams die with the connection. Resolution must
-pick one of:
+**Original concern:** §5.2 declared a two-call bundle shape
+(`upload→handle`, then `activate_bundle(handle)`) inconsistent with the
+Windows wire description (chunks streamed on the same Named Pipe
+connection). §5.4's `HelperDispatch::handle(conn, method, body) → result`
+had no channel for Linux's D-Bus FD-passing.
 
-- **A.** Two-call shape kept; Windows impl uses a separate "upload pipe"
-  (e.g., `\\.\pipe\boxpilot-helper.upload-<id>`) per upload, server holds
-  bytes in a staging dir keyed by `BundleHandle::stream_id`.
-- **B.** One-call streaming shape; `activate_bundle` itself becomes a
-  streaming RPC carrying the bundle bytes; Linux loses memfd's mmap-on-server
-  optimization (acceptable for ≤64 MiB bundles).
-- **C.** Trait surface stays opaque (`upload(bytes, sha) → handle`) but the
-  IPC envelope grows an explicit "auxiliary handles" channel that carries
-  FDs on Linux and stream-ids on Windows. See COQ2.
+**Resolution:** Drop `BundleClient` / `BundleServer` traits entirely.
+Bundle preparation in `boxpilot-profile` returns
+`(manifest_bytes, AsyncRead, sha256)`; the IPC layer carries the byte
+stream as a 4th `aux: AuxStream` parameter on `HelperDispatch::handle`
+and on `IpcClient::call`. Platform impls translate native auxiliary
+handles into / out of `AuxStream`:
 
-## COQ2. HelperDispatch lacks an auxiliary-handle channel (blocks PR 11)
+- Linux server: wraps the incoming `OwnedFd` (sealed memfd from D-Bus
+  FD-passing) in `tokio::fs::File` → `AuxStream::Bytes`.
+- Linux client: takes `AuxStream::Bytes`, copies into a memfd, seals,
+  FD-passes via D-Bus.
+- Windows server: reads chunked frames from the same Named Pipe
+  connection after the request body → `AuxStream::Bytes`.
+- Windows client: takes `AuxStream::Bytes`, frames as length-prefixed
+  chunks, streams on the same Named Pipe.
+- Fakes: in-memory `Cursor<Vec<u8>>`.
 
-§5.4 specifies `HelperDispatch::handle(conn, method, body: Vec<u8>) →
-HelperResult<Vec<u8>>`. This signature has nowhere to attach the FD that
-Linux D-Bus FD-passing produces. The current `boxpilotd::iface` relies on
-typed handler signatures with `OwnedFd` parameters; flattening to
-`Vec<u8>` body erases that channel. The Linux IPC server impl (PR 11)
-cannot route FDs to bundle verbs without adding either:
+The sealed-memfd integrity property is preserved on Linux because the
+client-side IPC impl seals the memfd before FD-pass — once shipped, even
+the GUI process that built it cannot mutate the bytes the helper
+mmaps/reads. On Windows, the equivalent integrity property is the
+helper-side SHA256 verification before unpack: the client cannot
+substitute bytes mid-flight because the helper hashes everything it
+reads.
 
-- a third parameter `aux: Vec<AuxHandle>` (where `AuxHandle = OwnedFd |
-  StreamId`), or
-- a parallel dispatch path `handle_with_handles` for FD-bearing methods.
+§5.2 and §5.4 are amended to reflect this.
 
-Decision needed before PR 11.
+## COQ3. Authority on Windows blocks AC5 — RESOLVED
 
-## COQ3. Authority on Windows blocks AC5 as currently written
+**Resolution:** Sub-project #1's Windows `Authority` impl is
+`AlwaysAllow`, with a `warn!`-level startup log line stating that
+authorization is bypassed pending Sub-project #2. AC5 therefore reaches
+the dispatch's `Unimplemented` response. §5.4 amended.
 
-§5.4 says Windows `Authority` allows only if `caller == controller_sid`;
-§9 Risk #4 says no `boxpilot.toml` is written on Windows in this phase, so
-`controller_sid` is unset. Therefore every IPC call is denied before
-reaching the dispatch's `Unimplemented` return. AC5 expects
-`Unimplemented`, not `AccessDenied`. Pick one:
+## COQ4. ServiceManager trait shaped against systemd alone — RESOLVED (with deferred risk)
 
-- **A.** Windows `Authority` is always-allow in this sub-project (defer real
-  SID checks to Sub-project #2); AC5 unchanged.
-- **B.** AC5 success criterion becomes "response is `Unimplemented` *or*
-  `NoControllerConfigured`".
-- **C.** Add `BOXPILOTD_BYPASS_AUTHORITY=1` env-var escape hatch (rejected
-  by author; bypasses are anti-pattern).
+**Resolution:** PR 5 ships `ServiceManager` as a verbatim rename of the
+existing `Systemd` trait. Trait surface is **not expanded** to second-guess
+SCM semantics; Windows impl is `unimplemented!()` for every method (none
+of AC5 needs ServiceManager). Sub-project #2's first task is explicitly
+"review `ServiceManager` shape against SCM API; propose schema bump for
+`UnitState` if needed". This accepts a known refactor cost in
+Sub-project #2 in exchange for keeping Sub-project #1 narrowly scoped.
+§5 trait inventory and §10 Sub-project #2 amended.
 
-Recommend **A**.
+## COQ5. No tracing sink on Windows Service — RESOLVED
 
-## COQ4. ServiceManager trait shaped against systemd alone — risks SCM mismatch
+**Resolution:** PR 13 wires a `tracing-appender` daily-rolling file sink
+to `%ProgramData%\BoxPilot\logs\boxpilotd.log` before
+`service_dispatcher::start` is called. `tracing-appender` is added to
+workspace dependencies in PR 1. Event Log integration is deferred to
+Sub-project #3 (production telemetry). §4 deps and §6 amended.
 
-§8 PR 5 moves existing `Systemd` trait into platform crate, renamed
-`ServiceManager`. Methods like `install_unit(unit_text: String,
-unit_path: PathBuf)` and unit-state enums encode systemd semantics that
-don't map to SCM cleanly (`CreateService` takes a struct, not text;
-`SERVICE_STATUS` enum differs). If PR 5 ships the trait verbatim,
-Sub-project #2 will discover the gap and either reshape the trait
-(dragging Linux refactor along) or bolt SCM onto a systemd-shaped
-abstraction. PR 5 must cross-design against SCM's API surface, not
-just rename.
+## COQ6. AC5 verification needs a client tool — RESOLVED
 
-## COQ5. boxpilotd has no tracing sink on Windows
+**Resolution:** New PR 14b (after PR 14) adds a small `boxpilotctl` debug
+binary (cross-platform, lives at
+`crates/boxpilotd/src/bin/boxpilotctl.rs`). It uses the platform
+`IpcClient` to invoke any `HelperMethod` with raw JSON body and prints
+the response. AC5 verification: `boxpilotctl service.status` after the
+service starts. §3 AC5 verification line and §8 PR table amended.
 
-§6 keeps `tracing-subscriber` defaulting to stdout. A Windows Service has
-no console — traces vanish. If `service_dispatcher::start` panics or
-`run_under_scm` errors before SCM gets `RUNNING`, debugging is by
-guesswork. Need either an Event Log writer (`tracing-eventlog`) or a
-file sink (`%ProgramData%\BoxPilot\logs\boxpilotd.log`) wired before any
-IPC server starts. PR 13 must include this; spec body is silent.
+## COQ7. Workspace `tokio` missing `net` — RESOLVED
 
-## COQ6. AC5 verification has no client tool
-
-§3 AC5 says "connect to Named Pipe → invoke `service.status`". With
-what client? Tauri GUI is too heavy for a smoke; no `gdbus call`
-equivalent exists in the repo. Sub-project #1 must produce one of:
-
-- a small `boxpilotctl` binary using the platform `IpcClient`, or
-- explicit instructions for using the GUI as the verification client
-  (acceptable but defers AC5 sign-off until GUI builds for Windows).
-
-Recommend the first; trivial once `IpcClient` exists in PR 11.
-
-## COQ7. Workspace `tokio` is missing the `net` feature
-
-`tokio::net::windows::named_pipe` requires `net`. Workspace
-`Cargo.toml` currently declares `["macros", "rt-multi-thread", "signal",
-"fs", "sync"]`. PR 12 cannot compile until `net` is added. PR 1 should
-bump workspace features as part of scaffolding.
+**Resolution:** PR 1 bumps workspace `tokio` features to
+`["macros", "rt-multi-thread", "signal", "fs", "sync", "net", "io-util"]`.
+§4 deps comment + §8 PR 1 amended.
 
 ---
 
@@ -176,7 +159,7 @@ standpoint.
 | AC2 | Linux unit + integration tests green | `cargo test --workspace` on `x86_64-unknown-linux-gnu` |
 | AC3 | Windows compiles | CI step `cargo check --target x86_64-pc-windows-msvc --workspace` returns 0 |
 | AC4 | Windows fake tests run | CI step `cargo test --workspace` on `windows-latest` returns 0 |
-| AC5 | Windows boot smoke | Manual: `sc create boxpilotd binPath= "<absolute>"` → `sc start` → connect to Named Pipe → invoke `service.status` → response is `Unimplemented` → `sc stop` exits cleanly |
+| AC5 | Windows boot smoke | Manual: `sc create boxpilotd binPath= "<absolute>"` → `sc start` → run `boxpilotctl service.status` (the debug client added in PR 14b) → response is `Unimplemented` (Authority is `AlwaysAllow` in this phase, so `Unimplemented` is reachable) → `sc stop` exits cleanly |
 | AC6 | No leaked OS calls | `rg "nix::|std::os::unix::|libc::" crates/` reports hits only inside `crates/boxpilot-platform/src/linux/` |
 | AC7 | `.deb` upgrade preserves state | Install v0.1.1 → activate a profile → upgrade to this build → `boxpilot-sing-box.service` still active, profile still active, `boxpilot.toml` unchanged |
 
@@ -262,10 +245,11 @@ license.workspace = true
 [dependencies]
 boxpilot-ipc.workspace = true
 async-trait.workspace = true
-tokio.workspace = true
+tokio.workspace = true                # workspace features extended in PR 1: + "net", + "io-util"
 serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+tracing-appender.workspace = true     # added to workspace deps in PR 1; used by Windows tracing file sink
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus.workspace = true
@@ -314,15 +298,15 @@ The downstream crates' role changes:
 |-------|-----------|---------------------------|------|-----------|
 | `Paths` (struct, not trait) | unix layout under `/` | windows layout under `%ProgramData%`, `%LocalAppData%` | `with_root` for tests | partly exists in `boxpilotd::paths` |
 | `FileLock` | `flock(2)` via `fs2` | `LockFileEx` (real impl, simple enough to ship now) | `tokio::sync::Mutex` | inline (`boxpilotd/src/lock.rs`) |
-| `IpcServer` + `IpcConnection` | zbus `ObjectServer`, system bus name `app.boxpilot.Helper` | `windows-service` driven Named Pipe accept loop on `\\.\pipe\boxpilot-helper` (real-enough to satisfy AC5) | `mpsc` channel pair | inline (`boxpilotd/src/iface.rs`) |
-| `IpcClient` | zbus client | Named Pipe client (real) | `mpsc` partner | exists (`boxpilot-tauri/src/helper_client.rs`) |
-| `ServiceManager` | systemd via zbus | `unimplemented!()` returning `HelperError::Unimplemented` | in-memory state machine | exists as `Systemd` |
+| `IpcServer` + `IpcConnection` | zbus `ObjectServer`, system bus name `app.boxpilot.Helper` | `windows-service` driven Named Pipe accept loop on `\\.\pipe\boxpilot-helper` (real for AC5; carries `aux: AuxStream` per call) | `mpsc` channel pair + in-memory `AuxStream` | inline (`boxpilotd/src/iface.rs`) |
+| `IpcClient` | zbus client (FD-passes a sealed memfd built from `AuxStream::Bytes`) | Named Pipe client (real; chunked-frames `AuxStream::Bytes` after the request body) | `mpsc` partner | exists (`boxpilot-tauri/src/helper_client.rs`) |
+| `ServiceManager` | systemd via zbus (verbatim port of existing `Systemd` trait — surface NOT expanded; SCM-shape redesign deferred to Sub-project #2 per COQ4) | `unimplemented!()` returning `HelperError::Unimplemented` | in-memory state machine | exists as `Systemd` |
 | `TrustChecker` | uid + mode bits + parent-dir walk + setuid check | `unimplemented!()` | always-trusted / always-rejected variants | inline (`boxpilotd/src/core/trust.rs`) |
-| `BundleClient` / `BundleServer` | sealed memfd + FD passing | `unimplemented!()` (protocol designed; impl deferred) | in-memory `Vec<u8>` | partly (`boxpilot-profile/src/bundle.rs`, `boxpilotd/src/profile/unpack.rs`) |
+| ~~`BundleClient` / `BundleServer`~~ | **dropped per COQ1+COQ2**; bundle bytes flow via `AuxStream` on the dispatch + IpcClient methods. Bundle preparation in `boxpilot-profile` returns `(manifest, AsyncRead, sha256)` | — | — | — |
 | `ActivePointer` | symlink + `rename(2)` | `unimplemented!()` (marker-file design recorded) | in-memory state | inline (`boxpilotd/src/profile/release.rs`) |
-| `CallerResolver` | `GetConnectionUnixUser` over zbus | `unimplemented!()` | static `CallerPrincipal` | exists (`DBusCallerResolver`) |
+| `CallerResolver` | `GetConnectionUnixUser` over zbus | `unimplemented!()` (real for AC5: resolves Named Pipe peer via `GetNamedPipeClientProcessId` → SID) | static `CallerPrincipal` | exists (`DBusCallerResolver`) |
 | `UserLookup` | `getpwuid` via nix | `unimplemented!()` | static map | exists (`PasswdLookup`) |
-| `Authority` | polkit `CheckAuthorization` | `unimplemented!()` | always-allow / always-deny / table-driven | exists (`DBusAuthority`) |
+| `Authority` | polkit `CheckAuthorization` | **`AlwaysAllow` with startup `warn!` log** (per COQ3); real SID checks deferred to Sub-project #2 | always-allow / always-deny / table-driven | exists (`DBusAuthority`) |
 | `LogReader` | `journalctl --unit … -o json` | `unimplemented!()` | in-memory ring buffer | exists (`JournalReader`) |
 | `FsMetadataProvider` | `std::fs` + nix metadata | `unimplemented!()` | in-memory map | exists |
 | `VersionChecker` | exec `sing-box version` | `unimplemented!()` | static string | exists |
@@ -354,63 +338,70 @@ This is the only place in the platform crate that isn't a trait. Tests
 that exercise path layouts are pure value tests and don't benefit from
 trait indirection.
 
-### 5.2 `BundleClient` / `BundleServer`
+### 5.2 Bundle byte transfer (no separate trait — COQ1+COQ2 resolution)
 
-The shape:
+Bundles flow as bytes over the same call envelope that carries the
+typed verb. There is no `BundleClient` or `BundleServer` trait. The IPC
+layer carries an `aux: AuxStream` parameter alongside the typed body
+(see §5.4); the dispatch consumes it, the platform-specific IPC impl
+plumbs platform-native auxiliary handles through it.
 
 ```rust
-#[async_trait]
-pub trait BundleClient: Send + Sync {
-    /// Hand the helper bundle bytes through whatever channel this impl uses.
-    /// Returns an opaque handle that survives the IPC call boundary.
-    async fn upload(&self, bytes: Vec<u8>, declared_sha256: [u8; 32]) -> Result<BundleHandle>;
-}
-
-#[async_trait]
-pub trait BundleServer: Send + Sync {
-    /// Receive bytes referenced by `handle` into a server-controlled
-    /// staging directory. Enforces `limits` before unpacking. Verifies
-    /// the bytes hash to `expected_sha256` before returning.
-    async fn receive(
-        &self,
-        handle: BundleHandle,
-        expected_sha256: [u8; 32],
-        limits: BundleLimits,
-    ) -> Result<StagedBundle>;
-}
-
-pub struct BundleHandle {
-    inner: BundleHandleInner,  // platform-private enum
-}
-
-pub struct StagedBundle {
-    pub staging_dir: PathBuf,
-    pub total_bytes: u64,
+pub enum AuxStream {
+    None,
+    /// A read-only byte source. Reader is consumed once by the dispatch.
+    /// Caller-side: typically constructed from a memfd (Linux), tempfile
+    /// (Windows), or `Cursor<Vec<u8>>` (fakes).
+    /// Bytes are subject to per-method size caps applied at the dispatch
+    /// layer (`HelperError::BundleTooLarge` if exceeded).
+    Bytes(Box<dyn AsyncRead + Send + Unpin>),
 }
 ```
 
-Linux impl semantics: `BundleHandleInner = SealedMemfd(OwnedFd)`. The
-client builds a tar in a `memfd` sealed with
-`F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL` and FD-passes
-it across D-Bus. The server `mmap`s the FD (read-only by seal),
-recomputes SHA256, and untars to its own ACL'd staging dir. Existing
-behavior preserved.
+Bundle preparation in `boxpilot-profile`:
 
-Windows impl semantics (designed; coded as `unimplemented!()` in this
-phase): `BundleHandleInner = StreamRef { stream_id: u64 }`. The client
-writes chunks framed `[u32 len][bytes]` over the same Named Pipe
-connection that issued the IPC call; the server accumulates into its own
-staging dir under `%ProgramData%\BoxPilot\.staging\<activation-id>\`,
-hard-capped at `BundleLimits.total_bytes`, recomputes SHA256, then
-unpacks. The client cannot mutate the bytes after the helper begins
-verification because the helper owns the buffer (in its own memory or
-on its own ACL'd disk).
+```rust
+pub struct PreparedBundle {
+    pub manifest: ActivationManifest,  // serializes into request body
+    pub stream: AuxStream,             // AsyncRead over tar bytes
+    pub sha256: [u8; 32],              // included in the request body for server-side verification
+}
 
-Fake: `BundleHandleInner = InMemory(Arc<Vec<u8>>)`. Server tars to
-tmpdir. Used by helper-side unit tests on both platforms.
+pub async fn prepare(staging: &Path) -> Result<PreparedBundle, BundleError>;
+```
 
-This is the deepest design decision in this phase; the trait shape locks
-the contract, but only Linux gets a real impl now.
+Linux impl of `prepare`: builds tar into a `memfd_create()` FD,
+seal-applies `F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL`,
+wraps the now-immutable FD as `tokio::fs::File` and returns it as
+`AuxStream::Bytes`. The IpcClient (Linux) receives `AuxStream::Bytes`,
+detects an `OwnedFd` backing (or uses a small "would you like the FD?"
+escape hatch in the AsyncRead), and FD-passes it through D-Bus zero-copy.
+
+Windows impl of `prepare`: builds tar into a tempfile under
+`%LocalAppData%\BoxPilot\tmp\bundle-<id>.tar`, ACL'd to the owner SID
+only; returns the file as `AuxStream::Bytes`. The IpcClient (Windows)
+chunked-frames the bytes (`[u32 len][bytes]`) on the same Named Pipe
+after writing the request body, ending with a zero-length frame.
+
+Server-side: IpcServer hands `AuxStream::Bytes` to dispatch. Dispatch
+hashes-while-reading into the staging dir, compares to `sha256` in the
+request body, fails with `HelperError::BundleAssetMismatch` on any
+mismatch.
+
+Integrity property:
+
+- **Linux** — sealed memfd is immutable post-seal. Even the GUI process
+  that built it cannot alter the bytes the helper reads. Hash check is
+  defense-in-depth.
+- **Windows** — no kernel-level seal. The only integrity guarantee is
+  the helper's hash check. The tempfile is owner-ACL'd to keep other
+  local users out, but the GUI process could in principle write
+  different bytes than `sha256` claims; the helper's hash mismatch
+  detects this and aborts.
+
+This is the deepest design decision in this phase. Linux gets a real
+impl in PR 10; Windows in Sub-project #2 (the trait surface is decided
+now so the protocol contract is locked).
 
 ### 5.3 `ActivePointer`
 
@@ -466,6 +457,17 @@ pub trait HelperDispatch: Send + Sync {
         conn: ConnectionInfo,
         method: HelperMethod,
         body: Vec<u8>,
+        aux: AuxStream,           // see §5.2
+    ) -> HelperResult<Vec<u8>>;
+}
+
+#[async_trait]
+pub trait IpcClient: Send + Sync {
+    async fn call(
+        &self,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
     ) -> HelperResult<Vec<u8>>;
 }
 
@@ -479,14 +481,30 @@ pub enum CallerPrincipal {
 }
 ```
 
+For methods that take no auxiliary stream (everything except
+`profile.activate_bundle` today), callers pass `AuxStream::None`.
+Dispatch enforces the per-method aux-shape contract: methods that
+require aux fail `HelperError::Ipc { ... missing aux ... }` if absent;
+methods that forbid aux fail if present. This contract is asserted in
+the IPC layer's serialization, not in each verb's body.
+
 `Authority` is invoked by the dispatch layer *after* `IpcServer` resolves
 `CallerPrincipal`. Its decision shape is unchanged from the current
-boxpilotd code. The Windows impl in this phase is deliberately tiny:
-allow if `caller == controller_sid`, deny otherwise. Real UAC-based
-authorization is in Sub-project #2; UAC at the IPC boundary is the wrong
-shape on Windows anyway because the GUI process is per-user and
-unprivileged, while the helper service runs as `LocalSystem` — the
-elevation step happens at *installer* time, not at IPC-call time.
+boxpilotd code:
+
+- **Linux impl** — polkit `CheckAuthorization`, identical to current
+  `DBusAuthority`.
+- **Windows impl, this sub-project** — `AlwaysAllow` (per COQ3). On
+  startup, `entry::windows::run_under_scm()` emits a single
+  `warn!`-level log line: `"windows authority is in pass-through mode
+  pending sub-project #2 — do not run on a multi-user machine"`. Real
+  SID-based authorization arrives in Sub-project #2 alongside the
+  `controller_principal` schema bump.
+
+UAC at the IPC boundary is the wrong shape on Windows because the GUI
+process is per-user and unprivileged while the helper service runs as
+`LocalSystem` — the elevation step happens at *installer* time, not at
+IPC-call time.
 
 ## 6. `boxpilotd` Binary Structure
 
@@ -529,14 +547,28 @@ fn ffi_service_main(_args: Vec<OsString>) {
 }
 ```
 
-`run_under_scm()` registers the SCM control handler (handling `Stop`,
-`Shutdown`, `Interrogate`), sets status `START_PENDING → RUNNING`,
-spawns a background tokio runtime hosting `IpcServer::run`, and blocks
-the SCM thread on a stop channel. On `Stop`, status flips to
-`STOP_PENDING → STOPPED` and the IPC server is canceled.
+`run_under_scm()` does these steps **in order**:
+
+1. Initialize a `tracing-subscriber` `Registry` with a daily-rolling
+   `tracing-appender` writer pointed at
+   `%ProgramData%\BoxPilot\logs\boxpilotd.log`. This is the **first**
+   thing run, so any subsequent failure produces a log entry on disk
+   even if SCM marks the service `STOPPED` with a generic error code.
+   Spec §6.5 (COQ5 resolution): without this sink, traces vanish into
+   the SCM-owned dev/null and Windows-side debugging is dark.
+2. Emit one `warn!` line: `"windows authority is in pass-through mode
+   pending sub-project #2 — do not run on a multi-user machine"` (per
+   COQ3 / §5.4 Windows Authority semantics).
+3. Register the SCM control handler (handling `Stop`, `Shutdown`,
+   `Interrogate`), set status `START_PENDING → RUNNING`.
+4. Spawn a background tokio runtime hosting `IpcServer::run`.
+5. Block the SCM thread on a stop channel. On `Stop`, status flips to
+   `STOP_PENDING → STOPPED`, the IPC server is canceled, the tracing
+   appender flushes.
 
 The `BOXPILOTD_CONSOLE=1` escape hatch lets developers exercise the
-binary outside SCM during this sub-project.
+binary outside SCM during this sub-project; in console mode tracing
+also writes to stdout in addition to the log file.
 
 ## 7. Windows Path Layout
 
@@ -559,6 +591,7 @@ binary outside SCM during this sub-project.
 ├── backups\units\                    (Sub-project #2; service-config snapshots)
 ├── install-state.json
 ├── run\lock                          (LockFileEx target)
+├── logs\boxpilotd.log                (tracing-appender daily rotation; per COQ5)
 └── cache\
     ├── downloads\
     └── diagnostics\
@@ -599,25 +632,26 @@ back to `main` one at a time, matching the v0.1.0–v0.1.1 cadence.
 
 | # | Subject | Size |
 |---|---------|------|
-| 1 | scaffold `crates/boxpilot-platform`; add to workspace; empty traits + facade re-export; CI: extend `cargo build --workspace` matrix to include `x86_64-pc-windows-msvc` cargo-check (allowed-to-fail at this point) | XS |
+| 1 | scaffold `crates/boxpilot-platform`; add to workspace; empty traits + facade re-export. **Workspace-wide bumps in this PR:** `tokio` features += `["net", "io-util"]` (COQ7); add `tracing-appender` to `[workspace.dependencies]` (COQ5). CI: `cargo check --target x86_64-pc-windows-gnu` (cheap, no MSVC linker setup; "allowed-to-fail" gate); MSVC target enabled in PR 14. | XS |
 | 2 | introduce `EnvProvider` and `Paths` value type in `boxpilot-platform`; migrate `boxpilotd::paths::Paths` consumers to platform's `Paths`; Linux impl identical to current | S |
 | 3 | move `FsMetadataProvider`, `VersionChecker`, `UserLookup` traits + Linux impls to platform; re-host existing fakes; remove originals from `boxpilotd` | S |
 | 4 | move `CallerResolver` (renamed from `DBusCallerResolver`) and `Authority` (renamed from `DBusAuthority`) to platform; Linux behavior identical | S |
-| 5 | move `Systemd` (renamed `ServiceManager`) and `JournalReader` (renamed `LogReader`) to platform; Linux behavior identical | M |
+| 5 | move `Systemd` → `ServiceManager` and `JournalReader` → `LogReader` to platform. **Trait surface NOT expanded** (per COQ4 resolution) — methods, parameter types, return types, and `UnitState` shape are byte-identical to current Linux. Sub-project #2 owns the SCM-shape redesign. | M |
 | 6 | introduce `FileLock` trait; replace direct `fs2`/`flock` calls in `boxpilotd::lock`; Linux impl wraps fs2 | S |
 | 7 | introduce `TrustChecker` trait; wrap existing `boxpilotd::core::trust` logic as Linux impl | S |
 | 8 | introduce `ActivePointer` trait; wrap existing symlink/rename logic in `boxpilotd::profile::release`; tests use fake | S |
 | 9 | introduce `CoreAssetNaming` + `CoreArchive`; wrap tar.gz extract logic from `boxpilotd::core::install` | S |
-| 10 | introduce `BundleClient` / `BundleServer` traits; Linux impl moves memfd/seal logic out of `boxpilot-profile::bundle` and `boxpilotd::profile::unpack`; protocol contract documented for Windows | L |
-| 11 | introduce `IpcServer` / `IpcConnection` / `IpcClient` + `HelperDispatch`; Linux impl wraps zbus; `boxpilotd::iface` and `boxpilot-tauri::helper_client` route through traits | L |
-| 12 | add Windows feature dependencies; provide all Windows impls as `unimplemented!()` stubs except: `EnvProvider` (real), `Paths` (real), `FileLock` (real), `IpcServer`/`IpcClient` (real for AC5), `Authority` (real-but-trivial), `CallerResolver` (real for AC5); `cargo check --target x86_64-pc-windows-msvc --workspace` passes | M |
-| 13 | `boxpilotd.exe` Windows Service entry: `windows-service::service_dispatcher::start`, SCM control handler, Named Pipe accept loop returning `Unimplemented` for every verb; AC5 met | M |
-| 14 | enable Windows GitHub Actions runner; cross-platform fake-based unit tests added; AC4 met | S |
+| 10 | introduce `AuxStream` enum + bundle-flow refactor (per COQ1+COQ2 resolution). `boxpilot-profile::bundle::prepare()` returns `PreparedBundle { manifest, stream: AuxStream, sha256 }`. Linux impl preserves memfd+seal optimization internally; consumer side hashes-while-reading. **No `BundleClient` / `BundleServer` traits are introduced.** | L |
+| 11 | introduce `IpcServer` / `IpcConnection` / `IpcClient` + `HelperDispatch::handle(conn, method, body, aux: AuxStream)`; Linux impl wraps zbus and converts `bundle_fd: OwnedFd` ↔ `AuxStream::Bytes`; `boxpilotd::iface` and `boxpilot-tauri::helper_client` route through traits. Per-method aux-shape contract enforced at IPC layer. | L |
+| 12 | add Windows feature dependencies; provide Windows impls. **Real:** `EnvProvider`, `Paths`, `FileLock`, `IpcServer`/`IpcClient` (real for AC5), `Authority` = `AlwaysAllow` (per COQ3), `CallerResolver` (real for AC5: `GetNamedPipeClientProcessId` → SID). **Stub `unimplemented!()`:** everything else. `cargo check --target x86_64-pc-windows-msvc --workspace` passes on the Windows runner enabled in PR 14. **Sized:** L (not M as originally drafted; see Risk #4). | L |
+| 13 | `boxpilotd.exe` Windows Service entry: `windows-service::service_dispatcher::start`, SCM control handler, Named Pipe accept loop returning `Unimplemented` for every verb. **Includes `tracing-appender` daily-rolling file sink at `%ProgramData%\BoxPilot\logs\boxpilotd.log` initialized before any IPC server starts** (per COQ5). | M |
+| 14 | enable Windows GitHub Actions runner (`windows-latest`); switch PR 1's cargo-check target to `x86_64-pc-windows-msvc`; cross-platform fake-based unit tests added; AC3 + AC4 met | S |
+| 14b | introduce `boxpilotctl` debug bin at `crates/boxpilotd/src/bin/boxpilotctl.rs` (per COQ6). Cross-platform; uses `IpcClient` to invoke any `HelperMethod` with raw JSON body and prints the response. Used for AC5 verification. Linux dev: `boxpilotctl service.status` → talks D-Bus. Windows dev: same command → talks Named Pipe. | XS |
 | 15 | spec doc updates: revise Linux design spec §1 to reference platform abstraction; commit Windows-port roadmap pointing at Sub-projects #2/#3 | XS |
 
 PRs 1–9 are Linux-only refactors and should each be reviewable in <300
 LOC of meaningful change. PR 10 (bundle) and PR 11 (IPC) are larger by
-necessity. PRs 12–14 are Windows-specific and don't touch Linux runtime
+necessity. PRs 12–14b are Windows-specific and don't touch Linux runtime
 behavior.
 
 ## 9. Risks
@@ -669,6 +703,27 @@ behavior.
 
 ### Sub-project #2: Windows v1.0 — real verbs
 
+**First task (per COQ4 resolution):** Review `ServiceManager` trait
+shape against SCM API surface. Decide whether the trait's method set
+and `UnitState` field shape can host SCM semantics directly, or whether
+a schema bump (`UnitState` v2 with platform-neutral `status` field +
+opaque `raw: HashMap<String,String>` for platform extras) is needed
+before any Windows verb can be implemented. This may also bump
+`HelperMethod` schema (e.g., adding `service.set_start_type` because
+SCM's "enable" semantics differ from systemd's). Don't ship Windows
+verbs on a trait that doesn't fit.
+
+**Second task:** Replace Windows `Authority::AlwaysAllow` with the real
+SID-based check. Requires:
+- `boxpilot.toml` schema v2 with `controller_principal: { kind: "uid"
+  | "sid", value: ... }`
+- Migration logic (Linux: read `controller_uid` if v1, write back v2
+  on first boot)
+- Controller claim flow on Windows using the connecting GUI's
+  authenticated SID (via `IpcServer`-resolved `CallerPrincipal`)
+
+**Then the verb impls:**
+
 - `core.discover` / `core.install_managed` / `core.upgrade_managed` /
   `core.rollback_managed`: download SagerNet `windows-<arch>.zip`, ACL
   the install dir, swing `current` junction.
@@ -678,13 +733,16 @@ behavior.
   the asymmetry.)
 - `profile.activate_bundle` + `profile.rollback_release`: real bundle
   unpack to `%ProgramData%\BoxPilot\releases\`, marker-file `active`
-  swap, SCM service restart, verification window unchanged.
+  swap, SCM service restart, verification window unchanged. **Windows
+  bundle integrity** — relies entirely on helper-side SHA256
+  verification (no kernel-level seal equivalent of memfd; see §5.2).
 - `service.start` / `stop` / `restart` / `status` / `logs` against SCM
   + Event Log.
-- `boxpilot.toml` schema v2 with `controller_principal`; controller
-  claim flow on Windows uses the connecting GUI's authenticated SID.
 - Tauri GUI text adjustments: replace "systemd" / "polkit" /
   "journalctl" wording with platform-aware strings.
+- `IpcClient` Windows reconnect-on-not-running logic (Windows lacks
+  D-Bus auto-activation; the GUI must tolerate transient SCM-restart
+  windows).
 
 ### Sub-project #3: Windows v1.1 — packaging, drivers, polish
 
