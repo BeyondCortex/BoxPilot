@@ -4,6 +4,8 @@
 //! task 1. The unpacker NEVER follows symlinks; it refuses both symlink
 //! and hardlink entries up-front.
 
+#![cfg(target_os = "linux")]
+
 use boxpilot_ipc::{
     ActivationManifest, HelperError, HelperResult, BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT,
     BUNDLE_MAX_NESTING_DEPTH, BUNDLE_MAX_TOTAL_BYTES,

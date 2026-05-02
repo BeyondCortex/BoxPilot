@@ -4,6 +4,8 @@
 //! verify failure: rollback to previous release with second verify.
 //! Surfaces four explicit terminal outcomes.
 
+#![cfg(target_os = "linux")]
+
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
 use crate::dispatch::ControllerWrites;
 use crate::lock;

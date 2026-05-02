@@ -3,6 +3,8 @@
 //! verify success the toml swap is symmetric — what was active becomes
 //! previous. GC does not run inside this verb.
 
+#![cfg(target_os = "linux")]
+
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
 use crate::dispatch::ControllerWrites;
 use crate::lock;
