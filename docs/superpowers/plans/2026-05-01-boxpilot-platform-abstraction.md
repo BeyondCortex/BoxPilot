@@ -4772,3 +4772,417 @@ git grep "fn do_service_start\b\|fn do_service_stop\b\|fn do_core_discover\b" cr
 PR description body MUST include: "After this PR, `.github/workflows/windows-check.yml` flips `continue-on-error` to false. Subsequent PRs with Windows-side build breakage will fail CI."
 
 ---
+
+# PR 11b: `IpcClient` Linux impl + `boxpilot-tauri/helper_client.rs` rewrite
+
+**Size:** L · **Touches:** `boxpilot-platform/src/linux/ipc.rs` (extends), `boxpilot-tauri/src/helper_client.rs` (rewrite), `boxpilot-tauri/src/profile_cmds.rs` (raw zbus FD-pass code absorbed), `boxpilot-tauri/Cargo.toml` (drop direct zbus dep).
+
+The user-side mirror of PR 11a. After this PR, `boxpilot-tauri` no longer depends on `zbus` directly; all helper RPCs flow through `IpcClient::call`.
+
+## Task 11b.1: Linux `IpcClient` impl in `boxpilot-platform`
+
+**Files:**
+- Modify: `crates/boxpilot-platform/src/linux/ipc.rs` — add `ZbusIpcClient`
+
+- [ ] **Step 1: Write the client**
+
+Append to `crates/boxpilot-platform/src/linux/ipc.rs`:
+
+```rust
+use crate::traits::bundle_aux::{AuxStream, AuxStreamRepr};
+use crate::traits::ipc::IpcClient;
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
+use std::os::fd::{IntoRawFd, OwnedFd};
+use zbus::zvariant::OwnedFd as ZbusOwnedFd;
+
+const BUS_NAME: &str = "app.boxpilot.Helper";
+const OBJECT_PATH: &str = "/app/boxpilot/Helper";
+const INTERFACE: &str = "app.boxpilot.Helper1";
+
+pub struct ZbusIpcClient {
+    pub conn: zbus::Connection,
+}
+
+impl ZbusIpcClient {
+    pub async fn connect_system() -> Result<Self, HelperError> {
+        let conn = zbus::Connection::system().await.map_err(|e| HelperError::Ipc {
+            message: format!("connect to system bus: {e}"),
+        })?;
+        Ok(Self { conn })
+    }
+}
+
+#[async_trait::async_trait]
+impl IpcClient for ZbusIpcClient {
+    async fn call(
+        &self,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
+    ) -> HelperResult<Vec<u8>> {
+        let proxy = zbus::Proxy::new(&self.conn, BUS_NAME, OBJECT_PATH, INTERFACE)
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("build proxy: {e}"),
+            })?;
+
+        // Method-name conversion: HelperMethod → CamelCase D-Bus method.
+        // Use the existing `as_logical()` accessor to drive the mapping;
+        // CamelCase is what zbus's interface registers, matching v0.1.1.
+        let method_name = camel_case_for(method);
+
+        // Body is JSON; zbus method takes &str for verbs that already do
+        // (e.g., service_install_managed) and no arg for status verbs.
+        // To keep the wire format identical to v0.1.1, we pass the body
+        // as a single &str arg if non-empty, else a no-arg call.
+        let body_str = std::str::from_utf8(&body).map_err(|e| HelperError::Ipc {
+            message: format!("body not utf-8: {e}"),
+        })?;
+
+        let resp_str: String = match aux.into_repr() {
+            AuxStreamRepr::None => {
+                if body.is_empty() {
+                    proxy.call(&method_name, &()).await
+                } else {
+                    proxy.call(&method_name, &body_str).await
+                }
+                .map_err(|e| HelperError::Ipc {
+                    message: format!("call {method_name}: {e}"),
+                })?
+            }
+            AuxStreamRepr::AsyncRead(_) => {
+                // Linux client side: AsyncRead-backed AuxStream means the
+                // caller didn't have an FD ready. We're in the GUI process
+                // so we could re-build a memfd here — but in practice the
+                // GUI always uses `from_owned_fd` via boxpilot-profile.
+                // If this branch fires, it's a bug.
+                return Err(HelperError::Ipc {
+                    message: "linux IpcClient: AsyncRead aux not supported (use from_owned_fd)"
+                        .into(),
+                });
+            }
+            AuxStreamRepr::LinuxFd(fd) => {
+                // FD-pass via zbus zvariant.
+                let z_fd = ZbusOwnedFd::from(fd);
+                proxy
+                    .call::<_, _, String>(&method_name, &(body_str, z_fd))
+                    .await
+                    .map_err(|e| HelperError::Ipc {
+                        message: format!("call {method_name} with fd: {e}"),
+                    })?
+            }
+        };
+
+        Ok(resp_str.into_bytes())
+    }
+}
+
+/// Maps logical `HelperMethod` (snake_case) to D-Bus method names
+/// (CamelCase) — frozen per spec §5.4.1 + the v0.1.1 wire commitment.
+fn camel_case_for(m: HelperMethod) -> String {
+    // The simplest stable mapping: `HelperMethod` enum variants are
+    // already named in CamelCase Rust-side (ServiceStatus etc.); use that.
+    format!("{m:?}")
+}
+```
+
+(Note: `format!("{m:?}")` on the enum gives the CamelCase variant name as long as `HelperMethod`'s `Debug` derive produces it — verify locally with a unit test in this file.)
+
+- [ ] **Step 2: Add a unit test for camel-case mapping**
+
+In the same file:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camel_case_matches_dbus_method_names() {
+        assert_eq!(camel_case_for(HelperMethod::ServiceStatus), "ServiceStatus");
+        assert_eq!(camel_case_for(HelperMethod::ProfileActivateBundle), "ProfileActivateBundle");
+        assert_eq!(camel_case_for(HelperMethod::HomeStatus), "HomeStatus");
+    }
+}
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test -p boxpilot-platform`
+Expected: green.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/linux/ipc.rs
+git commit -m "feat(platform): Linux ZbusIpcClient with FD-pass support via AuxStream"
+```
+
+---
+
+## Task 11b.2: Rewrite `boxpilot-tauri/src/helper_client.rs`
+
+**Files:**
+- Modify: `crates/boxpilot-tauri/src/helper_client.rs`
+- Modify: `crates/boxpilot-tauri/Cargo.toml` (drop `zbus` direct dep, drop `nix`/`libc` if unused)
+
+- [ ] **Step 1: Replace the body**
+
+`crates/boxpilot-tauri/src/helper_client.rs`:
+
+```rust
+//! Tauri-side helper client. Uses `boxpilot_platform::IpcClient` for the
+//! transport; the typed wrappers below decode JSON responses into the
+//! existing `boxpilot_ipc` response types.
+
+use boxpilot_ipc::{
+    ActivateBundleResponse, CoreAdoptRequest, CoreDiscoverResponse, CoreInstallRequest,
+    CoreInstallResponse, CoreRollbackRequest, DiagnosticsExportResponse, HelperError, HelperMethod,
+    HomeStatusResponse, LegacyMigrateRequest, LegacyMigrateResponse, LegacyObserveServiceResponse,
+    RollbackRequest, ServiceControlResponse, ServiceInstallManagedResponse, ServiceLogsRequest,
+    ServiceLogsResponse, ServiceStatusResponse,
+};
+use boxpilot_platform::traits::bundle_aux::AuxStream;
+use boxpilot_platform::traits::ipc::IpcClient;
+use std::sync::Arc;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum ClientError {
+    #[error("{code}: {message}")]
+    Method { code: String, message: String },
+    #[error("ipc: {0}")]
+    Ipc(String),
+    #[error("decode response: {0}")]
+    Decode(String),
+}
+
+impl From<HelperError> for ClientError {
+    fn from(e: HelperError) -> Self {
+        // Translate HelperError into the existing { code, message } shape
+        // the Vue side already pattern-matches on. Use the same naming
+        // convention as boxpilotd::iface::to_zbus_err.
+        let code = match &e {
+            HelperError::NotImplemented => "not_implemented",
+            HelperError::NotAuthorized => "not_authorized",
+            HelperError::NotController => "not_controller",
+            HelperError::ControllerOrphaned => "controller_orphaned",
+            HelperError::ControllerNotSet => "controller_not_set",
+            HelperError::UnsupportedSchemaVersion { .. } => "unsupported_schema_version",
+            HelperError::Busy => "busy",
+            HelperError::Systemd { .. } => "systemd",
+            HelperError::Ipc { .. } => "ipc",
+            HelperError::BundleTooLarge { .. } => "bundle_too_large",
+            HelperError::BundleEntryRejected { .. } => "bundle_entry_rejected",
+            HelperError::BundleAssetMismatch { .. } => "bundle_asset_mismatch",
+            HelperError::SingboxCheckFailed { .. } => "singbox_check_failed",
+            HelperError::RollbackTargetMissing => "rollback_target_missing",
+            HelperError::RollbackUnstartable { .. } => "rollback_unstartable",
+            HelperError::ActiveCorrupt => "active_corrupt",
+            HelperError::ReleaseAlreadyActive => "release_already_active",
+            HelperError::ReleaseNotFound { .. } => "release_not_found",
+            HelperError::LegacyConfigPathUnsafe { .. } => "legacy_config_path_unsafe",
+            HelperError::LegacyUnitNotFound { .. } => "legacy_unit_not_found",
+            HelperError::LegacyExecStartUnparseable { .. } => "legacy_exec_start_unparseable",
+            HelperError::LegacyStopFailed { .. } => "legacy_stop_failed",
+            HelperError::LegacyDisableFailed { .. } => "legacy_disable_failed",
+            HelperError::LegacyConflictsWithManaged { .. } => "legacy_conflicts_with_managed",
+            HelperError::LegacyAssetTooLarge { .. } => "legacy_asset_too_large",
+            HelperError::LegacyTooManyAssets { .. } => "legacy_too_many_assets",
+            HelperError::DiagnosticsIoFailed { .. } => "diagnostics_io_failed",
+            HelperError::DiagnosticsEncodeFailed { .. } => "diagnostics_encode_failed",
+        };
+        ClientError::Method {
+            code: code.into(),
+            message: e.to_string(),
+        }
+    }
+}
+
+pub struct HelperClient {
+    ipc: Arc<dyn IpcClient>,
+}
+
+impl HelperClient {
+    pub async fn connect_linux() -> Result<Self, ClientError> {
+        #[cfg(target_os = "linux")]
+        {
+            let client = boxpilot_platform::linux::ipc::ZbusIpcClient::connect_system()
+                .await
+                .map_err(|e| ClientError::Ipc(format!("{e:?}")))?;
+            Ok(Self {
+                ipc: Arc::new(client),
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(ClientError::Ipc("connect_linux called on non-Linux".into()))
+        }
+    }
+
+    async fn call_no_aux<R: serde::de::DeserializeOwned>(
+        &self,
+        method: HelperMethod,
+        body: Vec<u8>,
+    ) -> Result<R, ClientError> {
+        let resp_bytes = self.ipc.call(method, body, AuxStream::none()).await?;
+        serde_json::from_slice(&resp_bytes).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+
+    pub async fn service_status(&self) -> Result<ServiceStatusResponse, ClientError> {
+        self.call_no_aux(HelperMethod::ServiceStatus, vec![]).await
+    }
+    pub async fn home_status(&self) -> Result<HomeStatusResponse, ClientError> {
+        self.call_no_aux(HelperMethod::HomeStatus, vec![]).await
+    }
+    pub async fn core_discover(&self) -> Result<CoreDiscoverResponse, ClientError> {
+        self.call_no_aux(HelperMethod::CoreDiscover, vec![]).await
+    }
+    pub async fn core_install_managed(
+        &self,
+        req: &CoreInstallRequest,
+    ) -> Result<CoreInstallResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        self.call_no_aux(HelperMethod::CoreInstallManaged, body).await
+    }
+    pub async fn core_upgrade_managed(
+        &self,
+        req: &CoreInstallRequest,
+    ) -> Result<CoreInstallResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        self.call_no_aux(HelperMethod::CoreUpgradeManaged, body).await
+    }
+    pub async fn core_rollback_managed(
+        &self,
+        req: &CoreRollbackRequest,
+    ) -> Result<CoreInstallResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        self.call_no_aux(HelperMethod::CoreRollbackManaged, body).await
+    }
+    pub async fn core_adopt(
+        &self,
+        req: &CoreAdoptRequest,
+    ) -> Result<CoreInstallResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        self.call_no_aux(HelperMethod::CoreAdopt, body).await
+    }
+    pub async fn service_start(&self) -> Result<ServiceControlResponse, ClientError> {
+        self.call_no_aux(HelperMethod::ServiceStart, vec![]).await
+    }
+    pub async fn service_stop(&self) -> Result<ServiceControlResponse, ClientError> {
+        self.call_no_aux(HelperMethod::ServiceStop, vec![]).await
+    }
+    pub async fn service_restart(&self) -> Result<ServiceControlResponse, ClientError> {
+        self.call_no_aux(HelperMethod::ServiceRestart, vec![]).await
+    }
+    pub async fn service_enable(&self) -> Result<ServiceControlResponse, ClientError> {
+        self.call_no_aux(HelperMethod::ServiceEnable, vec![]).await
+    }
+    pub async fn service_disable(&self) -> Result<ServiceControlResponse, ClientError> {
+        self.call_no_aux(HelperMethod::ServiceDisable, vec![]).await
+    }
+    pub async fn service_install_managed(
+        &self,
+    ) -> Result<ServiceInstallManagedResponse, ClientError> {
+        self.call_no_aux(HelperMethod::ServiceInstallManaged, vec![]).await
+    }
+    pub async fn service_logs(
+        &self,
+        req: &ServiceLogsRequest,
+    ) -> Result<ServiceLogsResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        self.call_no_aux(HelperMethod::ServiceLogs, body).await
+    }
+    pub async fn profile_rollback_release(
+        &self,
+        req: &RollbackRequest,
+    ) -> Result<ActivateBundleResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        self.call_no_aux(HelperMethod::ProfileRollbackRelease, body).await
+    }
+    pub async fn legacy_observe_service(
+        &self,
+    ) -> Result<LegacyObserveServiceResponse, ClientError> {
+        self.call_no_aux(HelperMethod::LegacyObserveService, vec![]).await
+    }
+    pub async fn legacy_migrate_service(
+        &self,
+        req: &LegacyMigrateRequest,
+    ) -> Result<LegacyMigrateResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        self.call_no_aux(HelperMethod::LegacyMigrateService, body).await
+    }
+    pub async fn diagnostics_export_redacted(
+        &self,
+    ) -> Result<DiagnosticsExportResponse, ClientError> {
+        self.call_no_aux(HelperMethod::DiagnosticsExportRedacted, vec![]).await
+    }
+
+    /// Bundle activation — uses AuxStream::from_owned_fd on Linux.
+    /// boxpilot-profile::bundle::prepare returns a `PreparedBundle`
+    /// containing the AuxStream; pass it through here.
+    pub async fn profile_activate_bundle(
+        &self,
+        req: &boxpilot_ipc::ActivateBundleRequest,
+        aux: AuxStream,
+    ) -> Result<ActivateBundleResponse, ClientError> {
+        let body = serde_json::to_vec(req).unwrap();
+        let resp_bytes = self
+            .ipc
+            .call(HelperMethod::ProfileActivateBundle, body, aux)
+            .await?;
+        serde_json::from_slice(&resp_bytes).map_err(|e| ClientError::Decode(e.to_string()))
+    }
+}
+```
+
+- [ ] **Step 2: Update `boxpilot-tauri/src/profile_cmds.rs`**
+
+Find the existing raw `zbus::Proxy` FD-passing code for `ProfileActivateBundle`. Delete it. Replace the relevant call with:
+
+```rust
+let prepared = boxpilot_profile::bundle::prepare(&staging, &paths).await?;
+let resp = helper_client
+    .profile_activate_bundle(&request, prepared.stream)
+    .await?;
+```
+
+- [ ] **Step 3: Drop direct deps from `boxpilot-tauri/Cargo.toml`**
+
+```toml
+[dependencies]
+# REMOVED: zbus = { version = "5", default-features = false, features = ["tokio"] }
+# Keep: tauri, tauri-build, boxpilot-ipc, boxpilot-profile, boxpilot-platform, serde, serde_json, ...
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test -p boxpilot-tauri`
+Expected: existing tests pass; the `snake_case` helper test that lived at the bottom of `helper_client.rs` was deleted (the From<zbus::Error> path is no longer needed). If the test was useful for catching naming bugs, port it to a `boxpilot-platform::linux::ipc` test against `camel_case_for`.
+
+- [ ] **Step 5: Run full workspace tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/boxpilot-tauri/src crates/boxpilot-tauri/Cargo.toml
+git commit -m "refactor(tauri): rewrite helper_client.rs over IpcClient; drop direct zbus dep"
+```
+
+---
+
+## PR 11b smoke
+
+```bash
+cargo test --workspace
+cargo check --target x86_64-pc-windows-gnu --workspace
+git grep '^zbus' crates/boxpilot-tauri/Cargo.toml         # zero matches
+git grep 'zbus::' crates/boxpilot-tauri/src                # only matches inside profile_cmds.rs comments, if any
+```
+
+PR description body should mention: rewrites `helper_client.rs` (314 LOC → ~250 LOC), absorbs the `profile_cmds.rs` raw FD-passing into the platform crate, and drops `zbus` from `boxpilot-tauri/Cargo.toml`.
+
+---
