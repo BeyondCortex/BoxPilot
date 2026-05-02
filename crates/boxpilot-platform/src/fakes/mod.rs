@@ -2,3 +2,4 @@
 //! helper-side unit tests pass on the Windows runner (AC4).
 
 pub mod env;
+pub mod fs_meta;

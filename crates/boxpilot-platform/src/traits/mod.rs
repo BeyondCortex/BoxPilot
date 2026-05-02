@@ -13,3 +13,4 @@
 //! - PR 11a: `IpcServer`, `IpcConnection`, `IpcClient`, `HelperDispatch`
 
 pub mod env;
+pub mod fs_meta;

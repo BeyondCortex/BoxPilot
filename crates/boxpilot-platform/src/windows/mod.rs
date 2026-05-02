@@ -6,3 +6,4 @@
 #![cfg(target_os = "windows")]
 
 pub mod env;
+pub mod fs_meta;

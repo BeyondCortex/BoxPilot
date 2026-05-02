@@ -4,3 +4,4 @@
 #![cfg(target_os = "linux")]
 
 pub mod env;
+pub mod fs_meta;
