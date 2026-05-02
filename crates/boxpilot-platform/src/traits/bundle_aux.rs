@@ -40,6 +40,18 @@ impl AuxStream {
         matches!(self.repr, AuxStreamRepr::None)
     }
 
+    /// Linux-only: pull the underlying memfd back out for callers that
+    /// still need to hand it to a legacy zbus/D-Bus surface that takes a
+    /// raw fd. Returns `None` for non-fd-backed streams (e.g. tests).
+    /// Slated for removal once PR 11 inverts the IPC layer.
+    #[cfg(target_os = "linux")]
+    pub fn into_owned_fd(self) -> Option<std::os::fd::OwnedFd> {
+        match self.repr {
+            AuxStreamRepr::LinuxFd(fd) => Some(fd),
+            _ => None,
+        }
+    }
+
     #[allow(dead_code)] // surfaced for crate-internal platform impls in later PRs
     pub(crate) fn into_repr(self) -> AuxStreamRepr {
         self.repr
@@ -55,7 +67,11 @@ impl AuxStream {
             AuxStreamRepr::AsyncRead(r) => r,
             #[cfg(target_os = "linux")]
             AuxStreamRepr::LinuxFd(fd) => {
-                let std_file = std::fs::File::from(fd);
+                use std::io::Seek;
+                let mut std_file = std::fs::File::from(fd);
+                // Memfd-backed FDs are returned with the cursor parked at the
+                // end of the tar — rewind so AsyncRead consumers see all bytes.
+                let _ = std_file.seek(std::io::SeekFrom::Start(0));
                 Box::new(tokio::fs::File::from_std(std_file))
             }
         }

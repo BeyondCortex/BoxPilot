@@ -3,6 +3,7 @@
 
 pub mod active;
 pub mod authority;
+pub mod bundle_aux;
 pub mod core_assets;
 pub mod env;
 pub mod fs_meta;

@@ -1,12 +1,12 @@
 use chrono::Utc;
 use sha2::{Digest, Sha256};
-use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
 use boxpilot_ipc::{
     ActivationManifest, AssetEntry, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION,
     BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT, BUNDLE_MAX_NESTING_DEPTH, BUNDLE_MAX_TOTAL_BYTES,
 };
+use boxpilot_platform::AuxStream;
 
 use crate::asset_check::{verify_asset_refs, AssetCheckError};
 use crate::list::ProfileStore;
@@ -18,7 +18,7 @@ use crate::store::ensure_dir_0700;
 pub struct PreparedBundle {
     pub staging: tempfile::TempDir,
     pub manifest: ActivationManifest,
-    pub memfd: std::os::fd::OwnedFd,
+    pub stream: AuxStream,
     pub tar_size: u64,
 }
 
@@ -68,7 +68,7 @@ pub enum BundleError {
 /// passed in by the caller (plan #4 does not call into `boxpilotd`'s
 /// `core.discover`; the GUI fetches that separately and forwards the
 /// chosen core to this function).
-pub fn prepare_bundle(
+pub async fn prepare_bundle(
     store: &ProfileStore,
     profile_id: &str,
     core_path_at_activation: &str,
@@ -180,85 +180,32 @@ pub fn prepare_bundle(
 
     let _ = (total, file_count); // already enforced inside copy_assets_into
 
-    // Tar the staging directory into a sealed memfd. boxpilotd consumes
-    // this fd as the §9.2 transport; the staging TempDir stays only for
-    // tests and debugging.
-    let memfd = create_sealed_bundle_memfd(&staging_path)
-        .map_err(|e| BundleError::Io(std::io::Error::other(format!("memfd build: {e}"))))?;
-    let tar_size = nix::sys::stat::fstat(memfd.as_raw_fd())
-        .map_err(|e| BundleError::Io(std::io::Error::other(format!("fstat memfd: {e}"))))?
-        .st_size as u64;
+    // Tar the staging directory into a transport handle. The memfd
+    // packing now lives in `boxpilot_platform::linux::bundle`; on
+    // Windows a temp-file backed implementation will arrive in a later
+    // PR. The staging TempDir stays only for tests and debugging.
+    let (stream, tar_size) = build_aux_stream(&staging_path).await?;
 
     Ok(PreparedBundle {
         staging,
         manifest,
-        memfd,
+        stream,
         tar_size,
     })
 }
 
-fn create_sealed_bundle_memfd(staging_root: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
-    use std::ffi::CString;
-    let fd = nix::sys::memfd::memfd_create(
-        CString::new("boxpilot-bundle").unwrap().as_c_str(),
-        nix::sys::memfd::MemFdCreateFlag::MFD_CLOEXEC
-            | nix::sys::memfd::MemFdCreateFlag::MFD_ALLOW_SEALING,
-    )
-    .map_err(std::io::Error::from)?;
-
-    {
-        let mut file = std::fs::File::from(fd.try_clone()?);
-        let mut builder = tar::Builder::new(&mut file);
-        builder.mode(tar::HeaderMode::Deterministic);
-        append_dir_sorted(&mut builder, staging_root, Path::new(""))?;
-        builder.finish()?;
-    }
-
-    let seals = nix::fcntl::SealFlag::F_SEAL_WRITE
-        | nix::fcntl::SealFlag::F_SEAL_GROW
-        | nix::fcntl::SealFlag::F_SEAL_SHRINK
-        | nix::fcntl::SealFlag::F_SEAL_SEAL;
-    nix::fcntl::fcntl(fd.as_raw_fd(), nix::fcntl::FcntlArg::F_ADD_SEALS(seals))
-        .map_err(std::io::Error::from)?;
-    Ok(fd)
+#[cfg(target_os = "linux")]
+async fn build_aux_stream(staging: &Path) -> Result<(AuxStream, u64), BundleError> {
+    boxpilot_platform::linux::bundle::build_sealed_memfd_aux(staging)
+        .await
+        .map_err(|e| BundleError::Io(std::io::Error::other(format!("{e:?}"))))
 }
 
-fn append_dir_sorted(
-    b: &mut tar::Builder<&mut std::fs::File>,
-    abs_root: &Path,
-    rel: &Path,
-) -> std::io::Result<()> {
-    let abs = abs_root.join(rel);
-    let mut entries: Vec<_> = std::fs::read_dir(&abs)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|a| a.file_name());
-    for e in entries {
-        let path = e.path();
-        let name = e.file_name();
-        let rel_child = if rel.as_os_str().is_empty() {
-            PathBuf::from(&name)
-        } else {
-            rel.join(&name)
-        };
-        let ft = std::fs::metadata(&path)?.file_type();
-        if ft.is_dir() {
-            let mut h = tar::Header::new_ustar();
-            h.set_size(0);
-            h.set_mode(0o700);
-            h.set_entry_type(tar::EntryType::Directory);
-            h.set_cksum();
-            b.append_data(&mut h, &rel_child, std::io::empty())?;
-            append_dir_sorted(b, abs_root, &rel_child)?;
-        } else if ft.is_file() {
-            let bytes = std::fs::read(&path)?;
-            let mut h = tar::Header::new_ustar();
-            h.set_size(bytes.len() as u64);
-            h.set_mode(0o600);
-            h.set_entry_type(tar::EntryType::Regular);
-            h.set_cksum();
-            b.append_data(&mut h, &rel_child, bytes.as_slice())?;
-        }
-    }
-    Ok(())
+#[cfg(target_os = "windows")]
+async fn build_aux_stream(staging: &Path) -> Result<(AuxStream, u64), BundleError> {
+    boxpilot_platform::windows::bundle::build_tempfile_aux(staging)
+        .await
+        .map_err(|e| BundleError::Io(std::io::Error::other(format!("{e:?}"))))
 }
 
 fn copy_assets_into(
@@ -371,8 +318,8 @@ mod tests {
         (tmp, s)
     }
 
-    #[test]
-    fn prepare_bundle_local_no_assets_writes_layout() {
+    #[tokio::test]
+    async fn prepare_bundle_local_no_assets_writes_layout() {
         let (tmp, s) = fixture();
         let src = tmp.path().join("in.json");
         std::fs::write(&src, br#"{"log":{"level":"info"}}"#).unwrap();
@@ -384,6 +331,7 @@ mod tests {
             "/var/lib/boxpilot/cores/current/sing-box",
             "1.10.0",
         )
+        .await
         .unwrap();
         assert!(b.config_path().exists());
         assert!(b.assets_dir().exists());
@@ -391,10 +339,11 @@ mod tests {
         assert!(b.manifest.activation_id.contains('Z'));
         assert!(matches!(b.manifest.source_kind, SourceKind::Local));
         assert!(b.manifest.source_url_redacted.is_none());
+        assert!(b.tar_size > 0);
     }
 
-    #[test]
-    fn prepare_bundle_dir_carries_assets_and_manifest_entries() {
+    #[tokio::test]
+    async fn prepare_bundle_dir_carries_assets_and_manifest_entries() {
         let (tmp, s) = fixture();
         let src = tmp.path().join("bundle");
         std::fs::create_dir_all(&src).unwrap();
@@ -406,74 +355,42 @@ mod tests {
         std::fs::write(src.join("geosite.db"), b"GEO").unwrap();
         let m = import_local_dir(&s, &src, "P").unwrap();
 
-        let b = prepare_bundle(&s, &m.id, "/path/sing-box", "1.10.0").unwrap();
+        let b = prepare_bundle(&s, &m.id, "/path/sing-box", "1.10.0")
+            .await
+            .unwrap();
         assert_eq!(b.manifest.assets.len(), 1);
         assert_eq!(b.manifest.assets[0].path, "geosite.db");
         assert_eq!(b.manifest.assets[0].size, 3);
         assert!(b.assets_dir().join("geosite.db").exists());
     }
 
-    #[test]
-    fn prepare_bundle_refuses_when_asset_missing() {
+    #[tokio::test]
+    async fn prepare_bundle_refuses_when_asset_missing() {
         let (tmp, s) = fixture();
         let src = tmp.path().join("in.json");
         std::fs::write(&src, br#"{"route":{"rule_set":[{"path":"missing.db"}]}}"#).unwrap();
         let m = import_local_file(&s, &src, "P").unwrap();
-        let err = prepare_bundle(&s, &m.id, "/p/sb", "1.10.0").unwrap_err();
+        let err = prepare_bundle(&s, &m.id, "/p/sb", "1.10.0")
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             BundleError::AssetCheck(AssetCheckError::MissingFromBundle { .. })
         ));
     }
 
-    #[test]
-    fn prepare_bundle_refuses_absolute_path_in_config() {
+    #[tokio::test]
+    async fn prepare_bundle_refuses_absolute_path_in_config() {
         let (tmp, s) = fixture();
         let src = tmp.path().join("in.json");
         std::fs::write(&src, br#"{"route":{"rule_set":[{"path":"/etc/passwd"}]}}"#).unwrap();
         let m = import_local_file(&s, &src, "P").unwrap();
-        let err = prepare_bundle(&s, &m.id, "/p/sb", "1.10.0").unwrap_err();
+        let err = prepare_bundle(&s, &m.id, "/p/sb", "1.10.0")
+            .await
+            .unwrap_err();
         assert!(matches!(
             err,
             BundleError::AssetCheck(AssetCheckError::AbsolutePathRefused(_))
         ));
-    }
-
-    #[test]
-    fn prepare_bundle_returns_sealed_memfd_with_tar_layout() {
-        let (tmp, s) = fixture();
-        let src = tmp.path().join("in.json");
-        std::fs::write(&src, br#"{"log":{"level":"info"}}"#).unwrap();
-        let m = import_local_file(&s, &src, "P").unwrap();
-        let b = prepare_bundle(&s, &m.id, "/p/sing-box", "1.10.0").unwrap();
-
-        // All four seals must be set.
-        let seals =
-            nix::fcntl::fcntl(b.memfd.as_raw_fd(), nix::fcntl::FcntlArg::F_GET_SEALS).unwrap();
-        let mask = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
-        assert_eq!(seals & mask, mask, "all four seals must be set");
-
-        // Tar must contain config.json + manifest.json.
-        let mut file = std::fs::File::from(b.memfd.try_clone().unwrap());
-        use std::io::Seek;
-        file.seek(std::io::SeekFrom::Start(0)).unwrap();
-        let mut archive = tar::Archive::new(&mut file);
-        let names: Vec<String> = archive
-            .entries()
-            .unwrap()
-            .filter_map(|e| {
-                e.ok()
-                    .and_then(|e| e.path().ok().map(|p| p.to_string_lossy().into_owned()))
-            })
-            .collect();
-        assert!(
-            names.iter().any(|n| n == "config.json"),
-            "tar must contain config.json; got {names:?}"
-        );
-        assert!(
-            names.iter().any(|n| n == "manifest.json"),
-            "tar must contain manifest.json; got {names:?}"
-        );
-        assert!(b.tar_size > 0);
     }
 }

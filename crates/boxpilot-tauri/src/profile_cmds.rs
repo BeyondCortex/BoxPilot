@@ -305,19 +305,13 @@ pub async fn profile_prepare_bundle(
     request: PrepareBundleRequest,
 ) -> Result<PrepareBundleResponse, CommandError> {
     let store = state.store.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_bundle(
-            &store,
-            &request.profile_id,
-            &request.core_path,
-            &request.core_version,
-        )
-    })
+    let prepared = prepare_bundle(
+        &store,
+        &request.profile_id,
+        &request.core_path,
+        &request.core_version,
+    )
     .await
-    .map_err(|e| CommandError {
-        code: "join".into(),
-        message: e.to_string(),
-    })?
     .map_err(|e| e.to_cmd())?;
     let resp = PrepareBundleResponse {
         staging_path: prepared.staging.path().to_string_lossy().into_owned(),
@@ -353,15 +347,9 @@ pub async fn profile_check(
     // clone it now for the second call.
     let core_path_for_check = core_path.clone();
     let store = state.store.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_bundle(&store, &profile_id, &core_path, "best-effort")
-    })
-    .await
-    .map_err(|e| CommandError {
-        code: "join".into(),
-        message: e.to_string(),
-    })?
-    .map_err(|e| e.to_cmd())?;
+    let prepared = prepare_bundle(&store, &profile_id, &core_path, "best-effort")
+        .await
+        .map_err(|e| e.to_cmd())?;
 
     let core_path_buf = std::path::PathBuf::from(core_path_for_check);
     let staging = prepared.staging.path().to_path_buf();
@@ -411,15 +399,9 @@ pub async fn profile_activate(
         verify_window_secs,
     } = request;
     let store = state.store.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_bundle(&store, &profile_id, &core_path, &core_version)
-    })
-    .await
-    .map_err(|e| CommandError {
-        code: "join".into(),
-        message: e.to_string(),
-    })?
-    .map_err(|e| e.to_cmd())?;
+    let prepared = prepare_bundle(&store, &profile_id, &core_path, &core_version)
+        .await
+        .map_err(|e| e.to_cmd())?;
 
     let req = boxpilot_ipc::ActivateBundleRequest {
         verify_window_secs,
@@ -446,7 +428,14 @@ pub async fn profile_activate(
         message: e.to_string(),
     })?;
 
-    let fd_z: zbus::zvariant::OwnedFd = prepared.memfd.into();
+    // PR 11 will invert the IPC layer so callers no longer have to peel
+    // an `OwnedFd` out of the AuxStream — until then, this is the
+    // Linux-only escape hatch.
+    let memfd = prepared.stream.into_owned_fd().ok_or_else(|| CommandError {
+        code: "transport".into(),
+        message: "AuxStream did not yield an OwnedFd; expected memfd-backed bundle on Linux".into(),
+    })?;
+    let fd_z: zbus::zvariant::OwnedFd = memfd.into();
     let resp_json: String = proxy
         .call("ProfileActivateBundle", &(req_json, fd_z))
         .await
