@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 //! `app.boxpilot.Helper1` D-Bus interface — thin shell over
 //! [`HelperDispatch`] (PR 11a). Each interface method:
 //!   1. extracts the D-Bus sender bus name from the message header

@@ -7,12 +7,14 @@ mod authority;
 mod context;
 mod controller;
 mod core;
+#[cfg(target_os = "linux")]
 mod credentials;
 mod diagnostics;
 mod dispatch;
 mod dispatch_handler;
 mod entry;
 mod handlers;
+#[cfg(target_os = "linux")]
 mod iface;
 mod legacy;
 mod lock;

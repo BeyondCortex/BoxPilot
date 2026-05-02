@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 //! Caller-identity extraction. **Identity must come from the D-Bus
 //! connection, never from the request body** — spec §6.1.
 
