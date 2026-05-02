@@ -1249,4 +1249,42 @@ mod tests {
             .await;
         assert!(matches!(r, Err(HelperError::LegacyUnitNotFound { .. })));
     }
+
+    /// Regression for the round-4 review finding on `legacy_migrate_service`:
+    /// `dispatch::maybe_claim_controller` must NOT run on a `Prepare` request,
+    /// even when `will_claim_controller` is true. Prepare is read-only per the
+    /// `legacy::migrate` module doc, so a missing-from-passwd uid (which would
+    /// normally trip `HelperError::ControllerOrphaned`) must not be able to
+    /// abort it.
+    ///
+    /// The 4_000_000_000 uid is virtually guaranteed to be absent from the
+    /// CI host's `/etc/passwd`, so `PasswdLookup::lookup_username(4B)` returns
+    /// `None`. Combined with `controller_uid` absent from the toml (→
+    /// `ControllerState::Unset` → `will_claim_controller = true`), the pre-fix
+    /// code path would have returned `ControllerOrphaned` here. After aacbfba
+    /// the lookup is gated behind `matches!(resp, Cutover(_))`, so Prepare
+    /// surfaces the underlying `LegacyUnitNotFound` instead.
+    #[tokio::test]
+    async fn legacy_migrate_prepare_does_not_trigger_controller_orphaned_for_unknown_uid() {
+        let tmp = tempdir().unwrap();
+        let ctx = Arc::new(ctx_with(
+            &tmp,
+            None, // ControllerState::Unset → will_claim_controller=true
+            CannedAuthority::allowing(&["app.boxpilot.helper.legacy.migrate-service"]),
+            UnitState::NotFound,
+            &[(":1.42", 4_000_000_000)],
+        ));
+        let h = Helper::new(ctx);
+        let r = h
+            .do_legacy_migrate_service(":1.42", boxpilot_ipc::LegacyMigrateRequest::Prepare)
+            .await;
+        match r {
+            Err(HelperError::LegacyUnitNotFound { .. }) => {}
+            Err(HelperError::ControllerOrphaned) => panic!(
+                "Prepare must not call maybe_claim_controller (regression — \
+                 controller-claim escaped the Cutover gate)"
+            ),
+            other => panic!("expected LegacyUnitNotFound, got {other:?}"),
+        }
+    }
 }
