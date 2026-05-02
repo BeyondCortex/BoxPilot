@@ -20,4 +20,5 @@ pub mod release;
 pub mod rollback;
 #[cfg(target_os = "linux")]
 pub mod unpack;
+#[cfg(target_os = "linux")]
 pub mod verifier;

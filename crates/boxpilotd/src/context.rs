@@ -13,6 +13,7 @@ use boxpilot_platform::traits::current::CurrentPointer;
 use boxpilot_platform::traits::fs_perms::FsPermissions;
 use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
+#[cfg(target_os = "linux")]
 use crate::profile::verifier::ServiceVerifier;
 use crate::systemd::{JournalReader, Systemd};
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult};
@@ -36,6 +37,7 @@ pub struct HelperContext {
     pub fs_meta: Arc<dyn FsMetadataProvider>,
     pub version_checker: Arc<dyn VersionChecker>,
     pub checker: Arc<dyn SingboxChecker>,
+    #[cfg(target_os = "linux")]
     pub verifier: Arc<dyn ServiceVerifier>,
     #[cfg(target_os = "linux")]
     pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
@@ -88,6 +90,7 @@ impl HelperContext {
         fs_meta: Arc<dyn FsMetadataProvider>,
         version_checker: Arc<dyn VersionChecker>,
         checker: Arc<dyn SingboxChecker>,
+        #[cfg(target_os = "linux")]
         verifier: Arc<dyn ServiceVerifier>,
         #[cfg(target_os = "linux")]
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
@@ -111,6 +114,7 @@ impl HelperContext {
             fs_meta,
             version_checker,
             checker,
+            #[cfg(target_os = "linux")]
             verifier,
             #[cfg(target_os = "linux")]
             fs_fragment_reader,
@@ -217,6 +221,7 @@ pub mod testing {
             fs_meta,
             version_checker,
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            #[cfg(target_os = "linux")]
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
@@ -276,6 +281,7 @@ pub mod testing {
                 ),
             ),
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            #[cfg(target_os = "linux")]
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
@@ -339,6 +345,7 @@ pub mod testing {
                 ),
             ),
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            #[cfg(target_os = "linux")]
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
