@@ -1966,3 +1966,529 @@ git grep "use std::os::unix::fs::PermissionsExt" crates/boxpilot-profile/src
 ```
 
 ---
+
+# PR 4: `Authority` move + `dispatch::authorize` refactor + BUS_NAME guard test
+
+**Size:** L · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/authority.rs`, `boxpilotd/src/authority.rs` (deleted), `boxpilotd/src/dispatch.rs` (refactored), `boxpilotd/src/iface.rs` (each `do_*` now resolves CallerPrincipal first), `boxpilotd/src/credentials.rs` (kept Linux-internal per Round 6/6.1).
+
+This is the deepest Linux-side refactor in Sub-project #1. Per COQ11 + Round 6/6.1: dispatch becomes platform-neutral (takes `&CallerPrincipal`) but `CallerResolver` stays as a Linux-internal helper until PR 11a inverts to IpcServer-driven model.
+
+## Task 4.1: Define `CallerPrincipal` and `Authority` trait in platform crate
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/authority.rs`
+- Modify: `crates/boxpilot-platform/src/traits/mod.rs`
+
+- [ ] **Step 1: Write the trait + supporting types**
+
+`crates/boxpilot-platform/src/traits/authority.rs`:
+
+```rust
+//! Caller principal + Authority decision. The principal is platform-tagged
+//! so dispatch (in `boxpilotd::dispatch`) can stay platform-neutral.
+//!
+//! Linux principal: kernel uid resolved via `GetConnectionUnixUser` over
+//! D-Bus.
+//! Windows principal: SID resolved via `GetNamedPipeClientProcessId` +
+//! `OpenProcessToken` + `GetTokenInformation(TokenUser)` (real impl in PR 12).
+//!
+//! `Authority::check` is invoked AFTER the IpcServer resolves the principal.
+//! Polkit (Linux) takes a D-Bus sender bus name string as the subject; the
+//! Linux Authority impl carries an internal `(uid, sender)` pair when
+//! constructed for a specific call so it can pass `sender` to polkit while
+//! presenting `principal` to dispatch.
+
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallerPrincipal {
+    LinuxUid(u32),
+    WindowsSid(String),
+}
+
+impl CallerPrincipal {
+    pub fn linux_uid(&self) -> Option<u32> {
+        if let CallerPrincipal::LinuxUid(u) = self {
+            Some(*u)
+        } else {
+            None
+        }
+    }
+}
+
+#[async_trait]
+pub trait Authority: Send + Sync {
+    /// Returns true if `principal` is authorized for `action_id`. The action
+    /// id is a polkit-flavored string (`app.boxpilot.helper.service.start`,
+    /// etc.); the trait keeps polkit semantics on Linux and is `AlwaysAllow`
+    /// in Windows Sub-project #1 (per COQ3).
+    async fn check(
+        &self,
+        action_id: &str,
+        principal: &CallerPrincipal,
+    ) -> Result<bool, HelperError>;
+}
+```
+
+- [ ] **Step 2: Wire into `traits/mod.rs`**
+
+Add: `pub mod authority;`
+
+- [ ] **Step 3: Run sanity build**
+
+Run: `cargo build -p boxpilot-platform`
+Expected: clean (no impl yet, but trait compiles).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/traits
+git commit -m "feat(platform): define CallerPrincipal + Authority trait"
+```
+
+---
+
+## Task 4.2: Linux `Authority` impl (move from `boxpilotd::authority::DBusAuthority`)
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/linux/authority.rs`
+- Modify: `crates/boxpilotd/src/authority.rs` — keep test fakes only; production impl moves out
+
+- [ ] **Step 1: Read existing impl**
+
+Run: `cat crates/boxpilotd/src/authority.rs | head -100`
+Note the existing `DBusAuthority` impl (uses `org.freedesktop.PolicyKit1.Authority.CheckAuthorization`) and its test-only `CannedAuthority` fake.
+
+- [ ] **Step 2: Move `DBusAuthority` to platform crate**
+
+`crates/boxpilot-platform/src/linux/authority.rs`:
+
+Copy the `DBusAuthority` body from `boxpilotd::authority`. Adapt the trait to the new shape:
+
+```rust
+use crate::traits::authority::{Authority, CallerPrincipal};
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use zbus::Connection;
+
+pub struct DBusAuthority {
+    conn: Connection,
+    /// Linux polkit takes a D-Bus subject expressed as bus name; the
+    /// resolver from boxpilotd::credentials supplies it. We store it per
+    /// connection at construction.
+    subject_provider: std::sync::Arc<dyn SubjectProvider>,
+}
+
+/// Linux-only helper. Resolves the D-Bus sender bus name for the current
+/// call. Implemented in boxpilotd::iface where the zbus header is
+/// available; passed in here as a trait object so DBusAuthority doesn't
+/// need to hold a per-call header.
+pub trait SubjectProvider: Send + Sync {
+    fn current_sender(&self) -> Option<String>;
+}
+
+impl DBusAuthority {
+    pub fn new(conn: Connection, subject: std::sync::Arc<dyn SubjectProvider>) -> Self {
+        Self { conn, subject_provider: subject }
+    }
+}
+
+#[async_trait]
+impl Authority for DBusAuthority {
+    async fn check(
+        &self,
+        action_id: &str,
+        principal: &CallerPrincipal,
+    ) -> Result<bool, HelperError> {
+        let sender = match self.subject_provider.current_sender() {
+            Some(s) => s,
+            None => {
+                return Err(HelperError::Ipc {
+                    message: "polkit subject (D-Bus sender) unknown".into(),
+                });
+            }
+        };
+        let _uid = match principal {
+            CallerPrincipal::LinuxUid(u) => *u,
+            CallerPrincipal::WindowsSid(_) => {
+                return Err(HelperError::Ipc {
+                    message: "linux DBusAuthority received non-Linux principal".into(),
+                });
+            }
+        };
+        // Existing zbus polkit call body — copy verbatim from
+        // boxpilotd::authority. The only call-shape change is that we pass
+        // `sender` (sourced from subject_provider) instead of receiving it
+        // as a parameter.
+        // ... (see boxpilotd::authority::DBusAuthority::check for the
+        //      full polkit RPC body — paste it here, adapting only the
+        //      "sender" source.)
+        //
+        // Return Ok(allowed) as before.
+        todo!("copy from boxpilotd::authority::DBusAuthority::check; see file note above")
+    }
+}
+```
+
+(The `todo!` is deliberate — this Step 2 commits the structural move; Step 3 fills the body. Two-step commit prevents giant diffs that mix structural change with body changes.)
+
+- [ ] **Step 3: Fill the body, replacing `todo!()`**
+
+Open the original `boxpilotd::authority::DBusAuthority::check` and copy its zbus call sequence (`PolicyKitAuthorityProxy::new(...)`, `check_authorization(...)`, etc.) into the new file's `check` impl, replacing `todo!()`. The only difference is that `sender` comes from `self.subject_provider.current_sender()` instead of a parameter.
+
+- [ ] **Step 4: Wire `linux/mod.rs`**
+
+```rust
+pub mod authority;
+```
+
+- [ ] **Step 5: Move the test fake**
+
+`crates/boxpilot-platform/src/fakes/authority.rs`:
+
+```rust
+use crate::traits::authority::{Authority, CallerPrincipal};
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::collections::HashSet;
+
+/// Allows everything in `allow`; denies everything else.
+pub struct CannedAuthority {
+    allow: HashSet<String>,
+    deny: HashSet<String>,
+}
+
+impl CannedAuthority {
+    pub fn allowing(actions: &[&str]) -> Self {
+        Self {
+            allow: actions.iter().map(|s| s.to_string()).collect(),
+            deny: HashSet::new(),
+        }
+    }
+    pub fn denying(actions: &[&str]) -> Self {
+        Self {
+            allow: HashSet::new(),
+            deny: actions.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl Authority for CannedAuthority {
+    async fn check(
+        &self,
+        action_id: &str,
+        _principal: &CallerPrincipal,
+    ) -> Result<bool, HelperError> {
+        if self.deny.contains(action_id) {
+            return Ok(false);
+        }
+        if self.allow.contains(action_id) {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// Always-allow variant — used by Windows Authority in Sub-project #1
+/// (per COQ3). Real SID checks arrive in Sub-project #2.
+pub struct AlwaysAllow;
+
+#[async_trait]
+impl Authority for AlwaysAllow {
+    async fn check(
+        &self,
+        _action_id: &str,
+        _principal: &CallerPrincipal,
+    ) -> Result<bool, HelperError> {
+        Ok(true)
+    }
+}
+```
+
+- [ ] **Step 6: Wire `fakes/mod.rs`**
+
+```rust
+pub mod authority;
+```
+
+- [ ] **Step 7: Update `boxpilotd::authority`**
+
+Replace `crates/boxpilotd/src/authority.rs` body with re-exports + the local `SubjectProvider` impl:
+
+```rust
+//! `boxpilotd`-side glue around `boxpilot_platform::Authority`.
+//! The production impl `DBusAuthority` and the test fakes (`CannedAuthority`)
+//! live in `boxpilot-platform`. This module owns the per-call
+//! `SubjectProvider` that turns the active zbus header into the D-Bus
+//! sender bus name polkit expects.
+
+pub use boxpilot_platform::traits::authority::{Authority, CallerPrincipal};
+pub use boxpilot_platform::linux::authority::DBusAuthority;
+
+#[cfg(test)]
+pub mod testing {
+    pub use boxpilot_platform::fakes::authority::{AlwaysAllow, CannedAuthority};
+}
+
+// SubjectProvider impl: stores the current D-Bus sender as a TLS slot or
+// a synchronous Arc<RwLock<Option<String>>>. Set by iface.rs's do_* methods
+// before they call dispatch::authorize.
+
+use std::sync::Arc;
+use std::sync::RwLock;
+
+#[derive(Default)]
+pub struct ZbusSubject {
+    inner: Arc<RwLock<Option<String>>>,
+}
+
+impl ZbusSubject {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    /// Set the current D-Bus sender for this call — must be done before
+    /// dispatch::authorize() and unset (or just overwritten by the next
+    /// call) afterward.
+    pub fn set(&self, sender: &str) {
+        *self.inner.write().unwrap() = Some(sender.to_string());
+    }
+}
+
+impl boxpilot_platform::linux::authority::SubjectProvider for ZbusSubject {
+    fn current_sender(&self) -> Option<String> {
+        self.inner.read().unwrap().clone()
+    }
+}
+```
+
+(Yes, a single shared mutable slot is racy if multiple zbus method invocations interleave — but the existing dispatch flow is synchronous per call within one zbus connection, and the `RwLock` guards correctness. PR 11a's IpcServer inversion makes this cleaner by passing the principal in directly.)
+
+- [ ] **Step 8: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green. Test sites that imported `crate::authority::testing::CannedAuthority` keep working through the re-export.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/authority.rs
+git commit -m "refactor(platform): move DBusAuthority to platform crate with SubjectProvider seam"
+```
+
+---
+
+## Task 4.3: Refactor `dispatch::authorize` to take `&CallerPrincipal`
+
+**Files:**
+- Modify: `crates/boxpilotd/src/dispatch.rs`
+- Modify: `crates/boxpilotd/src/iface.rs` — every `do_*` method resolves the principal first
+
+- [ ] **Step 1: Update `dispatch::authorize` signature**
+
+In `crates/boxpilotd/src/dispatch.rs`:
+
+```rust
+use crate::context::HelperContext;
+use crate::controller::ControllerState;
+use crate::lock::{self, LockGuard};
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
+use boxpilot_platform::traits::authority::CallerPrincipal;
+
+pub struct AuthorizedCall {
+    pub principal: CallerPrincipal,
+    pub controller: ControllerState,
+    pub will_claim_controller: bool,
+    _lock: Option<LockGuard>,
+}
+
+/// Convenience accessor — most existing code wants the uid form.
+impl AuthorizedCall {
+    pub fn caller_uid(&self) -> Option<u32> {
+        self.principal.linux_uid()
+    }
+}
+
+pub async fn authorize(
+    ctx: &HelperContext,
+    principal: &CallerPrincipal,
+    method: HelperMethod,
+) -> HelperResult<AuthorizedCall> {
+    let controller = ctx.controller_state().await?;
+
+    if let ControllerState::Orphaned { .. } = controller {
+        if method.is_mutating() {
+            return Err(HelperError::ControllerOrphaned);
+        }
+    }
+
+    if let Some(got) = ctx.state_schema_mismatch {
+        if method.is_mutating() {
+            return Err(HelperError::UnsupportedSchemaVersion { got });
+        }
+    }
+
+    let action_id = method.polkit_action_id();
+    let allowed = ctx.authority.check(action_id, principal).await?;
+    if !allowed {
+        return Err(HelperError::NotAuthorized);
+    }
+
+    let will_claim_controller =
+        matches!(controller, ControllerState::Unset) && method.is_mutating() && allowed;
+
+    let lock = if method.is_mutating() {
+        Some(lock::try_acquire(&ctx.paths.run_lock())?)
+    } else {
+        None
+    };
+
+    Ok(AuthorizedCall {
+        principal: principal.clone(),
+        controller,
+        will_claim_controller,
+        _lock: lock,
+    })
+}
+
+/// Adapt the existing `maybe_claim_controller(will_claim, caller_uid, ...)`
+/// signature to use the principal. Linux-only path; non-Linux principals
+/// fall back to ControllerOrphaned (defensive).
+pub fn maybe_claim_controller(
+    will_claim: bool,
+    principal: &CallerPrincipal,
+    user_lookup: &dyn boxpilot_platform::traits::user_lookup::UserLookup,
+) -> HelperResult<Option<crate::dispatch::ControllerWrites>> {
+    if !will_claim {
+        return Ok(None);
+    }
+    let uid = principal.linux_uid().ok_or(HelperError::ControllerOrphaned)?;
+    match user_lookup.lookup_username(uid) {
+        Some(username) => Ok(Some(ControllerWrites { uid, username })),
+        None => Err(HelperError::ControllerOrphaned),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControllerWrites {
+    pub uid: u32,
+    pub username: String,
+}
+```
+
+- [ ] **Step 2: Update each `do_*` method in `iface.rs`**
+
+For each `do_*` method, change the call pattern from:
+
+```rust
+let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::Foo).await?;
+```
+
+to:
+
+```rust
+let principal = resolve_caller_principal(&self.ctx, sender).await?;
+self.ctx.authority_subject.set(sender); // for polkit's D-Bus subject
+let _call = dispatch::authorize(&self.ctx, &principal, HelperMethod::Foo).await?;
+```
+
+Where `resolve_caller_principal` is a small helper:
+
+```rust
+async fn resolve_caller_principal(
+    ctx: &HelperContext,
+    sender: &str,
+) -> HelperResult<CallerPrincipal> {
+    let uid = ctx.callers.resolve(sender).await?;
+    Ok(CallerPrincipal::LinuxUid(uid))
+}
+```
+
+(`ctx.callers` is the surviving Linux-internal `CallerResolver` per Round 6/6.1.)
+
+`ctx.authority_subject` is the `ZbusSubject` instance from Task 4.2 Step 7. Add it to `HelperContext` as `pub authority_subject: Arc<ZbusSubject>` and construct it in `main.rs`.
+
+- [ ] **Step 3: Run tests, fixing call sites**
+
+Run: `cargo test -p boxpilotd`
+Expected: a few tests fail (the ones that constructed `dispatch::authorize` with `sender_bus_name: &str`). Update each by:
+- Building a `CallerPrincipal::LinuxUid(uid)` and passing `&principal` to `authorize`.
+- For tests that previously called `maybe_claim_controller(true, 1000, &lookup)`, change to `maybe_claim_controller(true, &CallerPrincipal::LinuxUid(1000), &lookup)`.
+
+The existing test file in `boxpilotd/src/dispatch.rs` shows the patterns; fix in place.
+
+- [ ] **Step 4: Run again**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/boxpilotd/src
+git commit -m "refactor(boxpilotd): dispatch::authorize takes &CallerPrincipal"
+```
+
+---
+
+## Task 4.4: BUS_NAME / OBJECT_PATH guard test
+
+**Files:**
+- Modify: `crates/boxpilotd/src/iface.rs` — append a constants-pinning test
+
+- [ ] **Step 1: Append the guard test**
+
+`crates/boxpilotd/src/iface.rs` — at the end of the existing `#[cfg(test)] mod tests`:
+
+```rust
+/// Guard test (per COQ17 / Round 4 finding 4.8): D-Bus wire names are
+/// part of the .deb-shipped polkit + dbus service files. Changing them
+/// without a corresponding deb postinst migration breaks already-installed
+/// users. This test fails loudly if a refactor accidentally renames them.
+#[test]
+fn dbus_wire_names_are_frozen() {
+    assert_eq!(
+        crate::main::BUS_NAME,
+        "app.boxpilot.Helper",
+        "Bus name change requires deb postinst migration of \
+         /usr/share/dbus-1/system-services/app.boxpilot.Helper.service \
+         and the polkit policy file"
+    );
+    assert_eq!(
+        crate::main::OBJECT_PATH,
+        "/app/boxpilot/Helper",
+        "Object path change requires updating Tauri's HelperProxy default_path \
+         (boxpilot-tauri/src/helper_client.rs)"
+    );
+}
+```
+
+(`BUS_NAME` and `OBJECT_PATH` currently live as `const` in `boxpilotd/src/main.rs` — make them `pub` so the test can reach them. If `main` isn't a library module, declare the constants in `boxpilotd::iface` and re-export to `main`.)
+
+- [ ] **Step 2: Run the guard**
+
+Run: `cargo test -p boxpilotd dbus_wire_names_are_frozen`
+Expected: green.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add crates/boxpilotd/src/iface.rs crates/boxpilotd/src/main.rs
+git commit -m "test(boxpilotd): pin D-Bus BUS_NAME and OBJECT_PATH per COQ17/4.8"
+```
+
+---
+
+## PR 4 smoke
+
+```bash
+cargo test --workspace                                                  # Linux non-regression
+cargo test -p boxpilotd dbus_wire_names_are_frozen                       # the new guard
+cargo check --target x86_64-pc-windows-gnu --workspace || true          # still allow-fail
+git grep "sender_bus_name" crates/boxpilotd/src/dispatch.rs              # zero matches expected
+```
+
+PR description body should mention the three sub-changes (Authority move + dispatch refactor + BUS_NAME guard) and link COQ10 / COQ11 / COQ17 / Round 6/6.1.
+
+---
