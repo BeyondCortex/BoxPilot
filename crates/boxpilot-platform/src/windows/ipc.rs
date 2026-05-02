@@ -341,11 +341,21 @@ impl IpcClient for NamedPipeIpcClient {
                     message: format!("read aux: {e}"),
                 })?;
                 if n == 0 {
-                    pipe.write_all(&0u32.to_le_bytes()).await.ok();
+                    pipe.write_all(&0u32.to_le_bytes()).await.map_err(|e| {
+                        HelperError::Ipc {
+                            message: format!("write aux terminator: {e}"),
+                        }
+                    })?;
                     break;
                 }
-                pipe.write_all(&(n as u32).to_le_bytes()).await.ok();
-                pipe.write_all(&buf[..n]).await.ok();
+                pipe.write_all(&(n as u32).to_le_bytes())
+                    .await
+                    .map_err(|e| HelperError::Ipc {
+                        message: format!("write aux chunk len: {e}"),
+                    })?;
+                pipe.write_all(&buf[..n]).await.map_err(|e| HelperError::Ipc {
+                    message: format!("write aux chunk: {e}"),
+                })?;
             }
         }
 
