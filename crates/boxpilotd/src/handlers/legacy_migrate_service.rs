@@ -23,11 +23,6 @@ pub async fn handle(
             message: format!("decode: {e}"),
         })?;
     let call = dispatch::authorize(&ctx, &principal, HelperMethod::LegacyMigrateService).await?;
-    let controller = dispatch::maybe_claim_controller(
-        call.will_claim_controller,
-        &call.principal,
-        &*ctx.user_lookup,
-    )?;
     let cfg = ctx.load_config().await?;
     let prep = crate::legacy::migrate::PrepareDeps {
         systemd: &*ctx.systemd,
@@ -44,10 +39,19 @@ pub async fn handle(
     // §6.6: controller ownership is established by the first actual
     // mutation. `LegacyMigrateRequest::Prepare` is read-only with respect
     // to system state (per legacy::migrate module doc), so a will_claim
-    // signal raised by dispatch::authorize for this method must NOT be
-    // committed on a Prepare response — only Cutover performs the
-    // mutating stop+disable+backup that earns the controller slot.
+    // signal raised by dispatch::authorize for this method must NOT
+    // surface on a Prepare response — only Cutover performs the mutating
+    // stop+disable+backup that earns the controller slot. Both the
+    // username lookup (`maybe_claim_controller`, which can fail with
+    // ControllerOrphaned when the caller's uid is absent from
+    // /etc/passwd) and the on-disk commit are gated on Cutover so a
+    // read-only Prepare cannot be aborted by a missing-passwd-entry.
     if matches!(resp, boxpilot_ipc::LegacyMigrateResponse::Cutover(_)) {
+        let controller = dispatch::maybe_claim_controller(
+            call.will_claim_controller,
+            &call.principal,
+            &*ctx.user_lookup,
+        )?;
         dispatch::commit_controller_claim(&ctx.paths, controller).await?;
     }
     serde_json::to_vec(&resp).map_err(|e| HelperError::Ipc {
