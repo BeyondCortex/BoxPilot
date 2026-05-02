@@ -203,6 +203,7 @@ pub struct CutoverDeps<'a> {
     pub systemd: &'a dyn crate::systemd::Systemd,
     pub backups_units_dir: &'a Path,
     pub now_iso: fn() -> String,
+    pub fs_perms: &'a dyn boxpilot_platform::traits::fs_perms::FsPermissions,
 }
 
 pub async fn cutover(
@@ -221,6 +222,7 @@ pub async fn cutover(
             deps.backups_units_dir,
             unit_name,
             &(deps.now_iso)(),
+            deps.fs_perms,
         )
         .await
         .map(|pb| pb.to_string_lossy().into_owned())?,
@@ -545,12 +547,14 @@ mod tests {
         let recording = RecordingSystemd::new(boxpilot_ipc::UnitState::NotFound);
         recording.set_fragment_path(Some(fragment.to_string_lossy().into_owned()));
 
+        let fs_perms = boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new();
         let backups = tmp.path().join("var/lib/boxpilot/backups/units");
         let resp = cutover(
             &CutoverDeps {
                 systemd: &recording,
                 backups_units_dir: &backups,
                 now_iso: || "2026-04-29T00-00-00Z".into(),
+                fs_perms: &fs_perms,
             },
             "sing-box.service",
         )
@@ -613,11 +617,13 @@ mod tests {
             }
         }
         let tmp = tempdir().unwrap();
+        let fs_perms = boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new();
         let r = cutover(
             &CutoverDeps {
                 systemd: &StopFails,
                 backups_units_dir: &tmp.path().join("b/u"),
                 now_iso: || "ts".into(),
+                fs_perms: &fs_perms,
             },
             "sing-box.service",
         )

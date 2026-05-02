@@ -10,6 +10,7 @@ use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use boxpilot_platform::traits::active::ActivePointer;
 use boxpilot_platform::traits::current::CurrentPointer;
+use boxpilot_platform::traits::fs_perms::FsPermissions;
 use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
 use crate::profile::verifier::ServiceVerifier;
@@ -50,6 +51,11 @@ pub struct HelperContext {
     /// Sub-project #2 PR 3.5 fills in the junction-based real impl.
     /// Used by `core::commit::StateCommit::apply` to stage `cores/current`.
     pub current_pointer: Arc<dyn CurrentPointer>,
+    /// PR 1.5: platform-neutral owner-only file permission setter. Linux uses
+    /// `ChmodFsPermissions` (chmod 0600/0700); Windows uses `AclFsPermissions`
+    /// (no-op stub until Sub-project #2 PR 2.6 lands the real ACL impl).
+    /// Threaded through `CutoverDeps` so `backup_unit_file` is cross-platform.
+    pub fs_perms: Arc<dyn FsPermissions>,
     /// Set when `install-state.json` parsed at startup with a
     /// `schema_version` other than the compiled-in
     /// `INSTALL_STATE_SCHEMA_VERSION` (spec §7.6). `dispatch::authorize`
@@ -66,7 +72,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 15 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all 16 args are distinct trait deps; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -85,6 +91,7 @@ impl HelperContext {
         config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
         active: Arc<dyn ActivePointer>,
         current_pointer: Arc<dyn CurrentPointer>,
+        fs_perms: Arc<dyn FsPermissions>,
         state_schema_mismatch: Option<u32>,
     ) -> Self {
         Self {
@@ -105,6 +112,7 @@ impl HelperContext {
             config_reader,
             active,
             current_pointer,
+            fs_perms,
             state_schema_mismatch,
         }
     }
@@ -210,6 +218,7 @@ pub mod testing {
             Arc::new(NoConfig),
             active,
             current_pointer,
+            Arc::new(boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new()),
             None,
         )
     }
@@ -266,6 +275,7 @@ pub mod testing {
             Arc::new(NoConfig),
             active,
             current_pointer,
+            Arc::new(boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new()),
             None,
         )
     }
@@ -326,6 +336,7 @@ pub mod testing {
             Arc::new(NoConfig),
             active,
             current_pointer,
+            Arc::new(boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new()),
             None,
         )
     }

@@ -166,6 +166,7 @@ pub async fn run() -> Result<()> {
         config_reader,
         active,
         current_pointer,
+        Arc::new(boxpilot_platform::linux::fs_perms::ChmodFsPermissions),
         state_schema_mismatch,
     ));
 

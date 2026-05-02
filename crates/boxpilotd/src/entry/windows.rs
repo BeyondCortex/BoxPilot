@@ -156,8 +156,9 @@ async fn run_helper(stop: Arc<tokio::sync::Notify>) -> Result<()> {
 fn build_helper_context_windows(paths: boxpilot_platform::Paths) -> Result<Arc<HelperContext>> {
     use boxpilot_platform::windows::{
         active::MarkerFileActivePointer, authority::AlwaysAllowAuthority,
-        current::JunctionCurrentPointer, fs_meta::StdFsMetadataProvider, logs::EventLogReader,
-        service::ScmServiceManager, user_lookup::PasswdLookup, version::ProcessVersionChecker,
+        current::JunctionCurrentPointer, fs_meta::StdFsMetadataProvider, fs_perms::AclFsPermissions,
+        logs::EventLogReader, service::ScmServiceManager, user_lookup::PasswdLookup,
+        version::ProcessVersionChecker,
     };
 
     let authority_subject = Arc::new(crate::authority::ZbusSubject::new());
@@ -193,6 +194,7 @@ fn build_helper_context_windows(paths: boxpilot_platform::Paths) -> Result<Arc<H
         Arc::new(crate::legacy::migrate::StdConfigReader),
         active,
         current_pointer,
+        Arc::new(AclFsPermissions),
         None,
     );
     Ok(Arc::new(ctx))

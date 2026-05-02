@@ -34,6 +34,7 @@ pub async fn handle(
         systemd: &*ctx.systemd,
         backups_units_dir: &backups_dir,
         now_iso: || chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string(),
+        fs_perms: &*ctx.fs_perms,
     };
     let resp = crate::legacy::migrate::run(&cfg, req, &prep, &cut).await?;
     // §6.6: controller ownership is established by the first actual
