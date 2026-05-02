@@ -2,18 +2,20 @@
 //! before mutating it. Used by migrate-cutover.
 
 use boxpilot_ipc::{HelperError, HelperResult};
-use std::os::unix::fs::PermissionsExt;
+use boxpilot_platform::traits::fs_perms::{FsPermissions, PathKind};
 use std::path::{Path, PathBuf};
 
-/// Copies `src` to `<backups_units_dir>/<unit_name>-<timestamp>` with mode
-/// 0600 so a non-root reader can't see a config that may reference secret
-/// material. Returns the absolute backup path. Caller is responsible for
-/// supplying a timestamp string that's unique within this backup directory.
+/// Copies `src` to `<backups_units_dir>/<unit_name>-<timestamp>` with
+/// owner-only permissions so a non-root reader can't see a config that may
+/// reference secret material. Returns the absolute backup path. Caller is
+/// responsible for supplying a timestamp string that's unique within this
+/// backup directory.
 pub async fn backup_unit_file(
     src: &Path,
     backups_units_dir: &Path,
     unit_name: &str,
     timestamp: &str,
+    fs_perms: &dyn FsPermissions,
 ) -> HelperResult<PathBuf> {
     tokio::fs::create_dir_all(backups_units_dir)
         .await
@@ -30,11 +32,11 @@ pub async fn backup_unit_file(
         .map_err(|e| HelperError::Ipc {
             message: format!("write backup tmp: {e}"),
         })?;
-    let perm = std::fs::Permissions::from_mode(0o600);
-    tokio::fs::set_permissions(&tmp, perm)
+    fs_perms
+        .restrict_to_owner(&tmp, PathKind::File)
         .await
         .map_err(|e| HelperError::Ipc {
-            message: format!("chmod backup tmp: {e}"),
+            message: format!("backup chmod: {e}"),
         })?;
     let f = tokio::fs::OpenOptions::new()
         .read(true)
@@ -57,37 +59,82 @@ pub async fn backup_unit_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
+    use boxpilot_platform::fakes::fs_perms::RecordingFsPermissions;
     use tempfile::tempdir;
 
     #[tokio::test]
-    async fn backup_copies_bytes_and_sets_0600() {
+    async fn backup_copies_bytes_and_calls_restrict_to_owner() {
         let tmp = tempdir().unwrap();
         let src = tmp.path().join("sing-box.service");
         tokio::fs::write(&src, b"[Service]\nExecStart=foo\n")
             .await
             .unwrap();
         let backups = tmp.path().join("backups/units");
-        let out = backup_unit_file(&src, &backups, "sing-box.service", "2026-04-29T00-00-00Z")
-            .await
-            .unwrap();
+        let fs_perms = RecordingFsPermissions::new();
+        let out = backup_unit_file(
+            &src,
+            &backups,
+            "sing-box.service",
+            "2026-04-29T00-00-00Z",
+            &fs_perms,
+        )
+        .await
+        .unwrap();
         assert_eq!(
             tokio::fs::read(&out).await.unwrap(),
             b"[Service]\nExecStart=foo\n"
         );
-        let mode = std::fs::metadata(&out).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
         assert!(out.starts_with(&backups));
+        // The recording fake must have been called on the .part temp file
+        // (before rename) — confirm at least one call was recorded with
+        // PathKind::File. The path recorded is the .part path; after rename
+        // the final `out` path won't match, which is fine — the chmod fires
+        // before rename, matching the original atomic temp-file pattern.
+        let calls = fs_perms.calls();
+        assert!(
+            calls.iter().any(|(_, kind)| *kind == PathKind::File),
+            "restrict_to_owner must be called with PathKind::File; got {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn backup_unit_file_records_owner_only_on_backup_path_prefix() {
+        let tmp = tempdir().unwrap();
+        let src = tmp.path().join("sing-box.service");
+        tokio::fs::write(&src, b"[Service]\nExecStart=foo\n")
+            .await
+            .unwrap();
+        let backups = tmp.path().join("backups/units");
+        let fs_perms = RecordingFsPermissions::new();
+        let out = backup_unit_file(
+            &src,
+            &backups,
+            "sing-box.service",
+            "2026-04-29T00-00-00Z",
+            &fs_perms,
+        )
+        .await
+        .unwrap();
+        let calls = fs_perms.calls();
+        // The .part temp path lives in the same directory as the final output.
+        assert!(
+            calls
+                .iter()
+                .any(|(p, _)| p.parent() == out.parent()),
+            "restrict_to_owner must be called on a path inside the backups dir"
+        );
     }
 
     #[tokio::test]
     async fn backup_fails_when_source_missing() {
         let tmp = tempdir().unwrap();
+        let fs_perms = RecordingFsPermissions::new();
         let r = backup_unit_file(
             &tmp.path().join("nope"),
             &tmp.path().join("b/u"),
             "x.service",
             "ts",
+            &fs_perms,
         )
         .await;
         assert!(matches!(r, Err(HelperError::Ipc { .. })));

@@ -5,9 +5,11 @@
 //! consistent or self-recoverable state.
 
 use crate::dispatch::ControllerWrites;
+use boxpilot_platform::traits::current::CurrentPointer;
 use boxpilot_platform::Paths;
 use boxpilot_ipc::{BoxpilotConfig, CoreState, HelperError, HelperResult, InstallState};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct ActiveFields {
@@ -39,7 +41,9 @@ pub struct StateCommit {
     pub toml_updates: TomlUpdates,
     pub controller: Option<ControllerWrites>,
     pub install_state: InstallState,
-    pub current_symlink_target: Option<PathBuf>,
+    /// When `Some(target, pointer)`, `apply` calls `pointer.set_atomic` to
+    /// atomically update `cores/current` → `target`. `None` skips the step.
+    pub current_core_update: Option<(PathBuf, Arc<dyn CurrentPointer>)>,
 }
 
 /// Render the polkit drop-in body. Username is JSON-escaped so a hostile
@@ -138,8 +142,10 @@ impl StateCommit {
             })?;
         fsync_path(&install_state_tmp).await?;
 
-        // 1b. current.new (if changing)
-        let current_tmp = if let Some(target) = &self.current_symlink_target {
+        // 1b. current pointer (if changing). `CurrentPointer::set_atomic`
+        // creates `current.new` and renames atomically in one call — no
+        // separate step-2b rename needed.
+        if let Some((target, pointer)) = &self.current_core_update {
             if let Some(parent) = current_symlink.parent() {
                 tokio::fs::create_dir_all(parent)
                     .await
@@ -147,17 +153,12 @@ impl StateCommit {
                         message: format!("mkdir cores parent: {e}"),
                     })?;
             }
-            let tmp = current_symlink.with_extension("new");
-            // Best-effort cleanup of leftover .new from a prior crash.
-            let _ = tokio::fs::remove_file(&tmp).await;
-            // tokio::fs has no symlink helper; defer to std for the create.
-            std::os::unix::fs::symlink(target, &tmp).map_err(|e| HelperError::Ipc {
-                message: format!("stage current symlink: {e}"),
-            })?;
-            Some(tmp)
-        } else {
-            None
-        };
+            pointer
+                .set_atomic(&current_symlink, target)
+                .map_err(|e| HelperError::Ipc {
+                    message: format!("update current pointer: {e}"),
+                })?;
+        }
 
         // 1c. controller-name.new
         let controller_name_tmp = if let Some(c) = &self.controller {
@@ -271,14 +272,7 @@ impl StateCommit {
             .map_err(|e| HelperError::Ipc {
                 message: format!("rename install-state: {e}"),
             })?;
-        // 2b. current
-        if let Some(tmp) = current_tmp {
-            tokio::fs::rename(&tmp, &current_symlink)
-                .await
-                .map_err(|e| HelperError::Ipc {
-                    message: format!("rename current: {e}"),
-                })?;
-        }
+        // 2b. current — committed atomically in step 1b via CurrentPointer::set_atomic; no rename needed here.
         // 2c. controller-name
         if let Some(tmp) = controller_name_tmp {
             tokio::fs::rename(&tmp, &controller_name_path)
@@ -352,7 +346,7 @@ mod tests {
             },
             controller: None,
             install_state: state.clone(),
-            current_symlink_target: None,
+            current_core_update: None,
         };
         commit.apply().await.unwrap();
         let saved = tokio::fs::read_to_string(paths.install_state_json())
@@ -377,7 +371,7 @@ mod tests {
                 username: "alice".into(),
             }),
             install_state: InstallState::empty(),
-            current_symlink_target: None,
+            current_core_update: None,
         };
         commit.apply().await.unwrap();
         let name = tokio::fs::read_to_string(paths.controller_name_file())
@@ -402,7 +396,7 @@ mod tests {
                 username: "alice".into(),
             }),
             install_state: InstallState::empty(),
-            current_symlink_target: None,
+            current_core_update: None,
         };
         commit.apply().await.unwrap();
         let dropin = tokio::fs::read_to_string(paths.polkit_controller_dropin_path())
@@ -424,7 +418,7 @@ mod tests {
             },
             controller: None,
             install_state: InstallState::empty(),
-            current_symlink_target: None,
+            current_core_update: None,
         };
         commit.apply().await.unwrap();
         assert!(!paths.polkit_controller_dropin_path().exists());
@@ -442,7 +436,7 @@ mod tests {
                 username: r#"a"\b"#.into(),
             }),
             install_state: InstallState::empty(),
-            current_symlink_target: None,
+            current_core_update: None,
         };
         commit.apply().await.unwrap();
         let dropin = tokio::fs::read_to_string(paths.polkit_controller_dropin_path())
@@ -479,7 +473,7 @@ mod tests {
                 username: "alice".into(),
             }),
             install_state: InstallState::empty(),
-            current_symlink_target: None,
+            current_core_update: None,
         };
         commit.apply().await.unwrap();
 
@@ -596,7 +590,7 @@ mod tests {
             },
             controller: None,
             install_state: boxpilot_ipc::InstallState::empty(),
-            current_symlink_target: None,
+            current_core_update: None,
         };
         commit.apply().await.unwrap();
 

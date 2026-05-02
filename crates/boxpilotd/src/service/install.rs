@@ -151,6 +151,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         });
         let fs = PermissiveFs;
         let cfg = cfg_with_core("/usr/bin/sing-box");

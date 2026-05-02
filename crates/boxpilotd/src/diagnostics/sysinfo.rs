@@ -25,10 +25,17 @@ pub fn collect(os_release_path: &std::path::Path) -> SystemInfo {
 }
 
 fn kernel_release() -> String {
-    nix::sys::utsname::uname()
-        .ok()
-        .and_then(|u| u.release().to_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| "unknown".into())
+    #[cfg(target_os = "linux")]
+    {
+        nix::sys::utsname::uname()
+            .ok()
+            .and_then(|u| u.release().to_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "unknown".into())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        "unknown".into()
+    }
 }
 
 /// Parse a `KEY=value` (or `KEY="value with spaces"`) line from /etc/os-release.
@@ -74,6 +81,7 @@ mod tests {
         assert!(!info.boxpilot_version.is_empty());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn kernel_is_nonempty_on_real_host() {
         let k = kernel_release();

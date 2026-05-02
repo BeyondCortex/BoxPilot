@@ -3,6 +3,8 @@
 //! verify success the toml swap is symmetric — what was active becomes
 //! previous. GC does not run inside this verb.
 
+#![cfg(target_os = "linux")]
+
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
 use crate::dispatch::ControllerWrites;
 use crate::lock;
@@ -129,7 +131,7 @@ pub async fn rollback_release(
                 },
                 controller,
                 install_state: boxpilot_ipc::InstallState::empty(),
-                current_symlink_target: None,
+                current_core_update: None,
             };
             commit.apply().await?;
             Ok(ActivateBundleResponse {
@@ -240,7 +242,7 @@ fn window_from_request(secs: Option<u32>) -> Duration {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::profile::verifier::testing::ScriptedVerifier;
@@ -374,6 +376,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,
@@ -431,6 +434,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,

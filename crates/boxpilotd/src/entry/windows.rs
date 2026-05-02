@@ -156,8 +156,9 @@ async fn run_helper(stop: Arc<tokio::sync::Notify>) -> Result<()> {
 fn build_helper_context_windows(paths: boxpilot_platform::Paths) -> Result<Arc<HelperContext>> {
     use boxpilot_platform::windows::{
         active::MarkerFileActivePointer, authority::AlwaysAllowAuthority,
-        fs_meta::StdFsMetadataProvider, logs::EventLogReader, service::ScmServiceManager,
-        user_lookup::PasswdLookup, version::ProcessVersionChecker,
+        current::JunctionCurrentPointer, fs_meta::StdFsMetadataProvider, fs_perms::AclFsPermissions,
+        logs::EventLogReader, service::ScmServiceManager, user_lookup::PasswdLookup,
+        version::ProcessVersionChecker,
     };
 
     let authority_subject = Arc::new(crate::authority::ZbusSubject::new());
@@ -165,6 +166,7 @@ fn build_helper_context_windows(paths: boxpilot_platform::Paths) -> Result<Arc<H
         active: paths.active_symlink(),
         releases_dir: paths.releases_dir(),
     });
+    let current_pointer = Arc::new(JunctionCurrentPointer);
 
     let ctx = HelperContext::new(
         paths,
@@ -187,10 +189,9 @@ fn build_helper_context_windows(paths: boxpilot_platform::Paths) -> Result<Arc<H
         Arc::new(StdFsMetadataProvider),
         Arc::new(ProcessVersionChecker),
         Arc::new(crate::profile::checker::ProcessChecker),
-        Arc::new(crate::profile::verifier::DefaultVerifier),
-        Arc::new(crate::legacy::observe::StdFsFragmentReader),
-        Arc::new(crate::legacy::migrate::StdConfigReader),
         active,
+        current_pointer,
+        Arc::new(AclFsPermissions),
         None,
     );
     Ok(Arc::new(ctx))

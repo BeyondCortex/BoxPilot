@@ -9,8 +9,11 @@ use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use boxpilot_platform::traits::active::ActivePointer;
+use boxpilot_platform::traits::current::CurrentPointer;
+use boxpilot_platform::traits::fs_perms::FsPermissions;
 use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
+#[cfg(target_os = "linux")]
 use crate::profile::verifier::ServiceVerifier;
 use crate::systemd::{JournalReader, Systemd};
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult};
@@ -34,8 +37,11 @@ pub struct HelperContext {
     pub fs_meta: Arc<dyn FsMetadataProvider>,
     pub version_checker: Arc<dyn VersionChecker>,
     pub checker: Arc<dyn SingboxChecker>,
+    #[cfg(target_os = "linux")]
     pub verifier: Arc<dyn ServiceVerifier>,
+    #[cfg(target_os = "linux")]
     pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+    #[cfg(target_os = "linux")]
     pub config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
     /// PR 8: platform-neutral atomic active-release pointer. Linux uses
     /// `SymlinkActivePointer`; Windows uses `MarkerFileActivePointer`.
@@ -44,6 +50,16 @@ pub struct HelperContext {
     /// future refactors don't have to thread it through `HelperContext::new`.
     #[allow(dead_code)]
     pub active: Arc<dyn ActivePointer>,
+    /// PR 1.4: platform-neutral atomic "current core" pointer. Linux uses
+    /// `SymlinkCurrentPointer`; Windows stub returns `Unsupported` until
+    /// Sub-project #2 PR 3.5 fills in the junction-based real impl.
+    /// Used by `core::commit::StateCommit::apply` to stage `cores/current`.
+    pub current_pointer: Arc<dyn CurrentPointer>,
+    /// PR 1.5: platform-neutral owner-only file permission setter. Linux uses
+    /// `ChmodFsPermissions` (chmod 0600/0700); Windows uses `AclFsPermissions`
+    /// (no-op stub until Sub-project #2 PR 2.6 lands the real ACL impl).
+    /// Threaded through `CutoverDeps` so `backup_unit_file` is cross-platform.
+    pub fs_perms: Arc<dyn FsPermissions>,
     /// Set when `install-state.json` parsed at startup with a
     /// `schema_version` other than the compiled-in
     /// `INSTALL_STATE_SCHEMA_VERSION` (spec §7.6). `dispatch::authorize`
@@ -60,7 +76,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 15 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all deps are distinct trait objects; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -74,10 +90,15 @@ impl HelperContext {
         fs_meta: Arc<dyn FsMetadataProvider>,
         version_checker: Arc<dyn VersionChecker>,
         checker: Arc<dyn SingboxChecker>,
+        #[cfg(target_os = "linux")]
         verifier: Arc<dyn ServiceVerifier>,
+        #[cfg(target_os = "linux")]
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+        #[cfg(target_os = "linux")]
         config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
         active: Arc<dyn ActivePointer>,
+        current_pointer: Arc<dyn CurrentPointer>,
+        fs_perms: Arc<dyn FsPermissions>,
         state_schema_mismatch: Option<u32>,
     ) -> Self {
         Self {
@@ -93,10 +114,15 @@ impl HelperContext {
             fs_meta,
             version_checker,
             checker,
+            #[cfg(target_os = "linux")]
             verifier,
+            #[cfg(target_os = "linux")]
             fs_fragment_reader,
+            #[cfg(target_os = "linux")]
             config_reader,
             active,
+            current_pointer,
+            fs_perms,
             state_schema_mismatch,
         }
     }
@@ -176,6 +202,8 @@ pub mod testing {
         let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
             paths.releases_dir(),
         ));
+        let current_pointer =
+            Arc::new(boxpilot_platform::fakes::current::InMemoryCurrent::new());
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -193,12 +221,17 @@ pub mod testing {
             fs_meta,
             version_checker,
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            #[cfg(target_os = "linux")]
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            #[cfg(target_os = "linux")]
             Arc::new(NoFragments),
+            #[cfg(target_os = "linux")]
             Arc::new(NoConfig),
             active,
+            current_pointer,
+            Arc::new(boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new()),
             None,
         )
     }
@@ -229,6 +262,8 @@ pub mod testing {
         let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
             paths.releases_dir(),
         ));
+        let current_pointer =
+            Arc::new(boxpilot_platform::fakes::current::InMemoryCurrent::new());
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -246,12 +281,17 @@ pub mod testing {
                 ),
             ),
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            #[cfg(target_os = "linux")]
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            #[cfg(target_os = "linux")]
             Arc::new(NoFragments),
+            #[cfg(target_os = "linux")]
             Arc::new(NoConfig),
             active,
+            current_pointer,
+            Arc::new(boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new()),
             None,
         )
     }
@@ -282,6 +322,8 @@ pub mod testing {
         let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
             paths.releases_dir(),
         ));
+        let current_pointer =
+            Arc::new(boxpilot_platform::fakes::current::InMemoryCurrent::new());
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -303,12 +345,17 @@ pub mod testing {
                 ),
             ),
             Arc::new(crate::profile::checker::testing::FakeChecker::ok()),
+            #[cfg(target_os = "linux")]
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            #[cfg(target_os = "linux")]
             Arc::new(NoFragments),
+            #[cfg(target_os = "linux")]
             Arc::new(NoConfig),
             active,
+            current_pointer,
+            Arc::new(boxpilot_platform::fakes::fs_perms::RecordingFsPermissions::new()),
             None,
         )
     }
@@ -316,8 +363,10 @@ pub mod testing {
     /// A `FragmentReader` that pretends every fragment is missing — used
     /// by tests that don't care about ExecStart parsing. Returns
     /// `ErrorKind::NotFound` for every read.
+    #[cfg(target_os = "linux")]
     pub struct NoFragments;
 
+    #[cfg(target_os = "linux")]
     impl crate::legacy::observe::FragmentReader for NoFragments {
         fn read_to_string(&self, _path: &std::path::Path) -> std::io::Result<String> {
             Err(std::io::Error::new(
@@ -330,8 +379,10 @@ pub mod testing {
     /// A `ConfigReader` that always returns `NotFound` — used by tests
     /// whose flow doesn't reach the legacy.migrate_service path. Returning
     /// errors instead of empty Vecs avoids tests masking real failures.
+    #[cfg(target_os = "linux")]
     pub struct NoConfig;
 
+    #[cfg(target_os = "linux")]
     impl crate::legacy::migrate::ConfigReader for NoConfig {
         fn read_file(&self, _path: &std::path::Path) -> std::io::Result<Vec<u8>> {
             Err(std::io::Error::new(

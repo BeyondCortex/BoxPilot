@@ -1,6 +1,8 @@
 //! Read-only enumeration of installed managed cores, adopted cores, and
 //! external cores under a fixed list of canonical paths.
 
+#![cfg(target_os = "linux")]
+
 use crate::core::state::read_state;
 use crate::core::trust::{
     default_allowed_prefixes, verify_executable_path, FsMetadataProvider, VersionChecker,

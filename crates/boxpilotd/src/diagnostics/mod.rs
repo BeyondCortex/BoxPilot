@@ -156,18 +156,21 @@ pub async fn compose(inputs: ComposeInputs<'_>) -> HelperResult<DiagnosticsExpor
 }
 
 fn create_dir_secure(dir: &Path) -> HelperResult<()> {
-    use std::os::unix::fs::PermissionsExt;
     if !dir.exists() {
         std::fs::create_dir_all(dir).map_err(|e| HelperError::DiagnosticsIoFailed {
             step: "mkdir".into(),
             cause: e.to_string(),
         })?;
     }
-    let perms = std::fs::Permissions::from_mode(0o750);
-    std::fs::set_permissions(dir, perms).map_err(|e| HelperError::DiagnosticsIoFailed {
-        step: "chmod".into(),
-        cause: e.to_string(),
-    })?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o750);
+        std::fs::set_permissions(dir, perms).map_err(|e| HelperError::DiagnosticsIoFailed {
+            step: "chmod".into(),
+            cause: e.to_string(),
+        })?;
+    }
     Ok(())
 }
 
@@ -182,6 +185,7 @@ mod tests {
         "2026-04-30T22-00-00Z".to_string()
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn happy_path_writes_tarball_with_redacted_active_config() {
         let tmp = tempdir().unwrap();

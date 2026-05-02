@@ -1,6 +1,11 @@
 //! Indirection over `service::verify::wait_for_running`. Plan #5
 //! introduces this trait so `activate.rs` can be unit-tested with a
 //! deterministic verifier instead of polling real systemd.
+//!
+//! Linux-only: `service::verify` (and the real systemd polling it wraps)
+//! is gated to Linux. Windows will supply its own verifier in a later batch.
+
+#![cfg(target_os = "linux")]
 
 use crate::service::verify::{self, VerifyOutcome};
 use crate::systemd::Systemd;

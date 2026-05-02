@@ -2,18 +2,20 @@ name: windows-check
 on:
   pull_request:
   push:
-    branches: [main, "feat/windows-support"]
+    branches: [main, "feat/**"]
 
 jobs:
   cargo-check-windows-msvc:
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
-    # Sub-project #1 ships `boxpilot-ipc` and `boxpilot-platform` as the
-    # cross-platform surface plus the new Windows real impls (Authority,
-    # FileLock, IpcServer/Client, FsPermissions stub). The boxpilotd bin
-    # itself still has unix-only paths (zbus, nix, std::os::fd::OwnedFd in
-    # several modules) that Sub-project #2 will cfg-gate; until then we
-    # scope the gate to the two crates that MUST compile on Windows.
+    # PR 1.7 (Sub-project #2 batch ①) cfg-gated all linux-only code in
+    # boxpilotd so the workspace-wide check now passes. The Tauri shell
+    # (`boxpilot` package) is excluded: tauri-build requires
+    # `icons/icon.ico` for Windows resources, which is Sub-project #3's
+    # installer/asset scope.
+    #
+    # `cargo test --workspace` lands once batch ③'s real Windows
+    # ServiceManager + ActivePointer impls are in place.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,7 +24,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-msvc
-      - name: cargo check (x86_64-pc-windows-msvc) for boxpilot-ipc + boxpilot-platform
-        run: cargo check --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform
+      - name: cargo check (x86_64-pc-windows-msvc) — workspace minus Tauri shell
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --exclude boxpilot --all-targets
       - name: cargo test (boxpilot-ipc + boxpilot-platform)
         run: cargo test --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform --no-fail-fast

@@ -13,12 +13,14 @@ mod dispatch;
 mod dispatch_handler;
 mod entry;
 mod handlers;
+#[cfg(target_os = "linux")]
 mod iface;
 mod legacy;
 mod lock;
 mod profile;
 mod service;
 mod systemd;
+
 
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {

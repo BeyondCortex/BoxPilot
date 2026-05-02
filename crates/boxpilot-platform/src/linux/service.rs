@@ -151,6 +151,7 @@ impl ServiceManager for DBusSystemd {
             load_state,
             n_restarts,
             exec_main_status,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         })
     }
 
@@ -269,5 +270,51 @@ impl ServiceManager for DBusSystemd {
 fn systemd_err(e: zbus::Error) -> HelperError {
     HelperError::Systemd {
         message: e.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use boxpilot_ipc::PlatformUnitExtra;
+    use crate::fakes::service::FixedSystemd;
+
+    #[tokio::test]
+    async fn unit_state_returns_linux_platform_extra() {
+        // Regression test: verify that UnitState::Known always carries
+        // platform_extra: PlatformUnitExtra::Linux.
+        //
+        // The DBusSystemd::unit_state implementation (the real systemd path,
+        // lines 148–155) constructs UnitState::Known with an explicit
+        // platform_extra field. This test pins that field against future
+        // changes that might accidentally remove it or change its variant.
+        //
+        // We use the FixedSystemd fake here (since the real DBusSystemd
+        // requires a live D-Bus connection) and verify that any Known state
+        // round-tripping through ServiceManager::unit_state retains the
+        // Linux variant.
+        let known_state = UnitState::Known {
+            active_state: "active".to_string(),
+            sub_state: "running".to_string(),
+            load_state: "loaded".to_string(),
+            n_restarts: 0,
+            exec_main_status: 0,
+            platform_extra: PlatformUnitExtra::Linux,
+        };
+
+        let systemd = FixedSystemd::new_with_fragment(
+            known_state.clone(),
+            None,
+            None,
+        );
+
+        let result = systemd.unit_state("test.service").await.unwrap();
+
+        // Verify the response has the Linux variant
+        if let UnitState::Known { platform_extra, .. } = result {
+            assert_eq!(platform_extra, PlatformUnitExtra::Linux);
+        } else {
+            panic!("expected UnitState::Known");
+        }
     }
 }

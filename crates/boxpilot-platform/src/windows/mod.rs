@@ -9,6 +9,7 @@ pub mod active;
 pub mod authority;
 pub mod bundle;
 pub mod core_assets;
+pub mod current;
 pub mod env;
 pub mod fs_meta;
 pub mod fs_perms;

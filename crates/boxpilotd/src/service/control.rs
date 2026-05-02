@@ -45,6 +45,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         });
         let resp = run(Verb::Start, "boxpilot-sing-box.service", &s)
             .await

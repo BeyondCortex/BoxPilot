@@ -4,6 +4,8 @@
 //! verify failure: rollback to previous release with second verify.
 //! Surfaces four explicit terminal outcomes.
 
+#![cfg(target_os = "linux")]
+
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
 use crate::dispatch::ControllerWrites;
 use crate::lock;
@@ -166,7 +168,7 @@ pub async fn activate_bundle(
                 },
                 controller,
                 install_state: boxpilot_ipc::InstallState::empty(),
-                current_symlink_target: None,
+                current_core_update: None,
             };
             commit.apply().await?;
 
@@ -373,7 +375,7 @@ async fn rollback_after_verify_failure(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::profile::checker::testing::FakeChecker;
@@ -449,6 +451,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,
@@ -515,6 +518,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 5,
             exec_main_status: 1,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         };
         let systemd = Arc::new(FixedSystemd {
             answer: stuck_state.clone(),
@@ -567,6 +571,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,
@@ -614,6 +619,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,

@@ -1,6 +1,8 @@
 //! Adopt an existing root-owned sing-box binary into BoxPilot's managed
 //! tree. Does NOT swing `current` (spec §5.2).
 
+#![cfg(target_os = "linux")]
+
 use crate::core::commit::{StateCommit, TomlUpdates};
 use crate::core::install::{parse_singbox_version_pub, sha256_file_pub};
 use crate::core::state::read_state;
@@ -135,7 +137,7 @@ pub async fn adopt(
         toml_updates: TomlUpdates::default(), // adopt does NOT change core_path/state
         controller,
         install_state: state.clone(),
-        current_symlink_target: None,
+        current_core_update: None,
     };
     commit.apply().await?;
 

@@ -1,6 +1,8 @@
 //! Rollback: swing `current` symlink to a previously installed managed
 //! version or adopted directory. No directories are deleted.
 
+#![cfg(target_os = "linux")]
+
 use crate::core::commit::{StateCommit, TomlUpdates};
 use crate::core::install::parse_singbox_version_pub;
 use crate::core::state::read_state;
@@ -8,16 +10,19 @@ use crate::core::trust::{
     default_allowed_prefixes, verify_executable_path, FsMetadataProvider, VersionChecker,
 };
 use crate::dispatch::ControllerWrites;
+use boxpilot_platform::traits::current::CurrentPointer;
 use boxpilot_platform::Paths;
 use boxpilot_ipc::{
     CoreInstallResponse, CoreKind, CoreRollbackRequest, CoreSource, CoreState, DiscoveredCore,
     HelperError, HelperResult,
 };
+use std::sync::Arc;
 
 pub struct RollbackDeps<'a> {
     pub paths: Paths,
     pub fs: &'a dyn FsMetadataProvider,
     pub version_checker: &'a dyn VersionChecker,
+    pub current_pointer: Arc<dyn CurrentPointer>,
 }
 
 pub async fn rollback(
@@ -74,7 +79,7 @@ pub async fn rollback(
         },
         controller,
         install_state: state.clone(),
-        current_symlink_target: Some(target_dir.clone()),
+        current_core_update: Some((target_dir.clone(), deps.current_pointer.clone())),
     };
     commit.apply().await?;
 
@@ -132,6 +137,9 @@ mod tests {
             paths,
             fs: &fs,
             version_checker: &vc,
+            current_pointer: std::sync::Arc::new(
+                boxpilot_platform::fakes::current::InMemoryCurrent::new(),
+            ),
         };
         let req = CoreRollbackRequest {
             to_label: "1.10.0".into(),

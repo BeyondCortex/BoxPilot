@@ -1,9 +1,16 @@
-//! Caller-identity extraction. **Identity must come from the D-Bus
-//! connection, never from the request body** — spec §6.1.
+//! Caller-identity extraction. **Identity must come from the IPC transport
+//! (D-Bus on Linux, Named Pipe token on Windows), never from the request body**
+//! — spec §6.1.
+//!
+//! The `CallerResolver` trait itself is platform-neutral so cross-platform
+//! `HelperContext` can hold an `Arc<dyn CallerResolver>`. The concrete
+//! `DBusCallerResolver` impl is Linux-only because it uses zbus to call
+//! `org.freedesktop.DBus.GetConnectionUnixUser`. Windows wires up a
+//! `NoopCallerResolver` in `entry/windows.rs` because SID resolution
+//! happens at the Named Pipe layer instead of through this trait.
 
 use async_trait::async_trait;
 use boxpilot_ipc::HelperError;
-use zbus::Connection;
 
 #[allow(dead_code)] // used in plan #2 (caller identity tracking)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,16 +26,19 @@ pub trait CallerResolver: Send + Sync {
 
 /// Real resolver: calls `org.freedesktop.DBus.GetConnectionUnixUser` on the
 /// system bus.
+#[cfg(target_os = "linux")]
 pub struct DBusCallerResolver {
-    conn: Connection,
+    conn: zbus::Connection,
 }
 
+#[cfg(target_os = "linux")]
 impl DBusCallerResolver {
-    pub fn new(conn: Connection) -> Self {
+    pub fn new(conn: zbus::Connection) -> Self {
         Self { conn }
     }
 }
 
+#[cfg(target_os = "linux")]
 #[async_trait]
 impl CallerResolver for DBusCallerResolver {
     async fn resolve(&self, sender: &str) -> Result<u32, HelperError> {
