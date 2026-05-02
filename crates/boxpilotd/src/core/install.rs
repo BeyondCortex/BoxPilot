@@ -144,6 +144,7 @@ pub async fn install_or_upgrade(
     let stdout = deps
         .version_checker
         .check(&bin_path)
+        .map_err(|e| TrustError::VersionCheckFailed(e.to_string()))
         .map_err(map_trust_err)?;
     let reported = parse_singbox_version_pub(&stdout).ok_or_else(|| HelperError::Ipc {
         message: format!("could not parse version from: {stdout}"),

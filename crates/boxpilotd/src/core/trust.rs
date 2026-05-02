@@ -601,81 +601,14 @@ mod verify_tests {
     }
 }
 
-pub trait VersionChecker: Send + Sync {
-    /// Run `<binary> version` (or equivalent) and return the trimmed
-    /// stdout, expected to begin with `"sing-box version"`.
-    fn check(&self, binary: &Path) -> Result<String, TrustError>;
-}
-
-pub struct ProcessVersionChecker;
-
-impl VersionChecker for ProcessVersionChecker {
-    fn check(&self, binary: &Path) -> Result<String, TrustError> {
-        let out = std::process::Command::new(binary)
-            .arg("version")
-            .output()
-            .map_err(|e| TrustError::VersionCheckFailed(format!("spawn: {e}")))?;
-        if !out.status.success() {
-            return Err(TrustError::VersionCheckFailed(format!(
-                "exit {:?}: {}",
-                out.status.code(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        if !stdout.contains("sing-box version") {
-            return Err(TrustError::VersionCheckFailed(format!(
-                "unexpected stdout: {}",
-                stdout.lines().next().unwrap_or("")
-            )));
-        }
-        Ok(stdout)
-    }
-}
+pub use boxpilot_platform::traits::version::VersionChecker;
+#[cfg(target_os = "linux")]
+pub use boxpilot_platform::linux::version::ProcessVersionChecker;
+#[cfg(target_os = "windows")]
+pub use boxpilot_platform::windows::version::ProcessVersionChecker;
 
 #[cfg(test)]
 pub mod version_testing {
-    use super::*;
-    use std::sync::Mutex;
-
-    pub struct FixedVersionChecker {
-        pub stdout: Mutex<Result<String, String>>,
-    }
-
-    impl FixedVersionChecker {
-        pub fn ok(s: impl Into<String>) -> Self {
-            Self {
-                stdout: Mutex::new(Ok(s.into())),
-            }
-        }
-        pub fn err(s: impl Into<String>) -> Self {
-            Self {
-                stdout: Mutex::new(Err(s.into())),
-            }
-        }
-    }
-
-    impl VersionChecker for FixedVersionChecker {
-        fn check(&self, _binary: &Path) -> Result<String, TrustError> {
-            self.stdout
-                .lock()
-                .unwrap()
-                .clone()
-                .map_err(TrustError::VersionCheckFailed)
-        }
-    }
-
-    #[test]
-    fn fixed_ok_returns_stdout() {
-        let v = FixedVersionChecker::ok("sing-box version 1.10.0");
-        assert!(v.check(Path::new("/x")).unwrap().starts_with("sing-box"));
-    }
-
-    #[test]
-    fn fixed_err_returns_version_check_failed() {
-        let v = FixedVersionChecker::err("crashed");
-        let r = v.check(Path::new("/x"));
-        assert!(matches!(r, Err(TrustError::VersionCheckFailed(_))));
-    }
+    pub use boxpilot_platform::fakes::version::*;
 }
 
