@@ -260,4 +260,33 @@ mod tests {
             PathBuf::from("/tmp/fake/user/profiles")
         );
     }
+
+    // Polkit evaluates `/etc/polkit-1/rules.d/*` in lexical order; the `48-`
+    // prefix MUST sort before the main `49-boxpilot.rules` so the controller
+    // var is in scope when the main rule runs.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn polkit_dropin_path_uses_48_prefix_so_it_loads_before_49() {
+        let p = Paths::with_root("/");
+        assert_eq!(
+            p.polkit_controller_dropin_path(),
+            PathBuf::from("/etc/polkit-1/rules.d/48-boxpilot-controller.rules")
+        );
+    }
+
+    // Honors a non-default unit name from `BoxpilotConfig::target_service`
+    // (must NOT silently rewrite to a hardcoded default).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn systemd_unit_path_joins_unit_name_under_etc_systemd_system() {
+        let p = Paths::with_root("/");
+        assert_eq!(
+            p.systemd_unit_path("boxpilot-sing-box.service"),
+            PathBuf::from("/etc/systemd/system/boxpilot-sing-box.service")
+        );
+        assert_eq!(
+            p.systemd_unit_path("custom.service"),
+            PathBuf::from("/etc/systemd/system/custom.service")
+        );
+    }
 }
