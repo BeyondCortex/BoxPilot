@@ -1,5 +1,10 @@
+#[cfg(target_os = "linux")]
 pub mod control;
+#[cfg(target_os = "linux")]
 pub mod install;
+#[cfg(target_os = "linux")]
 pub mod logs;
+#[cfg(target_os = "linux")]
 pub mod unit;
+#[cfg(target_os = "linux")]
 pub mod verify;
