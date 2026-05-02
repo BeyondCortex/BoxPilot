@@ -1049,12 +1049,178 @@ Important but defer-to-plan-time: 4.6 (AuxStream drop semantics), 4.7
 
 Cosmetic: 4.5 (NotImplemented naming), 4.8 (wire-name guard test).
 
+### Round 5 — Cross-platform compile reality (perspective: does the workspace actually compile on Windows?)
+
+The previous rounds focused on `boxpilotd` and the platform crate's
+trait surface. A fresh look at `boxpilot-profile` and `boxpilot-tauri`
+reveals that the spec's §4 description of these crates' role
+("`boxpilot-profile` — bundle preparation stays here, just bundle
+*transfer* moves out") is incomplete. Multiple modules across both
+crates use Linux-only APIs at the **module top level**, which means
+the workspace fails to compile on Windows long before PR 12's "make it
+compile" gate.
+
+**5.1 `boxpilot-profile` is Linux-coupled in modules the spec doesn't
+mention.**
+
+Beyond `bundle.rs` (memfd, already in the plan), grep finds Unix-only
+APIs in:
+
+| File | Line | API | Purpose |
+|------|------|-----|---------|
+| `store.rs` | 1 | `use std::os::unix::fs::PermissionsExt;` | Setting `0700` / `0600` mode on profile dirs and files |
+| `meta.rs` | 57 | same | Same for metadata files |
+| `import.rs` | 292 | same | Same in tests |
+| `remotes.rs` | 62 | same | Permission setting on remotes.json |
+| `check.rs` | 31 | `use std::os::unix::process::CommandExt;` | `cmd.process_group(0)` so SIGKILL kills the subprocess tree |
+| `check.rs` | 76 | `unsafe { libc::kill(-pgid, libc::SIGKILL) }` | Process-group-tree kill on `sing-box check` timeout |
+
+`store.rs` line 1 is at module top — the `use` itself fails to compile
+on Windows. Since `boxpilot-tauri` depends on `boxpilot-profile`, this
+single line breaks the entire workspace's Windows compile.
+
+PR 11 ("introduce IPC traits") cannot be the fix point because these
+modules aren't IPC-related. The spec needs explicit PRs for:
+
+- File-mode setting → either a `set_owner_only_perms(path)` helper in
+  `boxpilot-platform/src/{linux,windows}/fs_meta.rs`, or cfg-gated
+  inline (Linux uses chmod 0600, Windows uses `SetSecurityInfo` to
+  restrict to owner SID).
+- `check.rs` subprocess-tree kill → a `ChildTree` trait or
+  cfg-gated inline (Linux uses pgid + SIGKILL, Windows uses JobObject
+  + `TerminateJobObject`).
+
+This is design surface the spec hasn't covered. **Blocks PR 1's
+scaffolding goal of "Windows allowed-to-fail check passes" if the
+allowed-to-fail bar is "compiles".**
+
+**5.2 `boxpilot-profile/Cargo.toml` declares `nix` and `libc` as
+unconditional dependencies (lines 18–19).** These are workspace deps
+declared at the package level (`nix = { workspace = true }`, not
+`[target.'cfg(unix)'.dependencies]`). On Windows, `nix` itself
+mostly does not compile (its modules guard themselves with cfgs but
+the crate's existence in the dep graph is fine; what matters is
+whether downstream code uses Windows-incompatible items).
+
+The `libc` crate compiles on Windows (it's just types/constants), so
+that one is fine. `nix` compiles only the cross-platform subset on
+Windows. So the *deps* are technically OK; what breaks is
+`boxpilot-profile`'s own use of `nix::sys::memfd`, `nix::fcntl`,
+`nix::sys::stat::fstat`. PR 10 (bundle refactor) is supposed to move
+all that out. But until PR 10 lands, intermediate PRs (1–9) cannot
+gate "Windows compiles" because `bundle.rs` still uses nix.
+
+This means the "Windows allowed-to-fail compile check" introduced in
+PR 1 will produce useful CI signal **only after PR 10**. PRs 1–9 must
+expect Windows compile to fail and not gate on it. Spec says PR 1's
+CI gate is "allowed-to-fail" — fine, but that's true through PR 9 too,
+and only flips to "must-pass" after PR 10. The spec's PR 14 "switch
+to MSVC and require pass" should be moved earlier (right after PR 10)
+or AC3's verification timing clarified.
+
+**5.3 `boxpilot-profile/src/check.rs::run_singbox_check` is a
+synchronous function with `std::thread::spawn` for pipe drain.** It is
+called from `boxpilotd::profile::checker` and from Tauri commands. The
+function:
+
+- Spawns `sing-box check` as `std::process::Command`.
+- Sets `process_group(0)` so all descendants share the parent's pgid.
+- Drains stdout/stderr via two `std::thread::spawn` threads.
+- On timeout, calls `unsafe { libc::kill(-pgid, libc::SIGKILL) }`.
+
+There is **no Windows analog** for `kill(-pgid)`. The right Windows
+approach is:
+
+1. Create a `JobObject` with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`.
+2. `AssignProcessToJobObject(child)` immediately after spawn.
+3. On timeout, `TerminateJobObject(job, 1)` — kills the child and
+   any descendants it spawned.
+
+This is a meaningful chunk of code (~50 LOC on each platform) and a
+new trait or cfg-gated module. The spec doesn't have it. PR 9
+("CoreAssetNaming + CoreArchive") doesn't cover process management.
+**Blocks `boxpilot-profile` Windows compile.** Mitigation options:
+
+- (a) Add a `ChildTree` trait to `boxpilot-platform`; `run_singbox_check`
+  becomes `async` and consumes it.
+- (b) Cfg-gate the kill code inside `check.rs`: Linux block + Windows
+  block (no trait).
+- (c) Defer `sing-box check` from running on Windows entirely; the
+  preflight is "best-effort" already (Linux spec §10 step 3) — return
+  `CheckOutput { success: true, stdout: "skipped on Windows", … }`
+  in this phase, real impl in Sub-project #2.
+
+(c) is the lightest for Sub-project #1 since AC4/AC5 don't need
+preflight to actually run on Windows. **Recommend (c) for Sub-project
+#1, then (a) in Sub-project #2.**
+
+**5.4 `boxpilot-tauri::helper_client.rs` refactor scope is a
+near-total rewrite, not "use IpcClient instead of zbus".** The file is
+314 lines of typed `#[zbus::proxy]` method declarations + per-verb
+serde wrappers. With the new `IpcClient::call(method, body, aux)`
+shape, every typed method body collapses to:
+
+```rust
+let body = serde_json::to_vec(&req)?;
+let resp = self.ipc.call(HelperMethod::ServiceStart, body, AuxStream::None).await?;
+serde_json::from_slice(&resp)?
+```
+
+Plus `boxpilot-tauri/src/profile_cmds.rs` contains the custom raw
+`zbus::Proxy` for `ProfileActivateBundle` (the FD-passing code that
+the typed proxy macro can't express; documented at `helper_client.rs`
+lines 49–52). All of that moves to `boxpilot-platform/linux/ipc.rs`.
+
+Spec PR 11 sized "L"; this brings it close to "very-L". Recommend
+splitting:
+
+- **PR 11a:** introduce `IpcServer` / `IpcConnection` /
+  `HelperDispatch` traits + Linux IpcServer impl (helper-side only);
+  `boxpilotd::iface` routes through dispatch trait. boxpilot-tauri
+  unchanged.
+- **PR 11b:** introduce `IpcClient` trait + Linux client impl; rewrite
+  `helper_client.rs` and absorb `profile_cmds.rs`'s raw-proxy code
+  into the Linux IpcClient.
+
+PR 11a is "M", PR 11b is "L". Two ~ 300-LOC PRs each are easier to
+review than one ~600-LOC PR. **Plan-time scope decision.**
+
+**5.5 `ProfileStorePaths::from_env()` reads `XDG_DATA_HOME` /
+`HOME`** (`store.rs:16-25`). These env vars are unset on Windows. On
+Windows the equivalent is `%LocalAppData%`, which `EnvProvider`
+resolves. The fix is to make `ProfileStorePaths` consume a
+`boxpilot_platform::Paths` (which has `user_root` per §5.1) rather
+than reading env vars directly. Spec §4 says boxpilot-profile depends
+on `boxpilot-platform` — but doesn't call out that `from_env` needs
+to go through it. PR 2 (Paths migration) should also delete
+`from_env()` and force callers to use `Paths::system()` /
+`Paths::with_root(...)`.
+
+This affects every call site that currently does
+`ProfileStorePaths::from_env()` — primarily
+`boxpilot-tauri/src/commands.rs` and `profile_cmds.rs`. Those Tauri
+command handlers will need a `Paths` instance, which means the Tauri
+runtime state (`tauri::State`) must hold one. Cross-cutting refactor;
+spec is silent.
+
+### Round 5 priority summary
+
+Blocking compile on Windows: 5.1 (Unix `PermissionsExt` at module top
+in `boxpilot-profile`), 5.2 (timing of "Windows compile must pass"
+gate is not PR 1 but PR 10), 5.3 (`check.rs` subprocess-tree kill —
+recommend skip on Windows for Sub-project #1).
+
+Underestimated PR scope: 5.4 (split PR 11 into 11a + 11b),
+5.5 (`ProfileStorePaths::from_env` rewrite + Tauri state plumbing).
+
 ### Stop criterion
 
-Round 4 found four blocking issues that the COQ resolutions had
-glossed over. After resolving those, a fifth round would likely find
-plan-time-resolvable detail (e.g., specific zbus 5 method names for
-FD passing, error mapping minutiae, exact tracing-appender rotation
-config) but no new categorical risks. Calling review complete.
+Round 5 found five compile-realism issues all anchored in
+`boxpilot-profile` and `boxpilot-tauri` having Linux-coupling that the
+trait surface alone doesn't cover. After resolving these, a sixth
+round would surface in-the-weeds detail: the exact `tracing-appender`
+log rotation config, `JobObject` HRESULT mapping, Windows panicking
+service exit codes, etc. — all genuinely plan-time concerns. Calling
+review complete.
 
 <promise>SPEC_REVIEW_DONE</promise>
