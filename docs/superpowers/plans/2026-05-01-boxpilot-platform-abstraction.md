@@ -1327,3 +1327,642 @@ git grep 'from_env' crates/boxpilot-profile crates/boxpilot-tauri       # zero m
 PR description body should include: "Threads `boxpilot_platform::Paths` through `boxpilotd` and Tauri state. Deletes `from_env`. PRs 3+ build on this."
 
 ---
+
+# PR 3: Move `FsMetadataProvider` / `VersionChecker` / `UserLookup` traits + introduce `FsPermissions`
+
+**Size:** M · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/{fs_meta,version,user_lookup,fs_perms}.rs`, `boxpilotd/src/core/{trust,install,discover}.rs`, `boxpilotd/src/controller.rs`, all `boxpilot-profile` files using `PermissionsExt`. **Linux non-regression:** the four traits' Linux behavior is byte-identical to the existing `boxpilotd` impls; tests are moved verbatim to the platform crate.
+
+This PR ports four traits already DI'd in `boxpilotd` and introduces the new `FsPermissions` trait so `boxpilot-profile` modules can drop their module-top `use std::os::unix::fs::PermissionsExt;` (per COQ12).
+
+## Task 3.1: Move `FsMetadataProvider`
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/fs_meta.rs` (copy of existing trait def)
+- Create: `crates/boxpilot-platform/src/linux/fs_meta.rs` (move from `boxpilotd/src/core/trust.rs::StdFsMetadataProvider`)
+- Create: `crates/boxpilot-platform/src/fakes/fs_meta.rs` (move from existing test fakes)
+- Modify: `crates/boxpilotd/src/core/trust.rs` — re-export from platform crate
+- Modify: `crates/boxpilotd/src/main.rs` — import from `boxpilot_platform`
+
+- [ ] **Step 1: Read existing trait + impl**
+
+Run: `git grep -n "trait FsMetadataProvider\|impl FsMetadataProvider\|StdFsMetadataProvider" crates/boxpilotd/src`
+Expected: trait def + Linux impl + at least one fake variant in test code.
+
+- [ ] **Step 2: Copy trait def into `boxpilot-platform`**
+
+`crates/boxpilot-platform/src/traits/fs_meta.rs`:
+
+```rust
+//! Filesystem metadata reads abstracted so trust checks (§6.5) can be tested
+//! without touching real `/usr/bin` paths. Linux impl wraps `std::fs` +
+//! `nix::sys::stat`. Windows impl is a stub in Sub-project #1.
+
+use async_trait::async_trait;
+use std::path::Path;
+
+/// Subset of metadata callers actually need. Extend additively.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileMeta {
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u32,
+    pub is_file: bool,
+    pub is_dir: bool,
+    pub is_symlink: bool,
+    pub setuid: bool,
+    pub setgid: bool,
+    pub sticky: bool,
+}
+
+#[async_trait]
+pub trait FsMetadataProvider: Send + Sync {
+    async fn metadata(&self, path: &Path) -> std::io::Result<FileMeta>;
+    async fn read_link(&self, path: &Path) -> std::io::Result<std::path::PathBuf>;
+}
+```
+
+- [ ] **Step 3: Move existing Linux impl**
+
+`crates/boxpilot-platform/src/linux/fs_meta.rs`:
+
+Copy the body of `boxpilotd::core::trust::StdFsMetadataProvider` here, retargeting trait imports to `crate::traits::fs_meta::*`. Verify the impl reads stat bits via `std::os::unix::fs::MetadataExt` and `std::os::unix::fs::PermissionsExt`.
+
+- [ ] **Step 4: Stub Windows impl**
+
+`crates/boxpilot-platform/src/windows/fs_meta.rs`:
+
+```rust
+use crate::traits::fs_meta::{FileMeta, FsMetadataProvider};
+use async_trait::async_trait;
+use std::path::{Path, PathBuf};
+
+pub struct StdFsMetadataProvider;
+
+#[async_trait]
+impl FsMetadataProvider for StdFsMetadataProvider {
+    async fn metadata(&self, _path: &Path) -> std::io::Result<FileMeta> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "FsMetadataProvider stub: implemented in Sub-project #2",
+        ))
+    }
+    async fn read_link(&self, _path: &Path) -> std::io::Result<PathBuf> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "FsMetadataProvider stub: implemented in Sub-project #2",
+        ))
+    }
+}
+```
+
+- [ ] **Step 5: Move existing fake**
+
+`crates/boxpilot-platform/src/fakes/fs_meta.rs`:
+
+Locate the existing fake (most likely `boxpilotd::core::trust::testing::PermissiveTestFs` or similar) and copy verbatim, retargeting trait imports.
+
+- [ ] **Step 6: Wire the modules into `mod.rs` files**
+
+Add `pub mod fs_meta;` lines to `traits/mod.rs`, `linux/mod.rs`, `windows/mod.rs`, and `fakes/mod.rs`.
+
+- [ ] **Step 7: Re-export from `boxpilotd::core::trust` so callers don't change yet**
+
+In `crates/boxpilotd/src/core/trust.rs`, replace the trait definition + Linux impl with:
+
+```rust
+pub use boxpilot_platform::traits::fs_meta::{FileMeta, FsMetadataProvider};
+pub use boxpilot_platform::linux::fs_meta::StdFsMetadataProvider;
+
+#[cfg(test)]
+pub mod testing {
+    pub use boxpilot_platform::fakes::fs_meta::*;
+}
+```
+
+- [ ] **Step 8: Verify all `cargo test -p boxpilotd` tests still pass**
+
+Run: `cargo test -p boxpilotd`
+Expected: green.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/core/trust.rs
+git commit -m "refactor(platform): move FsMetadataProvider out of boxpilotd"
+```
+
+---
+
+## Task 3.2: Move `VersionChecker`
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/version.rs`, `linux/version.rs`, `windows/version.rs`, `fakes/version.rs`
+- Modify: `crates/boxpilotd/src/core/trust.rs` — re-export
+
+Same pattern as Task 3.1: copy `trait VersionChecker` (currently in `boxpilotd::core::trust`), the `ProcessVersionChecker` impl (Linux), provide a Windows stub returning `NotImplemented`-ish error, and a fake.
+
+- [ ] **Step 1: Trait def**
+
+`crates/boxpilot-platform/src/traits/version.rs`:
+
+```rust
+use async_trait::async_trait;
+use std::path::Path;
+
+#[async_trait]
+pub trait VersionChecker: Send + Sync {
+    /// Run `<core> version` and return the parsed semver-ish version
+    /// string (`"1.10.3"`), or `None` if the binary refused to run / didn't
+    /// emit a recognizable version line.
+    async fn check_version(&self, core_path: &Path) -> std::io::Result<Option<String>>;
+}
+```
+
+- [ ] **Step 2: Linux impl**
+
+`crates/boxpilot-platform/src/linux/version.rs`:
+
+Move the `ProcessVersionChecker` body from `boxpilotd::core::trust`. Keep the existing `tokio::process::Command` invocation and stdout regex.
+
+- [ ] **Step 3: Windows stub**
+
+`crates/boxpilot-platform/src/windows/version.rs`:
+
+```rust
+use crate::traits::version::VersionChecker;
+use async_trait::async_trait;
+use std::path::Path;
+
+pub struct ProcessVersionChecker;
+
+#[async_trait]
+impl VersionChecker for ProcessVersionChecker {
+    async fn check_version(&self, _core_path: &Path) -> std::io::Result<Option<String>> {
+        Ok(None) // Sub-project #2 will exec sing-box.exe --version
+    }
+}
+```
+
+- [ ] **Step 4: Fake**
+
+`crates/boxpilot-platform/src/fakes/version.rs`:
+
+```rust
+use crate::traits::version::VersionChecker;
+use async_trait::async_trait;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+pub struct FixedVersion(Mutex<HashMap<PathBuf, Option<String>>>);
+
+impl FixedVersion {
+    pub fn new() -> Self {
+        Self(Mutex::new(HashMap::new()))
+    }
+    pub fn with(rows: &[(&str, &str)]) -> Self {
+        let mut m = HashMap::new();
+        for (p, v) in rows {
+            m.insert(PathBuf::from(p), Some(v.to_string()));
+        }
+        Self(Mutex::new(m))
+    }
+}
+
+#[async_trait]
+impl VersionChecker for FixedVersion {
+    async fn check_version(&self, p: &Path) -> std::io::Result<Option<String>> {
+        Ok(self.0.lock().unwrap().get(p).cloned().flatten())
+    }
+}
+```
+
+- [ ] **Step 5: Wire mods + re-export from `boxpilotd::core::trust`**
+
+Same pattern as Task 3.1.
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test -p boxpilotd`
+Expected: green.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/core/trust.rs
+git commit -m "refactor(platform): move VersionChecker out of boxpilotd"
+```
+
+---
+
+## Task 3.3: Move `UserLookup`
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/user_lookup.rs`, `linux/user_lookup.rs`, `windows/user_lookup.rs`, `fakes/user_lookup.rs`
+- Modify: `crates/boxpilotd/src/controller.rs` — re-export
+
+The existing `boxpilotd::controller::UserLookup` trait + `PasswdLookup` (nix `getpwuid`) Linux impl + test fixture.
+
+- [ ] **Step 1: Trait def**
+
+`crates/boxpilot-platform/src/traits/user_lookup.rs`:
+
+```rust
+//! UID → username resolution. Linux: `getpwuid` via nix. Windows: SID-based
+//! `LookupAccountSid` (Sub-project #2).
+//!
+//! The trait keeps the existing Linux signature (uid → Option<String>) since
+//! `controller_uid` is `u32` in `boxpilot.toml` schema v1; Sub-project #2
+//! introduces a SID-aware variant alongside the schema bump.
+
+pub trait UserLookup: Send + Sync {
+    fn lookup_username(&self, uid: u32) -> Option<String>;
+}
+```
+
+- [ ] **Step 2: Linux impl**
+
+`crates/boxpilot-platform/src/linux/user_lookup.rs`:
+
+Move `PasswdLookup` from `boxpilotd::controller`. It's a small wrapper around `nix::unistd::User::from_uid`.
+
+- [ ] **Step 3: Windows stub**
+
+`crates/boxpilot-platform/src/windows/user_lookup.rs`:
+
+```rust
+use crate::traits::user_lookup::UserLookup;
+
+pub struct PasswdLookup; // name retained for symmetry
+
+impl UserLookup for PasswdLookup {
+    fn lookup_username(&self, _uid: u32) -> Option<String> {
+        None // controller_uid is Linux-only; Sub-project #2 introduces SID lookup
+    }
+}
+```
+
+- [ ] **Step 4: Fake**
+
+`crates/boxpilot-platform/src/fakes/user_lookup.rs`:
+
+```rust
+use crate::traits::user_lookup::UserLookup;
+use std::collections::HashMap;
+
+pub struct Fixed(HashMap<u32, String>);
+
+impl Fixed {
+    pub fn new(rows: &[(u32, &str)]) -> Self {
+        Self(rows.iter().map(|(u, n)| (*u, n.to_string())).collect())
+    }
+}
+
+impl UserLookup for Fixed {
+    fn lookup_username(&self, uid: u32) -> Option<String> {
+        self.0.get(&uid).cloned()
+    }
+}
+```
+
+- [ ] **Step 5: Wire mods + re-export from `boxpilotd::controller`**
+
+In `crates/boxpilotd/src/controller.rs`, replace the `UserLookup` trait definition and `PasswdLookup` impl with:
+
+```rust
+pub use boxpilot_platform::traits::user_lookup::UserLookup;
+pub use boxpilot_platform::linux::user_lookup::PasswdLookup;
+
+#[cfg(test)]
+pub mod testing {
+    pub use boxpilot_platform::fakes::user_lookup::*;
+}
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test -p boxpilotd`
+Expected: green. Test sites that imported `crate::controller::testing::Fixed` keep working.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/controller.rs
+git commit -m "refactor(platform): move UserLookup out of boxpilotd"
+```
+
+---
+
+## Task 3.4: Introduce `FsPermissions` trait (per COQ12)
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/fs_perms.rs`
+- Create: `crates/boxpilot-platform/src/linux/fs_perms.rs`
+- Create: `crates/boxpilot-platform/src/windows/fs_perms.rs`
+- Create: `crates/boxpilot-platform/src/fakes/fs_perms.rs`
+
+- [ ] **Step 1: Write the trait + tests**
+
+`crates/boxpilot-platform/src/traits/fs_perms.rs`:
+
+```rust
+//! Owner-only filesystem permission setting.
+//!
+//! Linux: `chmod 0700` (dir) / `chmod 0600` (file).
+//! Windows: `SetSecurityInfo` clears inheritance and grants the owner SID
+//! full access (Sub-project #1 ships the real impl since this is needed for
+//! `%LocalAppData%\BoxPilot\` ACLing).
+//!
+//! Spec §5.6 + §14: user profile directories must be 0700 (Linux) /
+//! owner-only DACL (Windows); profile files 0600 / equivalent.
+
+use async_trait::async_trait;
+use std::path::Path;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    Directory,
+    File,
+}
+
+#[async_trait]
+pub trait FsPermissions: Send + Sync {
+    /// Restrict `path` to owner-only access.
+    async fn restrict_to_owner(&self, path: &Path, kind: PathKind) -> std::io::Result<()>;
+}
+```
+
+- [ ] **Step 2: Linux impl**
+
+`crates/boxpilot-platform/src/linux/fs_perms.rs`:
+
+```rust
+use crate::traits::fs_perms::{FsPermissions, PathKind};
+use async_trait::async_trait;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
+pub struct ChmodFsPermissions;
+
+#[async_trait]
+impl FsPermissions for ChmodFsPermissions {
+    async fn restrict_to_owner(&self, path: &Path, kind: PathKind) -> std::io::Result<()> {
+        let mode = match kind {
+            PathKind::Directory => 0o700,
+            PathKind::File => 0o600,
+        };
+        let perms = std::fs::Permissions::from_mode(mode);
+        tokio::fs::set_permissions(path, perms).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn restricts_dir_to_0700() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("d");
+        std::fs::create_dir(&dir).unwrap();
+        ChmodFsPermissions
+            .restrict_to_owner(&dir, PathKind::Directory)
+            .await
+            .unwrap();
+        let m = std::fs::metadata(&dir).unwrap();
+        assert_eq!(m.permissions().mode() & 0o777, 0o700);
+    }
+
+    #[tokio::test]
+    async fn restricts_file_to_0600() {
+        let tmp = tempdir().unwrap();
+        let f = tmp.path().join("f");
+        std::fs::write(&f, b"x").unwrap();
+        ChmodFsPermissions
+            .restrict_to_owner(&f, PathKind::File)
+            .await
+            .unwrap();
+        let m = std::fs::metadata(&f).unwrap();
+        assert_eq!(m.permissions().mode() & 0o777, 0o600);
+    }
+}
+```
+
+- [ ] **Step 3: Windows impl (real — needed for `%LocalAppData%\BoxPilot\` ACLing)**
+
+`crates/boxpilot-platform/src/windows/fs_perms.rs`:
+
+```rust
+use crate::traits::fs_perms::{FsPermissions, PathKind};
+use async_trait::async_trait;
+use std::ffi::OsStrExt;
+use std::os::windows::ffi::OsStrExt as _;
+use std::path::Path;
+use windows_sys::Win32::Security::Authorization::{
+    GetNamedSecurityInfoW, SetNamedSecurityInfoW, SE_FILE_OBJECT,
+};
+use windows_sys::Win32::Security::{
+    DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION,
+    PSECURITY_DESCRIPTOR, PSID,
+};
+
+pub struct AclFsPermissions;
+
+fn to_wstr(p: &Path) -> Vec<u16> {
+    p.as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
+}
+
+#[async_trait]
+impl FsPermissions for AclFsPermissions {
+    async fn restrict_to_owner(&self, path: &Path, _kind: PathKind) -> std::io::Result<()> {
+        let path_w = to_wstr(path);
+        // SAFETY: path_w is null-terminated UTF-16. We do not retain the
+        // returned PSECURITY_DESCRIPTOR after this function — the OS owns
+        // the buffer. Leaks intentional because LocalFree on the buffer
+        // would conflict with the pattern below; for a one-shot ACL set,
+        // this is acceptable. (If profiling shows a leak, switch to
+        // GetSecurityDescriptorOwner + LocalFree pattern.)
+        tokio::task::spawn_blocking(move || unsafe {
+            let mut owner: PSID = std::ptr::null_mut();
+            let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+            let rc = GetNamedSecurityInfoW(
+                path_w.as_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut sd,
+            );
+            if rc != 0 {
+                return Err(std::io::Error::from_raw_os_error(rc as i32));
+            }
+            // Apply: clear inheritance (PROTECTED_DACL_SECURITY_INFORMATION)
+            // + set DACL to owner-only (NULL DACL pointer means "use the
+            // ACE list we built"; for the simple owner-only case, an empty
+            // DACL with one owner-grant ACE works. Real impl in PR 12 may
+            // be more elaborate; for Sub-project #1 we stub this:
+            // Sub-project #2 / #3 owns the production ACL story.
+            let rc2 = SetNamedSecurityInfoW(
+                path_w.as_ptr() as *mut _,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(), // empty DACL — only owner has implicit access
+                std::ptr::null_mut(),
+            );
+            if rc2 != 0 {
+                return Err(std::io::Error::from_raw_os_error(rc2 as i32));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| std::io::Error::other(format!("spawn_blocking: {e}")))?
+    }
+}
+```
+
+(Comment in the impl: this is a minimal Sub-project #1 ACL — sufficient to compile and run, but Sub-project #3's installer ACL story will revisit. Owner-only via empty DACL works for our purposes.)
+
+- [ ] **Step 4: Fake**
+
+`crates/boxpilot-platform/src/fakes/fs_perms.rs`:
+
+```rust
+use crate::traits::fs_perms::{FsPermissions, PathKind};
+use async_trait::async_trait;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+#[derive(Default)]
+pub struct RecordingFsPermissions(Mutex<Vec<(PathBuf, PathKind)>>);
+
+impl RecordingFsPermissions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn calls(&self) -> Vec<(PathBuf, PathKind)> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl FsPermissions for RecordingFsPermissions {
+    async fn restrict_to_owner(&self, path: &Path, kind: PathKind) -> std::io::Result<()> {
+        self.0.lock().unwrap().push((path.to_path_buf(), kind));
+        Ok(())
+    }
+}
+```
+
+- [ ] **Step 5: Wire mods**
+
+Add `pub mod fs_perms;` to `traits/mod.rs`, `linux/mod.rs`, `windows/mod.rs`, `fakes/mod.rs`.
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test -p boxpilot-platform`
+Expected: 6+ tests pass (the new `fs_perms` Linux tests + previous tests).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-platform/src
+git commit -m "feat(platform): FsPermissions trait + Linux chmod / Windows ACL impls + fake"
+```
+
+---
+
+## Task 3.5: Adopt `FsPermissions` in `boxpilot-profile`
+
+**Files:**
+- Modify: `crates/boxpilot-profile/src/store.rs`, `meta.rs`, `import.rs`, `remotes.rs` — replace top-level `use std::os::unix::fs::PermissionsExt;` and inline calls with `FsPermissions::restrict_to_owner` calls
+
+The five files identified in spec COQ12. The task is mechanical but each file's call site differs slightly. Pattern:
+
+- Where source (non-test) sets a 0o700 dir or 0o600 file: change to `fs_perms.restrict_to_owner(path, PathKind::Directory_or_File).await?`.
+- Where tests assert on mode bits: keep the `PermissionsExt` import inside `#[cfg(test)]` blocks gated by `#[cfg(target_os = "linux")]` so Windows tests don't compile them. Mode-bit assertions are inherently Linux-only.
+
+- [ ] **Step 1: Open `store.rs` and identify call sites**
+
+Run: `git grep -n 'PermissionsExt\|set_permissions\|0o700\|0o600' crates/boxpilot-profile/src/store.rs`
+Expected: 3-5 hits.
+
+For each src-side hit:
+- Find the function.
+- Replace the chmod call with `fs_perms.restrict_to_owner(path, PathKind::Directory_or_File).await?`.
+- Add `fs_perms: &dyn FsPermissions` to the function signature.
+- Update callers to pass through.
+
+- [ ] **Step 2: Replace top-level import**
+
+Change line 1 of `crates/boxpilot-profile/src/store.rs` from:
+
+```rust
+use std::os::unix::fs::PermissionsExt;
+```
+
+to:
+
+```rust
+use boxpilot_platform::traits::fs_perms::{FsPermissions, PathKind};
+```
+
+- [ ] **Step 3: Walk through `meta.rs`, `import.rs`, `remotes.rs`**
+
+For each file, identify the test-only `use std::os::unix::fs::PermissionsExt;` import (lines 57, 292, 62 respectively per spec):
+- Wrap the test module in `#[cfg(target_os = "linux")]` if it isn't already.
+- Leave the `PermissionsExt` import as-is inside the cfg-gated test module.
+
+For src-side calls in these files: there shouldn't be any (only `store.rs` writes profile dirs). If grep finds src-side `set_permissions` in `meta.rs`/`import.rs`/`remotes.rs`, refactor through `FsPermissions` the same way as `store.rs`.
+
+- [ ] **Step 4: Update `import.rs:382` (test using `std::os::unix::fs::symlink`)**
+
+This is in a test fixture. Wrap:
+
+```rust
+#[cfg(target_os = "linux")]
+{
+    std::os::unix::fs::symlink("/etc/passwd", src.join("evil")).unwrap();
+}
+#[cfg(not(target_os = "linux"))]
+{
+    return; // skip on non-Linux — the test asserts symlink rejection, which is a Linux-bundle-extraction concern
+}
+```
+
+- [ ] **Step 5: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 6: Verify Windows compile gets one step closer (still allow-fail)**
+
+Run: `cargo check --target x86_64-pc-windows-gnu -p boxpilot-profile`
+Expected: progress further than before (some files now compile that didn't); may still fail on `bundle.rs` (memfd) and `check.rs` (subprocess kill). Both are addressed in PR 9 / PR 10.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-profile/src
+git commit -m "refactor(profile): use FsPermissions trait instead of module-top PermissionsExt"
+```
+
+---
+
+## PR 3 smoke
+
+```bash
+cargo test --workspace                                                  # Linux non-regression
+cargo check --target x86_64-pc-windows-gnu --workspace || true          # closer; still allow-fail
+git grep "use std::os::unix::fs::PermissionsExt" crates/boxpilot-profile/src
+# Expected output: only inside `#[cfg(test)]` modules (gated by target_os = "linux")
+```
+
+---
