@@ -67,7 +67,7 @@ use crate::core::trust::{
     VersionChecker,
 };
 use crate::dispatch::ControllerWrites;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use boxpilot_ipc::{
     CoreInstallRequest, CoreInstallResponse, CoreKind, CoreSource, CoreState, DiscoveredCore,
     InstallSourceJson, ManagedCoreEntry,

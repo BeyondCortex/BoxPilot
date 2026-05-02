@@ -11,7 +11,6 @@ mod dispatch;
 mod iface;
 mod legacy;
 mod lock;
-mod paths;
 mod profile;
 mod service;
 mod systemd;
@@ -38,7 +37,7 @@ const OBJECT_PATH: &str = "/app/boxpilot/Helper";
 /// File-missing → `read_state` returns `InstallState::empty()` (schema=1)
 /// which matches the constant; this is the fresh-install case and must
 /// not block.
-async fn check_install_state_schema(paths: &paths::Paths) -> Option<u32> {
+async fn check_install_state_schema(paths: &boxpilot_platform::Paths) -> Option<u32> {
     match crate::core::state::read_state(&paths.install_state_json()).await {
         Ok(_) => None,
         Err(boxpilot_ipc::HelperError::UnsupportedSchemaVersion { got }) => {
@@ -56,7 +55,7 @@ async fn check_install_state_schema(paths: &paths::Paths) -> Option<u32> {
     }
 }
 
-async fn run_startup_recovery(paths: &paths::Paths) -> anyhow::Result<()> {
+async fn run_startup_recovery(paths: &boxpilot_platform::Paths) -> anyhow::Result<()> {
     let staging = paths.cores_staging_dir();
     if staging.exists() {
         match tokio::fs::read_dir(&staging).await {
@@ -124,7 +123,7 @@ async fn main() -> Result<()> {
         std::process::exit(2);
     }
 
-    let paths = paths::Paths::system();
+    let paths = boxpilot_platform::Paths::system().context("read system paths from env")?;
     if let Err(e) = run_startup_recovery(&paths).await {
         error!("startup recovery failed: {e}");
     }

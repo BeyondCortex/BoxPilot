@@ -8,7 +8,7 @@ use crate::core::download::Downloader;
 use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
 use crate::profile::verifier::ServiceVerifier;
 use crate::systemd::{JournalReader, Systemd};

@@ -7,7 +7,7 @@
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
 use crate::dispatch::ControllerWrites;
 use crate::lock;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
 use crate::profile::gc;
 use crate::profile::recovery;

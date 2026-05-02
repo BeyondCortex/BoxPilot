@@ -31,9 +31,9 @@ hex.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 tempfile.workspace = true
+boxpilot-platform = { path = "../boxpilot-platform" }
 
 [dev-dependencies]
 pretty_assertions.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 filetime = "0.2"
-boxpilot-platform = { path = "../boxpilot-platform" }

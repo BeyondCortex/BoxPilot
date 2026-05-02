@@ -1195,7 +1195,7 @@ mod tests {
     async fn diagnostics_export_redacted_writes_bundle() {
         let tmp = tempdir().unwrap();
         // Set up the minimal filesystem the composer needs.
-        let paths = crate::paths::Paths::with_root(tmp.path());
+        let paths = boxpilot_platform::Paths::with_root(tmp.path());
         let active = paths.releases_dir().join("rel-1");
         std::fs::create_dir_all(&active).unwrap();
         std::fs::write(

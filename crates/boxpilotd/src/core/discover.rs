@@ -5,7 +5,7 @@ use crate::core::state::read_state;
 use crate::core::trust::{
     default_allowed_prefixes, verify_executable_path, FsMetadataProvider, VersionChecker,
 };
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use boxpilot_ipc::{
     CoreDiscoverResponse, CoreKind, CoreSource, DiscoveredCore, HelperError, HelperResult,
     InstallSourceJson,

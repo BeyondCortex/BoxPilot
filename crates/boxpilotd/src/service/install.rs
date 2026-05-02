@@ -8,7 +8,7 @@
 use crate::core::trust::{
     default_allowed_prefixes, verify_executable_path, FsMetadataProvider, TrustError,
 };
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use crate::service::unit;
 use crate::systemd::Systemd;
 use boxpilot_ipc::{BoxpilotConfig, HelperError, HelperResult, ServiceInstallManagedResponse};

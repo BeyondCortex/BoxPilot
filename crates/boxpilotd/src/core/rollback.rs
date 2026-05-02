@@ -8,7 +8,7 @@ use crate::core::trust::{
     default_allowed_prefixes, verify_executable_path, FsMetadataProvider, VersionChecker,
 };
 use crate::dispatch::ControllerWrites;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use boxpilot_ipc::{
     CoreInstallResponse, CoreKind, CoreRollbackRequest, CoreSource, CoreState, DiscoveredCore,
     HelperError, HelperResult,

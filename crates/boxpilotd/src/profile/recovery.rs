@@ -2,7 +2,7 @@
 //! the D-Bus interface, sweep `.staging/*` (always invalid mid-call)
 //! and validate `active` resolves under `releases/`.
 
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use boxpilot_ipc::BoxpilotConfig;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
