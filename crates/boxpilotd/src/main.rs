@@ -153,6 +153,7 @@ async fn main() -> Result<()> {
             conn.clone(),
             authority_subject.clone(),
         )),
+        authority_subject.clone(),
         Arc::new(systemd::DBusSystemd::new(conn.clone())),
         journal,
         Arc::new(controller::PasswdLookup),

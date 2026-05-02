@@ -2,7 +2,7 @@
 //! [`crate::iface::Helper`] D-Bus interface struct small and lets unit tests
 //! swap any dependency.
 
-use crate::authority::Authority;
+use crate::authority::{Authority, ZbusSubject};
 use crate::controller::{ControllerState, UserLookup};
 use crate::core::download::Downloader;
 use crate::core::github::GithubClient;
@@ -19,6 +19,12 @@ pub struct HelperContext {
     pub paths: Paths,
     pub callers: Arc<dyn CallerResolver>,
     pub authority: Arc<dyn Authority>,
+    /// Per-call sender shuttle that the iface methods write the D-Bus
+    /// sender into immediately before calling `dispatch::authorize`. The
+    /// Linux `DBusAuthority` reads it back via `SubjectProvider` to build
+    /// the polkit subject. Always present in `HelperContext` (even on
+    /// Windows where the field is unused) so dispatch stays platform-neutral.
+    pub authority_subject: Arc<ZbusSubject>,
     pub systemd: Arc<dyn Systemd>,
     pub journal: Arc<dyn JournalReader>,
     pub user_lookup: Arc<dyn UserLookup>,
@@ -51,6 +57,7 @@ impl HelperContext {
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
         authority: Arc<dyn Authority>,
+        authority_subject: Arc<ZbusSubject>,
         systemd: Arc<dyn Systemd>,
         journal: Arc<dyn JournalReader>,
         user_lookup: Arc<dyn UserLookup>,
@@ -68,6 +75,7 @@ impl HelperContext {
             paths,
             callers,
             authority,
+            authority_subject,
             systemd,
             journal,
             user_lookup,
@@ -159,6 +167,7 @@ pub mod testing {
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
+            Arc::new(ZbusSubject::new()),
             Arc::new(FixedSystemd {
                 answer: systemd_answer,
                 fragment_path: None,
@@ -207,6 +216,7 @@ pub mod testing {
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
+            Arc::new(ZbusSubject::new()),
             rec,
             journal,
             Arc::new(PasswdLookup),
@@ -255,6 +265,7 @@ pub mod testing {
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
+            Arc::new(ZbusSubject::new()),
             Arc::new(crate::systemd::testing::FixedSystemd {
                 answer: systemd_answer,
                 fragment_path: None,

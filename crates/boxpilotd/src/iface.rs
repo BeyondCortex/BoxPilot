@@ -7,9 +7,10 @@
 //! Method names on the bus are CamelCase per D-Bus convention; the logical
 //! action mapping is in `boxpilot_ipc::HelperMethod`.
 
+use crate::authority::CallerPrincipal;
 use crate::context::HelperContext;
 use crate::dispatch;
-use boxpilot_ipc::{HelperError, HelperMethod, ServiceStatusResponse};
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult, ServiceStatusResponse};
 use std::sync::Arc;
 use tracing::{instrument, warn};
 use zbus::interface;
@@ -22,6 +23,21 @@ impl Helper {
     pub fn new(ctx: Arc<HelperContext>) -> Self {
         Self { ctx }
     }
+}
+
+/// Resolve the kernel uid for a D-Bus sender via the platform `CallerResolver`
+/// and wrap it as a `CallerPrincipal::LinuxUid`. This is the Linux-specific
+/// principal-construction step; the Windows IpcServer (PR 11a/12) builds a
+/// `WindowsSid` from the named-pipe client token instead. Once `CallerResolver`
+/// inverts to `boxpilot-platform` (PR 11a), this helper goes away — the
+/// IpcServer hands a fully-formed principal to `dispatch::authorize`.
+async fn resolve_caller_principal(
+    ctx: &HelperContext,
+    sender: &str,
+) -> HelperResult<CallerPrincipal> {
+    Ok(CallerPrincipal::LinuxUid(
+        ctx.callers.resolve(sender).await?,
+    ))
 }
 
 /// Convert a HelperError into a zbus method error. The error name follows
@@ -396,8 +412,10 @@ impl Helper {
         &self,
         sender_bus_name: &str,
     ) -> Result<ServiceStatusResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender_bus_name).await?;
+        self.ctx.authority_subject.set(sender_bus_name);
         let call =
-            dispatch::authorize(&self.ctx, sender_bus_name, HelperMethod::ServiceStatus).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceStatus).await?;
         let cfg = self.ctx.load_config().await?;
         let unit_name = cfg.target_service.clone();
         let unit_state = self.ctx.systemd.unit_state(&unit_name).await?;
@@ -414,8 +432,10 @@ impl Helper {
         &self,
         sender_bus_name: &str,
     ) -> Result<boxpilot_ipc::HomeStatusResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender_bus_name).await?;
+        self.ctx.authority_subject.set(sender_bus_name);
         let call =
-            dispatch::authorize(&self.ctx, sender_bus_name, HelperMethod::HomeStatus).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::HomeStatus).await?;
 
         // Service: same shape as do_service_status, using the call we just
         // authorized so we don't re-run polkit.
@@ -497,7 +517,9 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceStart).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call = dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceStart).await?;
         let cfg = self.ctx.load_config().await?;
         crate::service::control::run(
             crate::service::control::Verb::Start,
@@ -511,7 +533,9 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceStop).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call = dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceStop).await?;
         let cfg = self.ctx.load_config().await?;
         crate::service::control::run(
             crate::service::control::Verb::Stop,
@@ -525,7 +549,10 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceRestart).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call =
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceRestart).await?;
         let cfg = self.ctx.load_config().await?;
         crate::service::control::run(
             crate::service::control::Verb::Restart,
@@ -539,7 +566,10 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceEnable).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call =
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceEnable).await?;
         let cfg = self.ctx.load_config().await?;
         crate::service::control::run(
             crate::service::control::Verb::Enable,
@@ -553,7 +583,10 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceDisable).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call =
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceDisable).await?;
         let cfg = self.ctx.load_config().await?;
         crate::service::control::run(
             crate::service::control::Verb::Disable,
@@ -567,11 +600,13 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceInstallManagedResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
         let call =
-            dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceInstallManaged).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceInstallManaged).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
-            call.caller_uid,
+            &call.principal,
             &*self.ctx.user_lookup,
         )?;
         let cfg = self.ctx.load_config().await?;
@@ -612,7 +647,9 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::ServiceLogsRequest,
     ) -> Result<boxpilot_ipc::ServiceLogsResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::ServiceLogs).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call = dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceLogs).await?;
         let cfg = self.ctx.load_config().await?;
         crate::service::logs::read(&req, &cfg.target_service, &*self.ctx.journal).await
     }
@@ -628,7 +665,11 @@ impl Helper {
         method: HelperMethod,
     ) -> zbus::fdo::Result<String> {
         let sender = extract_sender(header)?;
-        dispatch::authorize(&self.ctx, &sender, method)
+        let principal = resolve_caller_principal(&self.ctx, &sender)
+            .await
+            .map_err(to_zbus_err)?;
+        self.ctx.authority_subject.set(&sender);
+        dispatch::authorize(&self.ctx, &principal, method)
             .await
             .map_err(to_zbus_err)?;
         warn!(
@@ -642,7 +683,10 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
-        let _call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreDiscover).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call =
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreDiscover).await?;
         let deps = crate::core::discover::DiscoverDeps {
             paths: self.ctx.paths.clone(),
             fs: &*self.ctx.fs_meta,
@@ -656,10 +700,13 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreInstallRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
-        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreInstallManaged).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let call =
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreInstallManaged).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
-            call.caller_uid,
+            &call.principal,
             &*self.ctx.user_lookup,
         )?;
         let deps = crate::core::install::InstallDeps {
@@ -677,10 +724,13 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreInstallRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
-        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreUpgradeManaged).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let call =
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreUpgradeManaged).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
-            call.caller_uid,
+            &call.principal,
             &*self.ctx.user_lookup,
         )?;
         let deps = crate::core::install::InstallDeps {
@@ -698,11 +748,13 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreRollbackRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
         let call =
-            dispatch::authorize(&self.ctx, sender, HelperMethod::CoreRollbackManaged).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreRollbackManaged).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
-            call.caller_uid,
+            &call.principal,
             &*self.ctx.user_lookup,
         )?;
         let deps = crate::core::rollback::RollbackDeps {
@@ -718,10 +770,12 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreAdoptRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
-        let call = dispatch::authorize(&self.ctx, sender, HelperMethod::CoreAdopt).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let call = dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreAdopt).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
-            call.caller_uid,
+            &call.principal,
             &*self.ctx.user_lookup,
         )?;
         let deps = crate::core::adopt::AdoptDeps {
@@ -738,11 +792,13 @@ impl Helper {
         req: boxpilot_ipc::ActivateBundleRequest,
         fd: std::os::fd::OwnedFd,
     ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
         let call =
-            dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileActivateBundle).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::ProfileActivateBundle).await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
-            call.caller_uid,
+            &call.principal,
             &*self.ctx.user_lookup,
         )?;
         let deps = crate::profile::activate::ActivateDeps {
@@ -759,11 +815,14 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::RollbackRequest,
     ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
         let call =
-            dispatch::authorize(&self.ctx, sender, HelperMethod::ProfileRollbackRelease).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::ProfileRollbackRelease)
+                .await?;
         let controller = dispatch::maybe_claim_controller(
             call.will_claim_controller,
-            call.caller_uid,
+            &call.principal,
             &*self.ctx.user_lookup,
         )?;
         let deps = crate::profile::rollback::RollbackDeps {
@@ -778,8 +837,10 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::LegacyObserveServiceResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
         let _call =
-            dispatch::authorize(&self.ctx, sender, HelperMethod::LegacyObserveService).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::LegacyObserveService).await?;
         let cfg = self.ctx.load_config().await?;
         let deps = crate::legacy::observe::ObserveDeps {
             systemd: &*self.ctx.systemd,
@@ -792,8 +853,14 @@ impl Helper {
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::DiagnosticsExportResponse, HelperError> {
-        let _call =
-            dispatch::authorize(&self.ctx, sender, HelperMethod::DiagnosticsExportRedacted).await?;
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let _call = dispatch::authorize(
+            &self.ctx,
+            &principal,
+            HelperMethod::DiagnosticsExportRedacted,
+        )
+        .await?;
         let cfg = self.ctx.load_config().await?;
         crate::diagnostics::compose(crate::diagnostics::ComposeInputs {
             paths: &self.ctx.paths,
@@ -810,8 +877,10 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::LegacyMigrateRequest,
     ) -> Result<boxpilot_ipc::LegacyMigrateResponse, HelperError> {
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
         let _call =
-            dispatch::authorize(&self.ctx, sender, HelperMethod::LegacyMigrateService).await?;
+            dispatch::authorize(&self.ctx, &principal, HelperMethod::LegacyMigrateService).await?;
         let cfg = self.ctx.load_config().await?;
         let prep = crate::legacy::migrate::PrepareDeps {
             systemd: &*self.ctx.systemd,
@@ -968,7 +1037,8 @@ mod tests {
         // we test through the inner dispatch path. The interface-level
         // wiring is mechanically identical for every stub (verified in
         // the file above by inspection).
-        let r = dispatch::authorize(&h.ctx, ":1.42", HelperMethod::CoreDiscover).await;
+        let principal = CallerPrincipal::LinuxUid(1000);
+        let r = dispatch::authorize(&h.ctx, &principal, HelperMethod::CoreDiscover).await;
         assert!(matches!(r, Err(HelperError::NotAuthorized)));
     }
 
@@ -987,7 +1057,8 @@ mod tests {
         ));
         // Same caveat as above: we exercise dispatch directly. The Helper
         // method body would then call to_zbus_err(NotImplemented).
-        let r = dispatch::authorize(&ctx, ":1.42", HelperMethod::CoreDiscover).await;
+        let principal = CallerPrincipal::LinuxUid(1000);
+        let r = dispatch::authorize(&ctx, &principal, HelperMethod::CoreDiscover).await;
         // Map to a Debug-printable shape so a future failure surfaces the
         // error variant; AuthorizedCall itself is not Debug.
         let r_dbg: Result<(), &HelperError> = match &r {
