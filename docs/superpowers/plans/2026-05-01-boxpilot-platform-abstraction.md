@@ -537,3 +537,793 @@ gh pr create --title "chore(platform): scaffold boxpilot-platform crate (PR 1/16
 ```
 
 ---
+
+# PR 2: `EnvProvider` + `Paths` value type, plus `ProfileStorePaths::from_paths`
+
+**Size:** M · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/env.rs`, `boxpilot-platform/src/paths.rs`, `boxpilotd/src/paths.rs` (deleted), all `boxpilotd` callers, `boxpilot-profile/src/store.rs`, `boxpilot-tauri/src/lib.rs`. **Linux non-regression:** every existing `Paths::with_root`/`Paths::system()` call must keep its current behavior bit-for-bit.
+
+This PR introduces `EnvProvider` (one trait method per env var read currently in source), the `Paths` value type with cfg-gated method bodies, and threads it through Tauri command handlers as `tauri::State`. Per spec §5.1 + COQ16. Per Round 6/6.4: `ProfileStorePaths::from_env()` has exactly **one** call site (`boxpilot-tauri/src/lib.rs:11`); the threading change is small.
+
+## Task 2.1: `EnvProvider` trait + Linux/Windows impls + fake
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/env.rs`
+- Create: `crates/boxpilot-platform/src/linux/env.rs`
+- Create: `crates/boxpilot-platform/src/windows/env.rs`
+- Create: `crates/boxpilot-platform/src/fakes/env.rs`
+- Modify: `crates/boxpilot-platform/src/{traits,linux,windows,fakes}/mod.rs`
+
+- [ ] **Step 1: Write the trait**
+
+`crates/boxpilot-platform/src/traits/env.rs`:
+
+```rust
+//! Environment-variable access abstracted so `Paths` (§5.1) can build
+//! platform-correct roots without each caller doing OS-specific lookups.
+//! Linux: reads `$XDG_DATA_HOME` and `$HOME`. Windows: reads
+//! `%ProgramData%` and `%LocalAppData%`. Test fakes inject a static map.
+
+use std::path::PathBuf;
+
+#[derive(Debug, thiserror::Error)]
+pub enum EnvError {
+    #[error("required environment variable missing: {0}")]
+    Missing(&'static str),
+    #[error("env value is not valid UTF-8: {0}")]
+    NotUtf8(&'static str),
+}
+
+pub trait EnvProvider: Send + Sync {
+    /// System-wide data root.
+    /// Linux: `/` (returned as `PathBuf::from("/")`).
+    /// Windows: `%ProgramData%\BoxPilot` (typically `C:\ProgramData\BoxPilot`).
+    fn system_root(&self) -> Result<PathBuf, EnvError>;
+
+    /// Per-user data root.
+    /// Linux: `$XDG_DATA_HOME/boxpilot` if `XDG_DATA_HOME` set, else
+    /// `$HOME/.local/share/boxpilot`.
+    /// Windows: `%LocalAppData%\BoxPilot`.
+    fn user_root(&self) -> Result<PathBuf, EnvError>;
+}
+```
+
+- [ ] **Step 2: Write Linux impl**
+
+`crates/boxpilot-platform/src/linux/env.rs`:
+
+```rust
+use crate::traits::env::{EnvError, EnvProvider};
+use std::path::PathBuf;
+
+/// Reads from the process environment using `std::env::var_os`.
+pub struct StdEnv;
+
+impl EnvProvider for StdEnv {
+    fn system_root(&self) -> Result<PathBuf, EnvError> {
+        Ok(PathBuf::from("/"))
+    }
+
+    fn user_root(&self) -> Result<PathBuf, EnvError> {
+        if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+            return Ok(PathBuf::from(xdg).join("boxpilot"));
+        }
+        let home = std::env::var_os("HOME").ok_or(EnvError::Missing("HOME"))?;
+        Ok(PathBuf::from(home).join(".local/share/boxpilot"))
+    }
+}
+```
+
+- [ ] **Step 3: Write Windows impl**
+
+`crates/boxpilot-platform/src/windows/env.rs`:
+
+```rust
+use crate::traits::env::{EnvError, EnvProvider};
+use std::path::PathBuf;
+
+pub struct StdEnv;
+
+impl EnvProvider for StdEnv {
+    fn system_root(&self) -> Result<PathBuf, EnvError> {
+        let pd = std::env::var_os("ProgramData").ok_or(EnvError::Missing("ProgramData"))?;
+        Ok(PathBuf::from(pd).join("BoxPilot"))
+    }
+
+    fn user_root(&self) -> Result<PathBuf, EnvError> {
+        let lad = std::env::var_os("LocalAppData").ok_or(EnvError::Missing("LocalAppData"))?;
+        Ok(PathBuf::from(lad).join("BoxPilot"))
+    }
+}
+```
+
+- [ ] **Step 4: Write the fake**
+
+`crates/boxpilot-platform/src/fakes/env.rs`:
+
+```rust
+use crate::traits::env::{EnvError, EnvProvider};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone)]
+pub struct FixedEnv {
+    pub system_root: PathBuf,
+    pub user_root: PathBuf,
+}
+
+impl FixedEnv {
+    pub fn under(tmp: &std::path::Path) -> Self {
+        Self {
+            system_root: tmp.to_path_buf(),
+            user_root: tmp.join("user"),
+        }
+    }
+}
+
+impl EnvProvider for FixedEnv {
+    fn system_root(&self) -> Result<PathBuf, EnvError> {
+        Ok(self.system_root.clone())
+    }
+    fn user_root(&self) -> Result<PathBuf, EnvError> {
+        Ok(self.user_root.clone())
+    }
+}
+```
+
+- [ ] **Step 5: Wire mods**
+
+Add to `crates/boxpilot-platform/src/traits/mod.rs`:
+
+```rust
+pub mod env;
+```
+
+Add to `crates/boxpilot-platform/src/linux/mod.rs`:
+
+```rust
+pub mod env;
+```
+
+Add to `crates/boxpilot-platform/src/windows/mod.rs`:
+
+```rust
+pub mod env;
+```
+
+Add to `crates/boxpilot-platform/src/fakes/mod.rs`:
+
+```rust
+pub mod env;
+```
+
+- [ ] **Step 6: Write a fake test (round-trip + rooted-tmp behavior)**
+
+Append to `crates/boxpilot-platform/src/fakes/env.rs`:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::env::EnvProvider;
+    use tempfile::tempdir;
+
+    #[test]
+    fn under_tmp_returns_system_and_user_root_under_tmp() {
+        let tmp = tempdir().unwrap();
+        let env = FixedEnv::under(tmp.path());
+        assert_eq!(env.system_root().unwrap(), tmp.path());
+        assert_eq!(env.user_root().unwrap(), tmp.path().join("user"));
+    }
+}
+```
+
+- [ ] **Step 7: Run tests**
+
+Run: `cargo test -p boxpilot-platform`
+Expected: 2 tests pass (`crate_compiles`, `under_tmp_returns_system_and_user_root_under_tmp`).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/boxpilot-platform/src
+git commit -m "feat(platform): EnvProvider trait + Linux/Windows impls + fake"
+```
+
+---
+
+## Task 2.2: `Paths` value type with cfg-gated bodies
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/paths.rs`
+- Modify: `crates/boxpilot-platform/src/lib.rs`
+
+The new `Paths` carries the existing methods from `boxpilotd::paths::Paths` plus three additions for user-side state. Method names are kept identical so PR 2 callers can swap the import without changing call sites.
+
+- [ ] **Step 1: Write the failing test (cross-platform layout assertions)**
+
+`crates/boxpilot-platform/src/paths.rs`:
+
+```rust
+//! Canonical filesystem paths. Constructors call `EnvProvider` once at boot
+//! and cache the resulting roots.
+//!
+//! Platform layout (per spec §5.1 + §7):
+//!
+//! - **Linux:** `system_root = /`, paths under `/etc/boxpilot/`,
+//!   `/var/lib/boxpilot/`, `/var/cache/boxpilot/`, `/run/boxpilot/`,
+//!   `/etc/systemd/system/`, `/etc/polkit-1/rules.d/`.
+//!   `user_root = $HOME/.local/share/boxpilot` (or `$XDG_DATA_HOME/boxpilot`).
+//! - **Windows:** `system_root = %ProgramData%\BoxPilot`, paths flatten
+//!   directly under that root (no `etc/`/`var/` segments — `boxpilot.toml`
+//!   sits at `system_root.join("boxpilot.toml")`).
+//!   `user_root = %LocalAppData%\BoxPilot`.
+
+use crate::traits::env::{EnvError, EnvProvider};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct Paths {
+    system_root: PathBuf,
+    user_root: PathBuf,
+}
+
+impl Paths {
+    pub fn from_env(env: &dyn EnvProvider) -> Result<Self, EnvError> {
+        Ok(Self {
+            system_root: env.system_root()?,
+            user_root: env.user_root()?,
+        })
+    }
+
+    /// Production constructor — uses [`crate::linux::env::StdEnv`] /
+    /// [`crate::windows::env::StdEnv`] depending on target.
+    pub fn system() -> Result<Self, EnvError> {
+        #[cfg(target_os = "linux")]
+        {
+            return Self::from_env(&crate::linux::env::StdEnv);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            return Self::from_env(&crate::windows::env::StdEnv);
+        }
+        #[allow(unreachable_code)]
+        Err(EnvError::Missing("unsupported platform"))
+    }
+
+    /// Test/dev constructor — both roots under `tmp`.
+    pub fn with_root(tmp: impl AsRef<Path>) -> Self {
+        let tmp = tmp.as_ref().to_path_buf();
+        Self {
+            user_root: tmp.join("user"),
+            system_root: tmp,
+        }
+    }
+
+    pub fn user_root(&self) -> &Path {
+        &self.user_root
+    }
+
+    // ---- §5.3 system runtime state ------------------------------------
+
+    pub fn boxpilot_toml(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("etc/boxpilot/boxpilot.toml")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("boxpilot.toml")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn controller_name_file(&self) -> PathBuf {
+        // Linux-only on disk; on Windows the file is never written.
+        // Method exists on both platforms for caller-uniformity; callers
+        // that write it must be cfg(target_os = "linux")-gated.
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("etc/boxpilot/controller-name")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("controller-name")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn run_lock(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("run/boxpilot/lock")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("run").join("lock")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn run_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("run/boxpilot")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("run")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn etc_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("etc/boxpilot")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.clone()
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn install_state_json(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("var/lib/boxpilot/install-state.json")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("install-state.json")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn cores_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("var/lib/boxpilot/cores")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("cores")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn cores_current_symlink(&self) -> PathBuf {
+        self.cores_dir().join("current")
+    }
+
+    pub fn cores_staging_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("var/lib/boxpilot/.staging-cores")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join(".staging-cores")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn systemd_unit_path(&self, unit_name: &str) -> PathBuf {
+        // Linux-only callers; Windows has no systemd. Method present for
+        // call-site uniformity but should be cfg-gated by callers.
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("etc/systemd/system").join(unit_name)
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("systemd-units").join(unit_name)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn polkit_controller_dropin_path(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root
+                .join("etc/polkit-1/rules.d/48-boxpilot-controller.rules")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("polkit-controller.rules") // unused on Windows
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn releases_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("etc/boxpilot/releases")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("releases")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn staging_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("etc/boxpilot/.staging")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join(".staging")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn active_symlink(&self) -> PathBuf {
+        // Linux: symlink. Windows: marker JSON file at active.json (PR 8/COQ8 / spec §5.3).
+        // Both platforms expose this method; PR 8's ActivePointer trait
+        // deals with the semantic difference.
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("etc/boxpilot/active")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("active.json")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn release_dir(&self, activation_id: &str) -> PathBuf {
+        self.releases_dir().join(activation_id)
+    }
+
+    pub fn staging_subdir(&self, activation_id: &str) -> PathBuf {
+        self.staging_dir().join(activation_id)
+    }
+
+    pub fn backups_units_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("var/lib/boxpilot/backups/units")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("backups").join("units")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    pub fn cache_diagnostics_dir(&self) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            self.system_root.join("var/cache/boxpilot/diagnostics")
+        }
+        #[cfg(target_os = "windows")]
+        {
+            self.system_root.join("cache").join("diagnostics")
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        {
+            unreachable!("unsupported platform")
+        }
+    }
+
+    // ---- §5.6 user profile store --------------------------------------
+
+    pub fn user_profiles_dir(&self) -> PathBuf {
+        self.user_root.join("profiles")
+    }
+
+    pub fn user_remotes_json(&self) -> PathBuf {
+        self.user_root.join("remotes.json")
+    }
+
+    pub fn user_ui_state_json(&self) -> PathBuf {
+        self.user_root.join("ui-state.json")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_root_relocates_system_paths() {
+        let p = Paths::with_root("/tmp/fake");
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(
+                p.boxpilot_toml(),
+                PathBuf::from("/tmp/fake/etc/boxpilot/boxpilot.toml")
+            );
+            assert_eq!(p.run_lock(), PathBuf::from("/tmp/fake/run/boxpilot/lock"));
+        }
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(p.boxpilot_toml(), PathBuf::from("/tmp/fake/boxpilot.toml"));
+            assert_eq!(p.run_lock(), PathBuf::from("/tmp/fake/run/lock"));
+        }
+    }
+
+    #[test]
+    fn user_root_is_separate_subdir_under_with_root() {
+        let p = Paths::with_root("/tmp/fake");
+        assert_eq!(p.user_root(), Path::new("/tmp/fake/user"));
+        assert_eq!(
+            p.user_profiles_dir(),
+            PathBuf::from("/tmp/fake/user/profiles")
+        );
+    }
+}
+```
+
+- [ ] **Step 2: Re-export from `lib.rs`**
+
+Modify `crates/boxpilot-platform/src/lib.rs`:
+
+```rust
+pub mod paths;
+pub use paths::Paths;
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test -p boxpilot-platform`
+Expected: 4 passing tests including the two new ones.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/paths.rs crates/boxpilot-platform/src/lib.rs
+git commit -m "feat(platform): Paths value type with cfg-gated method bodies"
+```
+
+---
+
+## Task 2.3: Migrate `boxpilotd` from `boxpilotd::paths::Paths` to `boxpilot_platform::Paths`
+
+**Files:**
+- Modify: `crates/boxpilotd/src/main.rs`, `dispatch.rs`, `iface.rs`, every module that imports `crate::paths::Paths`
+- Modify: `crates/boxpilotd/Cargo.toml` — promote `boxpilot-platform` from `[dev-dependencies]` to `[dependencies]`
+- Delete: `crates/boxpilotd/src/paths.rs` (after all callers migrate)
+
+- [ ] **Step 1: Move `boxpilot-platform` to a real dep of `boxpilotd`**
+
+In `crates/boxpilotd/Cargo.toml`:
+- Remove the `boxpilot-platform = { path = "../boxpilot-platform" }` from `[dev-dependencies]`.
+- Add it to `[dependencies]`:
+
+```toml
+[dependencies]
+# ... existing entries ...
+boxpilot-platform = { path = "../boxpilot-platform" }
+```
+
+- [ ] **Step 2: Find every consumer of the old `Paths`**
+
+Run: `git grep -l 'crate::paths::Paths\|boxpilotd::paths::Paths\|use crate::paths' crates/boxpilotd/src`
+Expected output (must update each):
+
+```text
+crates/boxpilotd/src/main.rs
+crates/boxpilotd/src/context.rs
+crates/boxpilotd/src/dispatch.rs
+crates/boxpilotd/src/iface.rs
+crates/boxpilotd/src/profile/recovery.rs
+crates/boxpilotd/src/profile/release.rs
+crates/boxpilotd/src/profile/activate.rs
+crates/boxpilotd/src/profile/rollback.rs
+crates/boxpilotd/src/profile/unpack.rs
+crates/boxpilotd/src/core/install.rs
+crates/boxpilotd/src/core/discover.rs
+crates/boxpilotd/src/core/commit.rs
+crates/boxpilotd/src/core/state.rs
+crates/boxpilotd/src/core/rollback.rs
+crates/boxpilotd/src/core/adopt.rs
+crates/boxpilotd/src/core/trust.rs
+crates/boxpilotd/src/service/install.rs
+crates/boxpilotd/src/diagnostics/mod.rs
+crates/boxpilotd/src/legacy/observe.rs
+crates/boxpilotd/src/legacy/migrate.rs
+crates/boxpilotd/src/legacy/backup.rs
+```
+
+- [ ] **Step 3: Replace imports**
+
+In each file, change:
+
+```rust
+use crate::paths::Paths;
+```
+
+to:
+
+```rust
+use boxpilot_platform::Paths;
+```
+
+For inline `crate::paths::Paths` references, change to `boxpilot_platform::Paths`.
+
+- [ ] **Step 4: Update `main.rs` constructor**
+
+In `crates/boxpilotd/src/main.rs`, change:
+
+```rust
+let paths = paths::Paths::system();
+```
+
+to:
+
+```rust
+let paths = boxpilot_platform::Paths::system().context("read system paths from env")?;
+```
+
+(`context` is from `anyhow::Context`, already in scope.)
+
+- [ ] **Step 5: Delete the old `boxpilotd::paths` module**
+
+```bash
+rm crates/boxpilotd/src/paths.rs
+```
+
+In `crates/boxpilotd/src/main.rs`, remove the `mod paths;` declaration.
+
+- [ ] **Step 6: Verify Linux build + tests**
+
+Run: `cargo test -p boxpilotd`
+Expected: all existing tests still pass. Tests that used `paths::Paths::with_root(tmp.path())` keep compiling because the new `Paths::with_root` has the same signature.
+
+- [ ] **Step 7: Verify rest of workspace**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/boxpilotd/src crates/boxpilotd/Cargo.toml
+git commit -m "refactor(boxpilotd): adopt boxpilot_platform::Paths; delete inline Paths impl"
+```
+
+---
+
+## Task 2.4: Replace `ProfileStorePaths::from_env` with `from_paths`
+
+**Files:**
+- Modify: `crates/boxpilot-profile/src/store.rs`
+- Modify: `crates/boxpilot-profile/Cargo.toml` — add `boxpilot-platform` dep
+- Modify: `crates/boxpilot-tauri/src/lib.rs` — pass `Paths` in instead of relying on env
+- Modify: `crates/boxpilot-tauri/Cargo.toml` — add `boxpilot-platform` dep
+
+- [ ] **Step 1: Add `boxpilot-platform` to both crates' deps**
+
+`crates/boxpilot-profile/Cargo.toml`:
+
+```toml
+[dependencies]
+# ... existing ...
+boxpilot-platform = { path = "../boxpilot-platform" }
+```
+
+`crates/boxpilot-tauri/Cargo.toml`:
+
+```toml
+[dependencies]
+# ... existing ...
+boxpilot-platform = { path = "../boxpilot-platform" }
+```
+
+- [ ] **Step 2: Add `from_paths` to `ProfileStorePaths`**
+
+In `crates/boxpilot-profile/src/store.rs`, find the existing `from_env()` impl and add the new constructor immediately above it:
+
+```rust
+impl ProfileStorePaths {
+    /// Build from a `boxpilot_platform::Paths`. This is the production
+    /// constructor used by Tauri command handlers (per spec §5.1 / COQ16).
+    pub fn from_paths(paths: &boxpilot_platform::Paths) -> Self {
+        Self {
+            root: paths.user_profiles_dir(),
+        }
+    }
+
+    // ... existing from_env() stays for now; deleted in step 5 ...
+}
+```
+
+- [ ] **Step 3: Update `boxpilot-tauri/src/lib.rs`**
+
+Find the existing `from_env()` call (the only one in the workspace per Round 6/6.4):
+
+```rust
+boxpilot_profile::ProfileStorePaths::from_env()
+```
+
+Replace the whole `setup` function (or the section that calls `from_env`) with:
+
+```rust
+let paths = boxpilot_platform::Paths::system()
+    .map_err(|e| format!("read system paths: {e}"))?;
+let store_paths = boxpilot_profile::ProfileStorePaths::from_paths(&paths);
+// Register Paths so Tauri commands can pull it via tauri::State<Paths>:
+app.manage(paths);
+app.manage(store_paths);
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green. The `from_env()` impl still exists; this PR only adds `from_paths` and switches the lone caller.
+
+- [ ] **Step 5: Delete `from_env()`**
+
+In `crates/boxpilot-profile/src/store.rs`, remove the entire `from_env()` impl. Run `cargo build --workspace` again to confirm no other caller exists.
+
+- [ ] **Step 6: Run tests again**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-profile crates/boxpilot-tauri
+git commit -m "refactor(profile,tauri): replace ProfileStorePaths::from_env with from_paths"
+```
+
+---
+
+## PR 2 smoke
+
+```bash
+cargo test --workspace                                                  # Linux non-regression
+cargo check --target x86_64-pc-windows-gnu --workspace || true          # still allowed-fail (PR 1-10)
+git grep 'paths::Paths' crates/                                         # only matches in trait code, not callers
+git grep 'from_env' crates/boxpilot-profile crates/boxpilot-tauri       # zero matches
+```
+
+PR description body should include: "Threads `boxpilot_platform::Paths` through `boxpilotd` and Tauri state. Deletes `from_env`. PRs 3+ build on this."
+
+---
