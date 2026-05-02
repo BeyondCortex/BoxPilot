@@ -31,15 +31,6 @@ pub struct AuthorizedCall {
     _lock: Option<LockGuard>,
 }
 
-impl AuthorizedCall {
-    /// Convenience accessor for call sites that need the Linux uid (e.g.
-    /// passing to `maybe_claim_controller`'s username lookup). Returns
-    /// `None` for non-Linux principals.
-    pub fn caller_uid(&self) -> Option<u32> {
-        self.principal.linux_uid()
-    }
-}
-
 pub async fn authorize(
     ctx: &HelperContext,
     principal: &CallerPrincipal,

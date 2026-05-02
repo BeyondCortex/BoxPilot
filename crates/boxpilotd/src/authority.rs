@@ -11,7 +11,7 @@ pub use boxpilot_platform::traits::authority::{Authority, CallerPrincipal};
 
 #[cfg(test)]
 pub mod testing {
-    pub use boxpilot_platform::fakes::authority::{AlwaysAllow, CannedAuthority};
+    pub use boxpilot_platform::fakes::authority::CannedAuthority;
 }
 
 use std::sync::{Arc, RwLock};
