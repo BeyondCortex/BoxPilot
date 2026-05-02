@@ -1,5 +1,32 @@
 use serde::{Deserialize, Serialize};
 
+/// Platform-specific SCM fields that don't fit the systemd-shaped `UnitState`
+/// surface. The Linux variant carries no extra data because the existing fields
+/// (`sub_state`, `load_state`, `n_restarts`, `exec_main_status`) already cover
+/// the systemd shape. The Windows variant carries SCM-specific status fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "platform", rename_all = "lowercase")]
+pub enum PlatformUnitExtra {
+    /// Linux/systemd: existing UnitState fields (sub_state, load_state, n_restarts,
+    /// exec_main_status) already cover the systemd shape, so this variant carries
+    /// no extra data.
+    Linux,
+    /// Windows/SCM: SCM-specific status fields not representable in the
+    /// systemd-shaped surface.
+    Windows {
+        /// SERVICE_STATUS_PROCESS::dwCheckPoint
+        check_point: u32,
+        /// SERVICE_STATUS_PROCESS::dwWaitHint (milliseconds)
+        wait_hint_ms: u32,
+        /// SERVICE_STATUS_PROCESS::dwControlsAccepted (bitmask of SERVICE_ACCEPT_*)
+        controls_accepted: u32,
+    },
+}
+
+fn default_platform_extra() -> PlatformUnitExtra {
+    PlatformUnitExtra::Linux
+}
+
 /// Mirrors `systemctl show` `ActiveState`/`SubState`/`LoadState`/`NRestarts`
 /// fields plus a sentinel for "the unit doesn't exist".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +40,8 @@ pub enum UnitState {
         load_state: String,   // loaded | not-found | error | masked | …
         n_restarts: u32,
         exec_main_status: i32,
+        #[serde(default = "default_platform_extra")]
+        platform_extra: PlatformUnitExtra,
     },
 }
 
@@ -43,6 +72,46 @@ pub enum ControllerStatus {
 }
 
 #[cfg(test)]
+mod platform_extra_tests {
+    use super::*;
+    use serde_json;
+
+    #[test]
+    fn known_state_round_trips_with_linux_extra() {
+        let s = UnitState::Known {
+            active_state: "active".into(),
+            sub_state: "running".into(),
+            load_state: "loaded".into(),
+            n_restarts: 3,
+            exec_main_status: 0,
+            platform_extra: PlatformUnitExtra::Linux,
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: UnitState = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+
+    #[test]
+    fn known_state_round_trips_with_windows_extra() {
+        let s = UnitState::Known {
+            active_state: "active".into(),
+            sub_state: "running".into(),
+            load_state: "loaded".into(),
+            n_restarts: 0,
+            exec_main_status: 0,
+            platform_extra: PlatformUnitExtra::Windows {
+                check_point: 0,
+                wait_hint_ms: 30000,
+                controls_accepted: 0x0000_0001, // SERVICE_ACCEPT_STOP
+            },
+        };
+        let json = serde_json::to_string(&s).unwrap();
+        let back: UnitState = serde_json::from_str(&json).unwrap();
+        assert_eq!(s, back);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
@@ -61,6 +130,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: PlatformUnitExtra::Linux,
         };
         let json = serde_json::to_string(&s).unwrap();
         let back: UnitState = serde_json::from_str(&json).unwrap();

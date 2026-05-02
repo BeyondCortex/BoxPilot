@@ -5,7 +5,7 @@ pub mod error;
 pub use error::{HelperError, HelperResult};
 
 pub mod response;
-pub use response::{ControllerStatus, ServiceStatusResponse, UnitState};
+pub use response::{ControllerStatus, PlatformUnitExtra, ServiceStatusResponse, UnitState};
 
 pub mod config;
 pub use config::{BoxpilotConfig, CoreState, CURRENT_SCHEMA_VERSION};

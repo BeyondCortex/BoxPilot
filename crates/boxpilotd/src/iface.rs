@@ -817,6 +817,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 2,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         };
         let ctx = Arc::new(ctx_with(
             &tmp,
@@ -1107,6 +1108,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         }));
         // /usr/bin/sing-box is in the §6.5 default-allowed prefix list and
         // PermissiveTestFs reports it as root-owned 0o755, so the trust

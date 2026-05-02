@@ -449,6 +449,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,
@@ -515,6 +516,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 5,
             exec_main_status: 1,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         };
         let systemd = Arc::new(FixedSystemd {
             answer: stuck_state.clone(),
@@ -567,6 +569,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,
@@ -614,6 +617,7 @@ mod tests {
                 load_state: "loaded".into(),
                 n_restarts: 0,
                 exec_main_status: 0,
+                platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
             },
             fragment_path: None,
             unit_file_state: None,

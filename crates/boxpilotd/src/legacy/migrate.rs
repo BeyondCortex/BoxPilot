@@ -409,6 +409,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         });
         let deps = PrepareDeps {
             systemd: &sd,
@@ -436,6 +437,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         });
         let deps = PrepareDeps {
             systemd: &sd,
@@ -468,6 +470,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         });
         let mut c = cfg();
         c.target_service = "sing-box.service".into();
@@ -517,6 +520,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         });
         let deps = PrepareDeps {
             systemd: &sd,
@@ -660,6 +664,7 @@ mod tests {
             load_state: "loaded".into(),
             n_restarts: 0,
             exec_main_status: 0,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         });
         let deps = PrepareDeps {
             systemd: &sd,

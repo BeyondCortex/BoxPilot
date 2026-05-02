@@ -151,6 +151,7 @@ impl ServiceManager for DBusSystemd {
             load_state,
             n_restarts,
             exec_main_status,
+            platform_extra: boxpilot_ipc::PlatformUnitExtra::Linux,
         })
     }
 
