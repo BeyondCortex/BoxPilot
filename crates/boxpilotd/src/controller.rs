@@ -4,22 +4,11 @@
 
 use boxpilot_ipc::ControllerStatus;
 
-/// User lookup is split out behind a trait so unit tests don't depend on
-/// real `/etc/passwd` state.
-pub trait UserLookup: Send + Sync {
-    fn lookup_username(&self, uid: u32) -> Option<String>;
-}
-
-pub struct PasswdLookup;
-
-impl UserLookup for PasswdLookup {
-    fn lookup_username(&self, uid: u32) -> Option<String> {
-        nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
-            .ok()
-            .flatten()
-            .map(|u| u.name)
-    }
-}
+pub use boxpilot_platform::traits::user_lookup::UserLookup;
+#[cfg(target_os = "linux")]
+pub use boxpilot_platform::linux::user_lookup::PasswdLookup;
+#[cfg(target_os = "windows")]
+pub use boxpilot_platform::windows::user_lookup::PasswdLookup;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControllerState {
@@ -58,25 +47,7 @@ impl ControllerState {
 
 #[cfg(test)]
 pub mod testing {
-    use super::UserLookup;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    pub struct Fixed(Mutex<HashMap<u32, String>>);
-
-    impl Fixed {
-        pub fn new(rows: &[(u32, &str)]) -> Self {
-            Self(Mutex::new(
-                rows.iter().map(|(u, n)| (*u, n.to_string())).collect(),
-            ))
-        }
-    }
-
-    impl UserLookup for Fixed {
-        fn lookup_username(&self, uid: u32) -> Option<String> {
-            self.0.lock().unwrap().get(&uid).cloned()
-        }
-    }
+    pub use boxpilot_platform::fakes::user_lookup::*;
 }
 
 #[cfg(test)]

@@ -5,4 +5,5 @@
 
 pub mod env;
 pub mod fs_meta;
+pub mod user_lookup;
 pub mod version;
