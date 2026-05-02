@@ -5,26 +5,24 @@ on:
     branches: [main, "feat/windows-support"]
 
 jobs:
-  cargo-check-windows-gnu:
-    name: cargo check (x86_64-pc-windows-gnu)
-    runs-on: ubuntu-latest
-    # Promoted to a required check at PR 11a per spec COQ13: the
-    # platform-abstraction crate (`boxpilot-platform`) plus the wire-side
-    # types (`boxpilot-ipc`) must compile on Windows from this PR onward.
-    # The full workspace (`boxpilotd`, `boxpilot-tauri`) gets layered on at
-    # PR 12 (Windows real impls) and PR 14 (MSVC + Windows runner). Until
-    # then, scoping to `-p boxpilot-ipc -p boxpilot-platform` keeps this
-    # check honest without dragging in the bin's lingering unix-only paths.
-    continue-on-error: false
+  cargo-check-windows-msvc:
+    name: cargo check (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    # Sub-project #1 ships `boxpilot-ipc` and `boxpilot-platform` as the
+    # cross-platform surface plus the new Windows real impls (Authority,
+    # FileLock, IpcServer/Client, FsPermissions stub). The boxpilotd bin
+    # itself still has unix-only paths (zbus, nix, std::os::fd::OwnedFd in
+    # several modules) that Sub-project #2 will cfg-gate; until then we
+    # scope the gate to the two crates that MUST compile on Windows.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-gnu
+          targets: x86_64-pc-windows-msvc
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: windows-gnu
-      - name: Install mingw-w64 (provides x86_64-w64-mingw32-gcc as the GNU linker)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64
-      - name: cargo check (x86_64-pc-windows-gnu) for boxpilot-ipc + boxpilot-platform
-        run: cargo check --target x86_64-pc-windows-gnu -p boxpilot-ipc -p boxpilot-platform
+          shared-key: windows-msvc
+      - name: cargo check (x86_64-pc-windows-msvc) for boxpilot-ipc + boxpilot-platform
+        run: cargo check --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform
+      - name: cargo test (boxpilot-ipc + boxpilot-platform)
+        run: cargo test --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform --no-fail-fast
