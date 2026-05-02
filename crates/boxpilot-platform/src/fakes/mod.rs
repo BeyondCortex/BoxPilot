@@ -8,6 +8,7 @@ pub mod core_assets;
 pub mod env;
 pub mod fs_meta;
 pub mod fs_perms;
+pub mod ipc;
 pub mod lock;
 pub mod logs;
 pub mod service;
