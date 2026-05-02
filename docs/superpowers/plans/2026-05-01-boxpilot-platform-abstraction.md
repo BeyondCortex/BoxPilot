@@ -3417,3 +3417,651 @@ cargo check --target x86_64-pc-windows-gnu --workspace || true
 ```
 
 ---
+
+# PR 9: `CoreAssetNaming` + `CoreArchive` + `check.rs` Windows stub (per COQ14)
+
+**Size:** M · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/core_assets.rs`, `boxpilotd/src/core/install.rs`, `boxpilot-profile/src/check.rs` (cfg-split per COQ14).
+
+## Task 9.1: `CoreAssetNaming` + `CoreArchive` traits
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/core_assets.rs`, `linux/core_assets.rs`, `windows/core_assets.rs`, `fakes/core_assets.rs`
+
+- [ ] **Step 1: Trait**
+
+`crates/boxpilot-platform/src/traits/core_assets.rs`:
+
+```rust
+//! Naming and extraction of upstream sing-box release archives.
+//!
+//! Linux: `sing-box-<version>-linux-<arch>.tar.gz` extracted to a flat dir.
+//! Windows: `sing-box-<version>-windows-<arch>.zip` (Sub-project #2).
+//! Per spec §11.3 + §5.
+
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+
+pub trait CoreAssetNaming: Send + Sync {
+    /// Build the upstream asset filename for `(version, arch)`.
+    fn asset_name(&self, version: &str, arch: &str) -> String;
+
+    /// The binary name inside the asset (`sing-box` on Linux, `sing-box.exe`
+    /// on Windows).
+    fn binary_name(&self) -> &'static str;
+}
+
+#[async_trait]
+pub trait CoreArchive: Send + Sync {
+    /// Extract `archive_path` (already downloaded) into `dest_dir`. Caller
+    /// has created `dest_dir` and is responsible for fsync/atomic rename.
+    /// Returns the path of the extracted core binary on disk.
+    async fn extract(
+        &self,
+        archive_path: &Path,
+        dest_dir: &Path,
+    ) -> Result<std::path::PathBuf, HelperError>;
+}
+```
+
+- [ ] **Step 2: Linux impl (tar.gz)**
+
+`crates/boxpilot-platform/src/linux/core_assets.rs`:
+
+Move existing tar.gz extraction logic from `boxpilotd::core::install` here. Adapt to trait.
+
+```rust
+use crate::traits::core_assets::{CoreArchive, CoreAssetNaming};
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use flate2::read::GzDecoder;
+use std::path::{Path, PathBuf};
+use tar::Archive;
+
+pub struct LinuxCoreAssetNaming;
+
+impl CoreAssetNaming for LinuxCoreAssetNaming {
+    fn asset_name(&self, version: &str, arch: &str) -> String {
+        format!("sing-box-{version}-linux-{arch}.tar.gz")
+    }
+    fn binary_name(&self) -> &'static str {
+        "sing-box"
+    }
+}
+
+pub struct TarGzExtractor;
+
+#[async_trait]
+impl CoreArchive for TarGzExtractor {
+    async fn extract(
+        &self,
+        archive_path: &Path,
+        dest_dir: &Path,
+    ) -> Result<PathBuf, HelperError> {
+        let archive_path = archive_path.to_path_buf();
+        let dest_dir = dest_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || -> Result<PathBuf, HelperError> {
+            let tar_gz = std::fs::File::open(&archive_path).map_err(|e| HelperError::Ipc {
+                message: format!("open archive: {e}"),
+            })?;
+            let mut archive = Archive::new(GzDecoder::new(tar_gz));
+            // Existing logic in boxpilotd::core::install: extract only the
+            // sing-box binary, flatten the tarball's leading dir
+            // ("sing-box-1.10.3-linux-amd64/sing-box" → "<dest>/sing-box").
+            // Copy that loop verbatim.
+            let mut found_binary: Option<PathBuf> = None;
+            for entry in archive.entries().map_err(|e| HelperError::Ipc {
+                message: format!("read tar entries: {e}"),
+            })? {
+                let mut entry = entry.map_err(|e| HelperError::Ipc {
+                    message: format!("tar entry: {e}"),
+                })?;
+                let path = entry.path().map_err(|e| HelperError::Ipc {
+                    message: format!("tar path: {e}"),
+                })?;
+                let file_name = match path.file_name() {
+                    Some(n) => n.to_owned(),
+                    None => continue,
+                };
+                if file_name == "sing-box" && entry.header().entry_type().is_file() {
+                    let dest = dest_dir.join("sing-box");
+                    entry.unpack(&dest).map_err(|e| HelperError::Ipc {
+                        message: format!("unpack sing-box: {e}"),
+                    })?;
+                    found_binary = Some(dest);
+                    break;
+                }
+            }
+            found_binary.ok_or_else(|| HelperError::Ipc {
+                message: "sing-box binary not found in archive".into(),
+            })
+        })
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("spawn extract: {e}"),
+        })?
+    }
+}
+```
+
+- [ ] **Step 3: Windows stub (zip extractor — designed; impl deferred to Sub-project #2)**
+
+`crates/boxpilot-platform/src/windows/core_assets.rs`:
+
+```rust
+use crate::traits::core_assets::{CoreArchive, CoreAssetNaming};
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::{Path, PathBuf};
+
+pub struct WindowsCoreAssetNaming;
+
+impl CoreAssetNaming for WindowsCoreAssetNaming {
+    fn asset_name(&self, version: &str, arch: &str) -> String {
+        format!("sing-box-{version}-windows-{arch}.zip")
+    }
+    fn binary_name(&self) -> &'static str {
+        "sing-box.exe"
+    }
+}
+
+pub struct ZipExtractor;
+
+#[async_trait]
+impl CoreArchive for ZipExtractor {
+    async fn extract(&self, _: &Path, _: &Path) -> Result<PathBuf, HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+}
+```
+
+- [ ] **Step 4: Fake**
+
+`crates/boxpilot-platform/src/fakes/core_assets.rs`:
+
+```rust
+use crate::traits::core_assets::{CoreArchive, CoreAssetNaming};
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::{Path, PathBuf};
+
+pub struct LinuxAssetNaming;
+
+impl CoreAssetNaming for LinuxAssetNaming {
+    fn asset_name(&self, version: &str, arch: &str) -> String {
+        format!("sing-box-{version}-linux-{arch}.tar.gz")
+    }
+    fn binary_name(&self) -> &'static str {
+        "sing-box"
+    }
+}
+
+pub struct StubExtractor;
+
+#[async_trait]
+impl CoreArchive for StubExtractor {
+    async fn extract(&self, _: &Path, dest_dir: &Path) -> Result<PathBuf, HelperError> {
+        let p = dest_dir.join("sing-box");
+        std::fs::write(&p, b"#!/bin/sh\necho 1.10.3-fake\n").map_err(|e| HelperError::Ipc {
+            message: format!("write fake binary: {e}"),
+        })?;
+        Ok(p)
+    }
+}
+```
+
+- [ ] **Step 5: Wire + retire `boxpilotd::core::install` extract code**
+
+In `crates/boxpilotd/src/core/install.rs`, replace the inline tar.gz extract loop with a call to the trait:
+
+```rust
+let extractor = boxpilot_platform::linux::core_assets::TarGzExtractor;
+let bin = extractor.extract(&archive_path, &dest_dir).await?;
+```
+
+Same for asset name construction (use `LinuxCoreAssetNaming::asset_name(&version, &arch)`).
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/core/install.rs
+git commit -m "feat(platform): CoreAssetNaming + CoreArchive traits; Linux tar.gz extracts via trait"
+```
+
+---
+
+## Task 9.2: `boxpilot-profile/src/check.rs` cfg-split (per COQ14)
+
+**Files:**
+- Modify: `crates/boxpilot-profile/src/check.rs` — cfg-split: Linux retains existing pgid+SIGKILL logic; Windows returns success stub
+
+The existing `run_singbox_check` is a synchronous function with `process_group(0)` + `libc::kill(-pgid, SIGKILL)`. Per COQ14 we cfg-split this in Sub-project #1; real JobObject impl is Sub-project #2.
+
+- [ ] **Step 1: Wrap the existing function in `#[cfg(target_os = "linux")]`**
+
+In `crates/boxpilot-profile/src/check.rs`, change line 29 from:
+
+```rust
+pub fn run_singbox_check(core_path: &Path, working_dir: &Path) -> Result<CheckOutput, CheckError> {
+```
+
+to a cfg-split:
+
+```rust
+#[cfg(target_os = "linux")]
+pub fn run_singbox_check(core_path: &Path, working_dir: &Path) -> Result<CheckOutput, CheckError> {
+    // ... existing body unchanged ...
+}
+
+#[cfg(target_os = "windows")]
+pub fn run_singbox_check(_core_path: &Path, _working_dir: &Path) -> Result<CheckOutput, CheckError> {
+    // Per COQ14: sing-box check on Windows is short-circuited in
+    // Sub-project #1. Real JobObject-based impl arrives in Sub-project #2.
+    // This is documented as best-effort preflight in the Linux design
+    // spec §10 step 3 — skipping it on Windows is acceptable.
+    Ok(CheckOutput {
+        success: true,
+        stdout: "sing-box check skipped on Windows in Sub-project #1".to_string(),
+        stderr: String::new(),
+    })
+}
+```
+
+- [ ] **Step 2: Cfg-gate the Linux test module**
+
+The existing `#[cfg(test)] mod tests` in `check.rs` uses `write_executable` with `set_permissions(..., 0o755)`. Wrap the entire test module:
+
+```rust
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    // existing body
+}
+```
+
+- [ ] **Step 3: Run Linux tests**
+
+Run: `cargo test -p boxpilot-profile`
+Expected: green.
+
+- [ ] **Step 4: Verify Windows compile of just this crate**
+
+Run: `cargo check --target x86_64-pc-windows-gnu -p boxpilot-profile`
+Expected: still fails (because `bundle.rs` uses `nix::sys::memfd`), but the **error count drops** — `check.rs` is no longer one of the failing modules. Document in commit message.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/boxpilot-profile/src/check.rs
+git commit -m "refactor(profile): cfg-split run_singbox_check; Windows returns success stub (COQ14)"
+```
+
+---
+
+## PR 9 smoke
+
+```bash
+cargo test --workspace
+cargo check --target x86_64-pc-windows-gnu --workspace || true   # closer to passing; bundle.rs still blocks
+```
+
+---
+
+# PR 10: `AuxStream` + bundle byte transfer refactor
+
+**Size:** L · **Touches:** `boxpilot-platform/src/traits/{ipc,bundle_aux}.rs` (AuxStream type), `boxpilot-platform/src/{linux,windows}/bundle.rs`, `boxpilot-profile/src/bundle.rs` (memfd code moves OUT), `boxpilotd/src/profile/unpack.rs` (consumes AuxStream).
+
+This is the deepest PR in Sub-project #1. Per COQ8: `AuxStream` is opaque with crate-private accessors; Linux preserves zero-copy via cfg-gated `from_owned_fd`. Per COQ1+2: bundle bytes flow through dispatch's `aux: AuxStream` parameter; no `BundleClient`/`BundleServer` traits. After this PR, **Windows compile no longer needs allow-fail** (the only remaining blocker — memfd — is gone).
+
+## Task 10.1: Define `AuxStream` opaque type
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/bundle_aux.rs` (new — distinct from ipc.rs which arrives in PR 11a)
+
+The struct lives in its own file because PR 11a's `IpcServer` trait references it; PR 10 introduces it standalone.
+
+- [ ] **Step 1: Write the type**
+
+`crates/boxpilot-platform/src/traits/bundle_aux.rs`:
+
+```rust
+//! `AuxStream` — bytes-handle plumbing for IPC verbs that ship bundles
+//! alongside their typed body. Per spec COQ8: opaque struct with
+//! crate-private accessors; Linux preserves zero-copy via the cfg-gated
+//! `from_owned_fd` constructor.
+
+use tokio::io::AsyncRead;
+
+pub struct AuxStream {
+    repr: AuxStreamRepr,
+}
+
+pub(crate) enum AuxStreamRepr {
+    None,
+    AsyncRead(Box<dyn AsyncRead + Send + Unpin>),
+    #[cfg(target_os = "linux")]
+    LinuxFd(std::os::fd::OwnedFd),
+}
+
+impl AuxStream {
+    pub fn none() -> Self {
+        Self { repr: AuxStreamRepr::None }
+    }
+
+    pub fn from_async_read(r: impl AsyncRead + Send + Unpin + 'static) -> Self {
+        Self { repr: AuxStreamRepr::AsyncRead(Box::new(r)) }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn from_owned_fd(fd: std::os::fd::OwnedFd) -> Self {
+        Self { repr: AuxStreamRepr::LinuxFd(fd) }
+    }
+
+    pub fn is_none(&self) -> bool {
+        matches!(self.repr, AuxStreamRepr::None)
+    }
+
+    pub(crate) fn into_repr(self) -> AuxStreamRepr {
+        self.repr
+    }
+}
+
+impl std::fmt::Debug for AuxStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.repr {
+            AuxStreamRepr::None => write!(f, "AuxStream::None"),
+            AuxStreamRepr::AsyncRead(_) => write!(f, "AuxStream::AsyncRead(<opaque>)"),
+            #[cfg(target_os = "linux")]
+            AuxStreamRepr::LinuxFd(fd) => {
+                write!(f, "AuxStream::LinuxFd({:?})", std::os::fd::AsRawFd::as_raw_fd(fd))
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Wire into `traits/mod.rs`**
+
+```rust
+pub mod bundle_aux;
+pub use bundle_aux::AuxStream;
+```
+
+- [ ] **Step 3: Run sanity build**
+
+Run: `cargo build -p boxpilot-platform`
+Expected: clean on Linux + Windows (the type is platform-agnostic except the `LinuxFd` variant which is cfg-gated).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/traits
+git commit -m "feat(platform): introduce AuxStream opaque type with crate-private accessors (COQ8)"
+```
+
+---
+
+## Task 10.2: Move memfd build logic from `boxpilot-profile` to platform crate
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/linux/bundle.rs` (memfd + seal logic moves here)
+- Create: `crates/boxpilot-platform/src/windows/bundle.rs` (tempfile-based stub)
+- Create: `crates/boxpilot-platform/src/fakes/bundle_aux.rs` (in-memory Cursor helpers)
+- Modify: `crates/boxpilot-profile/src/bundle.rs` (becomes thin wrapper)
+
+- [ ] **Step 1: Move memfd code**
+
+`crates/boxpilot-platform/src/linux/bundle.rs`:
+
+Copy `create_sealed_bundle_memfd` from `boxpilot-profile/src/bundle.rs` (lines 200-225). Adapt to return `AuxStream::from_owned_fd(fd)`.
+
+```rust
+//! Linux bundle byte transfer. Builds a tar in a sealed memfd and exposes
+//! it as an `AuxStream`. The Linux IpcClient FD-passes the memfd zero-copy
+//! through D-Bus; the helper mmap's the (sealed, immutable) FD and
+//! hashes-while-untarring.
+
+use crate::traits::bundle_aux::AuxStream;
+use boxpilot_ipc::HelperError;
+use nix::fcntl::{FcntlArg, SealFlag};
+use nix::sys::memfd::{memfd_create, MemFdCreateFlag};
+use std::ffi::CString;
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::path::Path;
+use tar::Builder;
+
+/// Build a tar of `staging_dir`'s contents into a sealed memfd, return as
+/// `AuxStream`. The caller (typically `boxpilot-profile::bundle::prepare`)
+/// has already validated assets and computed sha256.
+pub async fn build_sealed_memfd_aux(staging_dir: &Path) -> Result<AuxStream, HelperError> {
+    let staging_dir = staging_dir.to_path_buf();
+    let fd = tokio::task::spawn_blocking(move || -> Result<OwnedFd, HelperError> {
+        let cname = CString::new("boxpilot-bundle").unwrap();
+        let fd = memfd_create(
+            &cname,
+            MemFdCreateFlag::MFD_CLOEXEC | MemFdCreateFlag::MFD_ALLOW_SEALING,
+        )
+        .map_err(|e| HelperError::Ipc {
+            message: format!("memfd_create: {e}"),
+        })?;
+        // Tar staging_dir into the FD.
+        {
+            let mut file = std::fs::File::from(fd.try_clone().map_err(|e| HelperError::Ipc {
+                message: format!("clone memfd: {e}"),
+            })?);
+            let mut builder = Builder::new(&mut file);
+            builder
+                .append_dir_all(".", &staging_dir)
+                .map_err(|e| HelperError::Ipc {
+                    message: format!("tar append: {e}"),
+                })?;
+            builder.finish().map_err(|e| HelperError::Ipc {
+                message: format!("tar finish: {e}"),
+            })?;
+        }
+        // Seal.
+        let seals = SealFlag::F_SEAL_WRITE
+            | SealFlag::F_SEAL_GROW
+            | SealFlag::F_SEAL_SHRINK
+            | SealFlag::F_SEAL_SEAL;
+        nix::fcntl::fcntl(fd.as_raw_fd(), FcntlArg::F_ADD_SEALS(seals)).map_err(|e| {
+            HelperError::Ipc {
+                message: format!("F_ADD_SEALS: {e}"),
+            }
+        })?;
+        Ok(fd)
+    })
+    .await
+    .map_err(|e| HelperError::Ipc {
+        message: format!("spawn build_sealed_memfd: {e}"),
+    })??;
+
+    Ok(AuxStream::from_owned_fd(fd))
+}
+```
+
+- [ ] **Step 2: Windows tempfile stub**
+
+`crates/boxpilot-platform/src/windows/bundle.rs`:
+
+```rust
+use crate::traits::bundle_aux::AuxStream;
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+
+/// Tar `staging_dir` into a tempfile under `%LocalAppData%\BoxPilot\tmp\`,
+/// ACL'd to the owner SID, and return as `AuxStream::from_async_read`.
+/// Sub-project #1 ships the Windows side as `unimplemented!()` because no
+/// Windows verb actually consumes a bundle yet (per AC4 + AC5).
+pub async fn build_tempfile_aux(_staging_dir: &Path) -> Result<AuxStream, HelperError> {
+    Err(HelperError::NotImplemented)
+}
+```
+
+- [ ] **Step 3: Fakes (in-memory bytes)**
+
+`crates/boxpilot-platform/src/fakes/bundle_aux.rs`:
+
+```rust
+use crate::traits::bundle_aux::AuxStream;
+use std::io::Cursor;
+
+/// Build an `AuxStream` from raw tar bytes — for tests.
+pub fn aux_from_bytes(bytes: Vec<u8>) -> AuxStream {
+    AuxStream::from_async_read(Cursor::new(bytes))
+}
+```
+
+Add `pub mod bundle_aux;` to `fakes/mod.rs`. Also add `pub mod bundle;` to `linux/mod.rs` and `windows/mod.rs`.
+
+- [ ] **Step 4: Update `boxpilot-profile::bundle`**
+
+In `crates/boxpilot-profile/src/bundle.rs`:
+
+- Remove `create_sealed_bundle_memfd` and the imports of `nix::sys::memfd`, `nix::fcntl`, `nix::sys::stat`.
+- Change the public `prepare` API:
+
+```rust
+pub struct PreparedBundle {
+    pub manifest: ActivationManifest,
+    pub stream: boxpilot_platform::traits::bundle_aux::AuxStream,
+    pub sha256: [u8; 32],
+}
+
+pub async fn prepare(
+    staging: &Path,
+    paths: &boxpilot_platform::Paths,
+) -> Result<PreparedBundle, BundleError> {
+    // Existing validation + manifest building stays.
+    let manifest = build_manifest(staging)?;
+    let sha256 = compute_sha256_of_tar(staging).await?;
+    let stream = build_aux_stream(staging, paths).await?;
+    Ok(PreparedBundle { manifest, stream, sha256 })
+}
+
+#[cfg(target_os = "linux")]
+async fn build_aux_stream(
+    staging: &Path,
+    _paths: &boxpilot_platform::Paths,
+) -> Result<boxpilot_platform::traits::bundle_aux::AuxStream, BundleError> {
+    boxpilot_platform::linux::bundle::build_sealed_memfd_aux(staging)
+        .await
+        .map_err(|e| BundleError::Io(std::io::Error::other(format!("{e:?}"))))
+}
+
+#[cfg(target_os = "windows")]
+async fn build_aux_stream(
+    staging: &Path,
+    _paths: &boxpilot_platform::Paths,
+) -> Result<boxpilot_platform::traits::bundle_aux::AuxStream, BundleError> {
+    boxpilot_platform::windows::bundle::build_tempfile_aux(staging)
+        .await
+        .map_err(|e| BundleError::Io(std::io::Error::other(format!("{e:?}"))))
+}
+```
+
+`compute_sha256_of_tar` is a small helper that re-tars staging into a hash-only sink. Keep its body next to `prepare`. (The existing impl already SHA256s the memfd post-build; refactor to compute hash via a standalone tar pass so the AuxStream and the hash are independent — keeps Linux and Windows code paths uniform.)
+
+- [ ] **Step 5: Update existing tests**
+
+The existing `bundle.rs` tests verify memfd seal flags. Move those tests into `crates/boxpilot-platform/src/linux/bundle.rs`'s `#[cfg(test)]` mod (Linux-only), since they assert kernel-level seal semantics. Remove from `boxpilot-profile`.
+
+- [ ] **Step 6: Run all tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 7: Verify Windows compile finally passes**
+
+Run: `cargo check --target x86_64-pc-windows-gnu --workspace`
+Expected: **passes** for the first time. (`boxpilot-profile/bundle.rs` no longer references nix.)
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilot-profile/src/bundle.rs
+git commit -m "refactor(profile,platform): move memfd bundle build to platform; AuxStream as transport handle"
+```
+
+---
+
+## Task 10.3: Update `boxpilotd::profile::unpack` to consume `AuxStream`
+
+**Files:**
+- Modify: `crates/boxpilotd/src/profile/unpack.rs`
+
+The existing `unpack` takes an `OwnedFd` (from D-Bus FD-passing). Change the signature to take `AuxStream`. Internally, match on `AuxStream::into_repr()`:
+
+```rust
+match aux.into_repr() {
+    AuxStreamRepr::None => Err(HelperError::Ipc { message: "missing aux".into() }),
+    AuxStreamRepr::AsyncRead(reader) => unpack_from_async_read(reader, ...).await,
+    #[cfg(target_os = "linux")]
+    AuxStreamRepr::LinuxFd(fd) => unpack_from_memfd_owned(fd, ...).await,
+}
+```
+
+`AuxStreamRepr` is `pub(crate)` to `boxpilot-platform`; expose a tiny `boxpilot_platform::traits::bundle_aux::take_inner(aux)` helper that's only callable from inside the crate (or use a `pub(crate)` consumer trait like `into_async_read_or_fd`). Easier: add a helper that consumes the AuxStream:
+
+```rust
+// In boxpilot-platform/src/traits/bundle_aux.rs:
+
+impl AuxStream {
+    /// Consume the stream into a uniform `AsyncRead`. On Linux, FD-backed
+    /// streams are wrapped in `tokio::fs::File`. The helper-side dispatch
+    /// uses this to hash-while-reading without caring how the bytes
+    /// arrived.
+    pub fn into_async_read(self) -> Box<dyn tokio::io::AsyncRead + Send + Unpin> {
+        match self.repr {
+            AuxStreamRepr::None => Box::new(tokio::io::empty()),
+            AuxStreamRepr::AsyncRead(r) => r,
+            #[cfg(target_os = "linux")]
+            AuxStreamRepr::LinuxFd(fd) => {
+                let std_file = std::fs::File::from(fd);
+                Box::new(tokio::fs::File::from_std(std_file))
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 1: Add `into_async_read` to `AuxStream`**
+
+Edit `crates/boxpilot-platform/src/traits/bundle_aux.rs` per the snippet above.
+
+- [ ] **Step 2: Update `boxpilotd::profile::unpack`**
+
+Change the unpack function's outer signature from `(fd: OwnedFd, ...)` to `(aux: AuxStream, ...)`. Inside, do `let mut reader = aux.into_async_read();` and stream-unpack from there. Hash-while-reading using `Sha256` updated per chunk.
+
+The existing memfd-mmap fast path becomes the AsyncRead-with-File-backing path automatically.
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/traits/bundle_aux.rs crates/boxpilotd/src/profile/unpack.rs
+git commit -m "refactor(boxpilotd): unpack consumes AuxStream::into_async_read"
+```
+
+---
+
+## PR 10 smoke
+
+```bash
+cargo test --workspace                                                  # Linux non-regression
+cargo check --target x86_64-pc-windows-gnu --workspace                  # MUST pass now (no allow-fail)
+git grep "nix::sys::memfd\|nix::fcntl::SealFlag" crates/boxpilot-profile/src
+# Expected: zero matches (memfd code lives in boxpilot-platform)
+```
+
+PR description should call out: "After this PR, Windows compile gate flips from `allow-failure: true` to **required**. CI workflow update lands in PR 11a."
+
+---
