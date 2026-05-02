@@ -145,10 +145,14 @@ async fn main() -> Result<()> {
     let fragment_reader = Arc::new(crate::legacy::observe::StdFsFragmentReader);
     let config_reader = Arc::new(crate::legacy::migrate::StdConfigReader);
     let journal = Arc::new(crate::systemd::JournalctlProcess);
+    let authority_subject = Arc::new(authority::ZbusSubject::new());
     let ctx = Arc::new(context::HelperContext::new(
         paths,
         Arc::new(credentials::DBusCallerResolver::new(conn.clone())),
-        Arc::new(authority::DBusAuthority::new(conn.clone())),
+        Arc::new(authority::DBusAuthority::new(
+            conn.clone(),
+            authority_subject.clone(),
+        )),
         Arc::new(systemd::DBusSystemd::new(conn.clone())),
         journal,
         Arc::new(controller::PasswdLookup),

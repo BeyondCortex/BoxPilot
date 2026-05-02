@@ -62,9 +62,52 @@ impl DBusAuthority {
 impl Authority for DBusAuthority {
     async fn check(
         &self,
-        _action_id: &str,
-        _principal: &CallerPrincipal,
+        action_id: &str,
+        principal: &CallerPrincipal,
     ) -> Result<bool, HelperError> {
-        todo!("filled in Task 4.2b")
+        // Defensive: a Linux DBusAuthority must never be invoked with a
+        // non-Linux principal. The polkit call itself does not consume the
+        // uid (it operates by D-Bus sender), but a mis-typed principal
+        // signals a wiring bug elsewhere — fail loud rather than silently
+        // dropping the principal info.
+        let _uid = match principal {
+            CallerPrincipal::LinuxUid(u) => *u,
+            CallerPrincipal::WindowsSid(_) => {
+                return Err(HelperError::Ipc {
+                    message: "linux DBusAuthority received non-Linux principal".into(),
+                });
+            }
+        };
+
+        let sender = self
+            .subject_provider
+            .current_sender()
+            .ok_or_else(|| HelperError::Ipc {
+                message: "polkit subject (D-Bus sender) unknown".into(),
+            })?;
+
+        let proxy = PolkitAuthorityProxy::new(&self.conn)
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("polkit proxy: {e}"),
+            })?;
+
+        let mut subject_data: HashMap<&str, Value<'_>> = HashMap::new();
+        let bus_name_value = Value::Str(sender.as_str().into());
+        subject_data.insert("name", bus_name_value);
+
+        let (is_authorized, _is_challenge, _details) = proxy
+            .check_authorization(
+                &("system-bus-name", subject_data),
+                action_id,
+                HashMap::new(),
+                FLAG_ALLOW_USER_INTERACTION,
+                "", // cancellation id (unused)
+            )
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("polkit CheckAuthorization({action_id}): {e}"),
+            })?;
+        Ok(is_authorized)
     }
 }

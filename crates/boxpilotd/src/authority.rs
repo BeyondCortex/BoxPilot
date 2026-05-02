@@ -1,124 +1,46 @@
-//! polkit authorization. Calls
-//! `org.freedesktop.PolicyKit1.Authority.CheckAuthorization` on the system
-//! bus. Subject is constructed from the caller's D-Bus bus name (`:x.y`)
-//! using `kind = "system-bus-name"`.
+//! `boxpilotd`-side glue around `boxpilot_platform::Authority`.
+//!
+//! Re-exports the platform `Authority` trait + `CallerPrincipal` enum + the
+//! Linux `DBusAuthority` impl. Adds `ZbusSubject`, the per-call sender
+//! shuttle that the iface methods write into immediately before calling
+//! `dispatch::authorize`. `DBusAuthority` reads it back via the
+//! `SubjectProvider` trait when assembling the polkit subject.
 
-use async_trait::async_trait;
-use boxpilot_ipc::HelperError;
-use std::collections::HashMap;
-use zbus::{proxy, zvariant::Value, Connection};
-
-#[async_trait]
-pub trait Authority: Send + Sync {
-    /// Returns Ok(true) if authorized, Ok(false) if denied (including auth
-    /// dismissal), Err if polkit itself errors.
-    async fn check(&self, action_id: &str, sender_bus_name: &str) -> Result<bool, HelperError>;
-}
-
-#[proxy(
-    interface = "org.freedesktop.PolicyKit1.Authority",
-    default_service = "org.freedesktop.PolicyKit1",
-    default_path = "/org/freedesktop/PolicyKit1/Authority"
-)]
-trait PolkitAuthority {
-    #[zbus(name = "CheckAuthorization")]
-    fn check_authorization(
-        &self,
-        subject: &(&str, HashMap<&str, Value<'_>>),
-        action_id: &str,
-        details: HashMap<&str, &str>,
-        flags: u32,
-        cancellation_id: &str,
-    ) -> zbus::Result<(bool, bool, HashMap<String, String>)>;
-}
-
-const FLAG_ALLOW_USER_INTERACTION: u32 = 1;
-
-pub struct DBusAuthority {
-    conn: Connection,
-}
-
-impl DBusAuthority {
-    pub fn new(conn: Connection) -> Self {
-        Self { conn }
-    }
-}
-
-#[async_trait]
-impl Authority for DBusAuthority {
-    async fn check(&self, action_id: &str, sender_bus_name: &str) -> Result<bool, HelperError> {
-        let proxy = PolkitAuthorityProxy::new(&self.conn)
-            .await
-            .map_err(|e| HelperError::Ipc {
-                message: format!("polkit proxy: {e}"),
-            })?;
-
-        let mut subject_data: HashMap<&str, Value<'_>> = HashMap::new();
-        let bus_name_value = Value::Str(sender_bus_name.into());
-        subject_data.insert("name", bus_name_value);
-
-        let (is_authorized, _is_challenge, _details) = proxy
-            .check_authorization(
-                &("system-bus-name", subject_data),
-                action_id,
-                HashMap::new(),
-                FLAG_ALLOW_USER_INTERACTION,
-                "", // cancellation id (unused)
-            )
-            .await
-            .map_err(|e| HelperError::Ipc {
-                message: format!("polkit CheckAuthorization({action_id}): {e}"),
-            })?;
-        Ok(is_authorized)
-    }
-}
+pub use boxpilot_platform::linux::authority::DBusAuthority;
+pub use boxpilot_platform::traits::authority::{Authority, CallerPrincipal};
 
 #[cfg(test)]
 pub mod testing {
-    use super::*;
-    use std::collections::HashMap as Map;
-    use std::sync::Mutex;
+    pub use boxpilot_platform::fakes::authority::{AlwaysAllow, CannedAuthority};
+}
 
-    pub struct CannedAuthority(pub Mutex<Map<String, bool>>);
+use std::sync::{Arc, RwLock};
 
-    impl CannedAuthority {
-        pub fn allowing(actions: &[&str]) -> Self {
-            Self(Mutex::new(
-                actions.iter().map(|a| (a.to_string(), true)).collect(),
-            ))
-        }
-        pub fn denying(actions: &[&str]) -> Self {
-            Self(Mutex::new(
-                actions.iter().map(|a| (a.to_string(), false)).collect(),
-            ))
-        }
+/// Per-call D-Bus sender shuttle. The iface impl `set`s the sender just
+/// before calling `dispatch::authorize`; the Linux `DBusAuthority` reads it
+/// back via `SubjectProvider::current_sender` when building the polkit
+/// subject. Wrapped in `RwLock` because zbus interface methods are `&self`
+/// and may run concurrently — but each call writes the sender before doing
+/// any awaits, so the value seen by `current_sender()` always belongs to a
+/// recent in-flight call. Tightening this to a per-call `tokio::task_local`
+/// is tracked as a follow-up.
+#[derive(Default)]
+pub struct ZbusSubject {
+    inner: Arc<RwLock<Option<String>>>,
+}
+
+impl ZbusSubject {
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    #[async_trait]
-    impl Authority for CannedAuthority {
-        async fn check(&self, action_id: &str, _sender: &str) -> Result<bool, HelperError> {
-            let map = self.0.lock().unwrap();
-            map.get(action_id).copied().ok_or_else(|| HelperError::Ipc {
-                message: format!("test: unconfigured action {action_id}"),
-            })
-        }
+    pub fn set(&self, sender: &str) {
+        *self.inner.write().unwrap() = Some(sender.to_string());
     }
+}
 
-    #[tokio::test]
-    async fn canned_allow() {
-        let a = CannedAuthority::allowing(&["app.boxpilot.helper.service.status"]);
-        assert!(a
-            .check("app.boxpilot.helper.service.status", ":1.5")
-            .await
-            .unwrap());
-    }
-
-    #[tokio::test]
-    async fn canned_deny() {
-        let a = CannedAuthority::denying(&["app.boxpilot.helper.service.start"]);
-        assert!(!a
-            .check("app.boxpilot.helper.service.start", ":1.5")
-            .await
-            .unwrap());
+impl boxpilot_platform::linux::authority::SubjectProvider for ZbusSubject {
+    fn current_sender(&self) -> Option<String> {
+        self.inner.read().unwrap().clone()
     }
 }
