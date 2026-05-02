@@ -8,11 +8,11 @@ use boxpilot_ipc::{
     ActivationManifest, HelperError, HelperResult, BUNDLE_MAX_FILE_BYTES, BUNDLE_MAX_FILE_COUNT,
     BUNDLE_MAX_NESTING_DEPTH, BUNDLE_MAX_TOTAL_BYTES,
 };
+use boxpilot_platform::AuxStream;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom};
-use std::os::fd::OwnedFd;
+use std::io::Read;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use tar::{Archive, EntryType};
@@ -30,10 +30,15 @@ pub struct UnpackReport {
     pub file_count: u32,
 }
 
-/// Read the full bundle out of `fd` and materialize into `dest_dir`,
+/// Read the full bundle out of `aux` and materialize into `dest_dir`,
 /// which must NOT pre-exist. The directory is created with mode 0o700.
-pub fn unpack_into(
-    fd: OwnedFd,
+///
+/// Internally this spools the `AuxStream` (which may be a Linux memfd
+/// or a generic `AsyncRead`) into a tempfile so that the existing
+/// seekable `tar::Archive` iteration logic can keep working without
+/// being rewritten as an async-streaming parser.
+pub async fn unpack_into(
+    aux: AuxStream,
     dest_dir: &Path,
     expected_total_bytes: Option<u64>,
 ) -> HelperResult<UnpackReport> {
@@ -43,14 +48,31 @@ pub fn unpack_into(
         });
     }
 
-    let mut file = File::from(fd);
-    let total_size = file.seek(SeekFrom::End(0)).map_err(|e| HelperError::Ipc {
-        message: format!("seek bundle fd: {e}"),
+    // Spool to a tempfile so the rest of the unpacker can use sync
+    // `tar::Archive` against a seekable handle. The tempfile is
+    // deleted-on-drop via `tempfile::NamedTempFile`.
+    let temp = tempfile::NamedTempFile::new().map_err(|e| HelperError::Ipc {
+        message: format!("tempfile: {e}"),
     })?;
-    file.seek(SeekFrom::Start(0))
+    let temp_path = temp.path().to_path_buf();
+
+    let mut reader = aux.into_async_read();
+    let mut tempfile_async = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&temp_path)
+        .await
         .map_err(|e| HelperError::Ipc {
-            message: format!("rewind bundle fd: {e}"),
+            message: format!("open spool: {e}"),
         })?;
+    let copied = tokio::io::copy(&mut reader, &mut tempfile_async)
+        .await
+        .map_err(|e| HelperError::Ipc {
+            message: format!("copy aux: {e}"),
+        })?;
+    drop(tempfile_async);
+
+    let total_size = copied;
     if total_size > BUNDLE_MAX_TOTAL_BYTES {
         return Err(HelperError::BundleTooLarge {
             total: total_size,
@@ -71,6 +93,10 @@ pub fn unpack_into(
             });
         }
     }
+
+    let mut file = File::open(&temp_path).map_err(|e| HelperError::Ipc {
+        message: format!("reopen spool: {e}"),
+    })?;
 
     create_dir_0700(dest_dir)?;
 
@@ -304,9 +330,13 @@ mod tests {
         ActivationManifest, AssetEntry, SourceKind, ACTIVATION_MANIFEST_SCHEMA_VERSION,
     };
     use std::ffi::CString;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, OwnedFd};
     use std::os::unix::fs::PermissionsExt;
     use tempfile::tempdir;
+
+    fn tar_aux(entries: Vec<(&str, tar::EntryType, Vec<u8>)>) -> AuxStream {
+        AuxStream::from_owned_fd(tar_memfd(entries))
+    }
 
     fn make_manifest(profile_id: &str, assets: Vec<AssetEntry>) -> Vec<u8> {
         let m = ActivationManifest {
@@ -386,8 +416,8 @@ mod tests {
         buf[..n].copy_from_slice(&bytes[bytes.len() - n..]);
     }
 
-    #[test]
-    fn happy_path_unpacks_config_assets_and_manifest() {
+    #[tokio::test]
+    async fn happy_path_unpacks_config_assets_and_manifest() {
         let manifest = make_manifest(
             "p",
             vec![AssetEntry {
@@ -396,7 +426,7 @@ mod tests {
                 size: 3,
             }],
         );
-        let fd = tar_memfd(vec![
+        let aux = tar_aux(vec![
             (
                 "config.json",
                 tar::EntryType::Regular,
@@ -412,127 +442,127 @@ mod tests {
         ]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("staging-id");
-        let report = unpack_into(fd, &dest, None).unwrap();
+        let report = unpack_into(aux, &dest, None).await.unwrap();
         assert!(dest.join("config.json").exists());
         assert!(dest.join("assets/geosite.db").exists());
         assert_eq!(report.file_count, 3);
     }
 
-    #[test]
-    fn refuses_absolute_path_entry() {
-        let fd = tar_memfd(vec![(
+    #[tokio::test]
+    async fn refuses_absolute_path_entry() {
+        let aux = tar_aux(vec![(
             "/etc/passwd",
             tar::EntryType::Regular,
             b"x".to_vec(),
         )]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(err, HelperError::BundleEntryRejected { .. }));
     }
 
-    #[test]
-    fn refuses_dotdot_traversal() {
-        let fd = tar_memfd(vec![(
+    #[tokio::test]
+    async fn refuses_dotdot_traversal() {
+        let aux = tar_aux(vec![(
             "../escape.txt",
             tar::EntryType::Regular,
             b"x".to_vec(),
         )]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(err, HelperError::BundleEntryRejected { .. }));
     }
 
-    #[test]
-    fn refuses_symlink_entry() {
-        let fd = tar_memfd(vec![("link", tar::EntryType::Symlink, b"".to_vec())]);
+    #[tokio::test]
+    async fn refuses_symlink_entry() {
+        let aux = tar_aux(vec![("link", tar::EntryType::Symlink, b"".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(
             err,
             HelperError::BundleEntryRejected { reason } if reason.to_lowercase().contains("symlink")
         ));
     }
 
-    #[test]
-    fn refuses_hardlink_entry() {
-        let fd = tar_memfd(vec![("link", tar::EntryType::Link, b"".to_vec())]);
+    #[tokio::test]
+    async fn refuses_hardlink_entry() {
+        let aux = tar_aux(vec![("link", tar::EntryType::Link, b"".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(err, HelperError::BundleEntryRejected { .. }));
     }
 
-    #[test]
-    fn refuses_fifo_entry() {
-        let fd = tar_memfd(vec![("p", tar::EntryType::Fifo, b"".to_vec())]);
+    #[tokio::test]
+    async fn refuses_fifo_entry() {
+        let aux = tar_aux(vec![("p", tar::EntryType::Fifo, b"".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
-            unpack_into(fd, &dest, None).unwrap_err(),
+            unpack_into(aux, &dest, None).await.unwrap_err(),
             HelperError::BundleEntryRejected { .. }
         ));
     }
 
-    #[test]
-    fn refuses_char_device_entry() {
-        let fd = tar_memfd(vec![("c", tar::EntryType::Char, b"".to_vec())]);
+    #[tokio::test]
+    async fn refuses_char_device_entry() {
+        let aux = tar_aux(vec![("c", tar::EntryType::Char, b"".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
-            unpack_into(fd, &dest, None).unwrap_err(),
+            unpack_into(aux, &dest, None).await.unwrap_err(),
             HelperError::BundleEntryRejected { .. }
         ));
     }
 
-    #[test]
-    fn refuses_block_device_entry() {
-        let fd = tar_memfd(vec![("b", tar::EntryType::Block, b"".to_vec())]);
+    #[tokio::test]
+    async fn refuses_block_device_entry() {
+        let aux = tar_aux(vec![("b", tar::EntryType::Block, b"".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
-            unpack_into(fd, &dest, None).unwrap_err(),
+            unpack_into(aux, &dest, None).await.unwrap_err(),
             HelperError::BundleEntryRejected { .. }
         ));
     }
 
-    #[test]
-    fn refuses_path_with_backslash() {
-        let fd = tar_memfd(vec![("a\\b", tar::EntryType::Regular, b"x".to_vec())]);
+    #[tokio::test]
+    async fn refuses_path_with_backslash() {
+        let aux = tar_aux(vec![("a\\b", tar::EntryType::Regular, b"x".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
-            unpack_into(fd, &dest, None).unwrap_err(),
+            unpack_into(aux, &dest, None).await.unwrap_err(),
             HelperError::BundleEntryRejected { .. }
         ));
     }
 
-    #[test]
-    fn refuses_path_with_division_slash() {
-        let fd = tar_memfd(vec![("a\u{2215}b", tar::EntryType::Regular, b"x".to_vec())]);
+    #[tokio::test]
+    async fn refuses_path_with_division_slash() {
+        let aux = tar_aux(vec![("a\u{2215}b", tar::EntryType::Regular, b"x".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
-            unpack_into(fd, &dest, None).unwrap_err(),
+            unpack_into(aux, &dest, None).await.unwrap_err(),
             HelperError::BundleEntryRejected { .. }
         ));
     }
 
-    #[test]
-    fn refuses_path_with_fullwidth_solidus() {
-        let fd = tar_memfd(vec![("a\u{FF0F}b", tar::EntryType::Regular, b"x".to_vec())]);
+    #[tokio::test]
+    async fn refuses_path_with_fullwidth_solidus() {
+        let aux = tar_aux(vec![("a\u{FF0F}b", tar::EntryType::Regular, b"x".to_vec())]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
         assert!(matches!(
-            unpack_into(fd, &dest, None).unwrap_err(),
+            unpack_into(aux, &dest, None).await.unwrap_err(),
             HelperError::BundleEntryRejected { .. }
         ));
     }
 
-    #[test]
-    fn rejects_too_many_files() {
+    #[tokio::test]
+    async fn rejects_too_many_files() {
         let names: Vec<String> = (0..(BUNDLE_MAX_FILE_COUNT + 1))
             .map(|i| format!("f{i}.txt"))
             .collect();
@@ -540,50 +570,50 @@ mod tests {
             .iter()
             .map(|n| (n.as_str(), tar::EntryType::Regular, b"x".to_vec()))
             .collect();
-        let fd = tar_memfd(entries);
+        let aux = tar_aux(entries);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(err, HelperError::BundleEntryRejected { .. }));
     }
 
-    #[test]
-    fn rejects_too_deep_nesting() {
+    #[tokio::test]
+    async fn rejects_too_deep_nesting() {
         let depth = (BUNDLE_MAX_NESTING_DEPTH + 1) as usize;
         let path: String = std::iter::repeat("d")
             .take(depth)
             .collect::<Vec<_>>()
             .join("/")
             + "/leaf.txt";
-        let fd = tar_memfd(vec![(
+        let aux = tar_aux(vec![(
             path.as_str(),
             tar::EntryType::Regular,
             b"x".to_vec(),
         )]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(err, HelperError::BundleEntryRejected { .. }));
     }
 
-    #[test]
-    fn rejects_missing_manifest() {
-        let fd = tar_memfd(vec![(
+    #[tokio::test]
+    async fn rejects_missing_manifest() {
+        let aux = tar_aux(vec![(
             "config.json",
             tar::EntryType::Regular,
             b"{}".to_vec(),
         )]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(
             err,
             HelperError::BundleEntryRejected { reason } if reason.contains("manifest")
         ));
     }
 
-    #[test]
-    fn rejects_manifest_asset_sha_mismatch() {
+    #[tokio::test]
+    async fn rejects_manifest_asset_sha_mismatch() {
         let manifest = make_manifest(
             "p",
             vec![AssetEntry {
@@ -592,7 +622,7 @@ mod tests {
                 size: 3,
             }],
         );
-        let fd = tar_memfd(vec![
+        let aux = tar_aux(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             ("assets", tar::EntryType::Directory, Vec::new()),
             (
@@ -604,45 +634,45 @@ mod tests {
         ]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(err, HelperError::BundleAssetMismatch { .. }));
     }
 
-    #[test]
-    fn rejects_manifest_unknown_schema_version() {
+    #[tokio::test]
+    async fn rejects_manifest_unknown_schema_version() {
         let m_bytes = make_manifest("p", vec![]);
         let s = String::from_utf8(m_bytes)
             .unwrap()
             .replace("\"schema_version\": 1", "\"schema_version\": 99");
         let m_bytes = s.into_bytes();
-        let fd = tar_memfd(vec![
+        let aux = tar_aux(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             ("manifest.json", tar::EntryType::Regular, m_bytes),
         ]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(
             err,
             HelperError::UnsupportedSchemaVersion { got: 99 }
         ));
     }
 
-    #[test]
-    fn rejects_when_dest_exists() {
-        let fd = tar_memfd(vec![]);
+    #[tokio::test]
+    async fn rejects_when_dest_exists() {
+        let aux = tar_aux(vec![]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("already-here");
         std::fs::create_dir(&dest).unwrap();
-        let err = unpack_into(fd, &dest, None).unwrap_err();
+        let err = unpack_into(aux, &dest, None).await.unwrap_err();
         assert!(matches!(err, HelperError::Ipc { .. }));
     }
 
-    #[test]
-    fn expected_total_bytes_under_actual_aborts_early() {
+    #[tokio::test]
+    async fn expected_total_bytes_under_actual_aborts_early() {
         // Hint says "≤ N" but the bundle is actually larger — reject. This is
         // the safety case: a producer or MITM that grew the bundle must not
-        // sneak past the daemon's pre-mmap size guard.
+        // sneak past the daemon's pre-spool size guard.
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             (
@@ -654,15 +684,21 @@ mod tests {
         let actual = nix::sys::stat::fstat(fd.as_raw_fd()).unwrap().st_size as u64;
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        let err = unpack_into(fd, &dest, Some(actual.saturating_sub(1))).unwrap_err();
+        let err = unpack_into(
+            AuxStream::from_owned_fd(fd),
+            &dest,
+            Some(actual.saturating_sub(1)),
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, HelperError::Ipc { .. }));
     }
 
-    #[test]
-    fn expected_total_bytes_over_actual_is_accepted_as_upper_bound() {
+    #[tokio::test]
+    async fn expected_total_bytes_over_actual_is_accepted_as_upper_bound() {
         // Hint > actual is fine: the field's contract is "soft hint to
-        // short-circuit oversized bundles before mmap", so a conservative
-        // upper bound from the producer must not be rejected.
+        // short-circuit oversized bundles", so a conservative upper bound
+        // from the producer must not be rejected.
         let fd = tar_memfd(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             (
@@ -674,12 +710,14 @@ mod tests {
         let actual = nix::sys::stat::fstat(fd.as_raw_fd()).unwrap().st_size as u64;
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        unpack_into(fd, &dest, Some(actual + 4096)).expect("upper-bound hint must be accepted");
+        unpack_into(AuxStream::from_owned_fd(fd), &dest, Some(actual + 4096))
+            .await
+            .expect("upper-bound hint must be accepted");
     }
 
-    #[test]
-    fn happy_path_creates_dest_with_0700() {
-        let fd = tar_memfd(vec![
+    #[tokio::test]
+    async fn happy_path_creates_dest_with_0700() {
+        let aux = tar_aux(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             (
                 "manifest.json",
@@ -689,14 +727,14 @@ mod tests {
         ]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        unpack_into(fd, &dest, None).unwrap();
+        unpack_into(aux, &dest, None).await.unwrap();
         let mode = std::fs::metadata(&dest).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
     }
 
-    #[test]
-    fn unpacked_files_are_0600() {
-        let fd = tar_memfd(vec![
+    #[tokio::test]
+    async fn unpacked_files_are_0600() {
+        let aux = tar_aux(vec![
             ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
             (
                 "manifest.json",
@@ -706,12 +744,35 @@ mod tests {
         ]);
         let dir = tempdir().unwrap();
         let dest = dir.path().join("s");
-        unpack_into(fd, &dest, None).unwrap();
+        unpack_into(aux, &dest, None).await.unwrap();
         let mode = std::fs::metadata(dest.join("config.json"))
             .unwrap()
             .permissions()
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[tokio::test]
+    async fn aux_stream_from_async_read_unpacks() {
+        // Cross-platform path: AuxStream::from_async_read carrying raw tar
+        // bytes is unpacked the same as a Linux memfd-backed stream.
+        let manifest = make_manifest("p", vec![]);
+        let fd = tar_memfd(vec![
+            ("config.json", tar::EntryType::Regular, b"{}".to_vec()),
+            ("manifest.json", tar::EntryType::Regular, manifest),
+        ]);
+        // Read out the bytes via a normal File so we can hand them to
+        // `from_async_read` and exercise the non-FD branch end-to-end.
+        let mut file = File::from(fd);
+        use std::io::Seek;
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
+        let aux = AuxStream::from_async_read(std::io::Cursor::new(bytes));
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("s");
+        unpack_into(aux, &dest, None).await.unwrap();
+        assert!(dest.join("config.json").exists());
     }
 }
