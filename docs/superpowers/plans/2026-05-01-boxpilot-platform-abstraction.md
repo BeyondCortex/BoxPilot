@@ -2492,3 +2492,290 @@ git grep "sender_bus_name" crates/boxpilotd/src/dispatch.rs              # zero 
 PR description body should mention the three sub-changes (Authority move + dispatch refactor + BUS_NAME guard) and link COQ10 / COQ11 / COQ17 / Round 6/6.1.
 
 ---
+
+# PR 5: Move `Systemd` → `ServiceManager` + `JournalReader` → `LogReader`
+
+**Size:** M · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/{service,logs}.rs`, `boxpilotd/src/systemd.rs` (re-export shell), `boxpilotd/src/context.rs`, callers. **Linux non-regression:** trait surface NOT expanded (per COQ4) — methods, parameter types, return types, `UnitState` shape are byte-identical to current code.
+
+This PR mechanically moves two existing traits to platform crate. Per COQ4 the trait surface is **frozen at the current Linux shape**; SCM-aware redesign is Sub-project #2's first task.
+
+## Task 5.1: Move `Systemd` → `ServiceManager` (verbatim port)
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/service.rs`
+- Create: `crates/boxpilot-platform/src/linux/service.rs`
+- Create: `crates/boxpilot-platform/src/windows/service.rs`
+- Create: `crates/boxpilot-platform/src/fakes/service.rs`
+- Modify: `crates/boxpilotd/src/systemd.rs` (becomes re-export shell)
+- Modify: `crates/boxpilotd/src/context.rs` — rename field `systemd` to keep readability, alias allowed
+
+- [ ] **Step 1: Read existing `boxpilotd/src/systemd.rs` end-to-end**
+
+Run: `wc -l crates/boxpilotd/src/systemd.rs && head -40 crates/boxpilotd/src/systemd.rs`
+Expected: ~552 lines, trait def at lines 9-31, zbus proxy macros after.
+
+- [ ] **Step 2: Copy trait def to platform crate**
+
+`crates/boxpilot-platform/src/traits/service.rs`:
+
+```rust
+//! Service-control abstraction. Currently shaped 1:1 with the existing
+//! `boxpilotd::systemd::Systemd` trait. SCM (Windows) shape redesign is
+//! Sub-project #2's first task per COQ4.
+//!
+//! Method names and `UnitState` are part of the GUI's wire protocol via
+//! `boxpilot-ipc`; do not rename without a schema bump.
+
+use async_trait::async_trait;
+use boxpilot_ipc::{HelperError, UnitState};
+
+#[async_trait]
+pub trait ServiceManager: Send + Sync {
+    async fn unit_state(&self, unit_name: &str) -> Result<UnitState, HelperError>;
+    async fn start_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn stop_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn restart_unit(&self, unit_name: &str) -> Result<(), HelperError>;
+    async fn enable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError>;
+    async fn disable_unit_files(&self, unit_names: &[String]) -> Result<(), HelperError>;
+    async fn reload(&self) -> Result<(), HelperError>;
+    async fn fragment_path(&self, unit_name: &str) -> Result<Option<String>, HelperError>;
+    async fn unit_file_state(&self, unit_name: &str) -> Result<Option<String>, HelperError>;
+}
+
+/// Backwards-compatible alias for callers that imported the old name.
+/// Schedule for removal in Sub-project #2's trait redesign.
+pub use ServiceManager as Systemd;
+```
+
+- [ ] **Step 3: Move Linux impl bodily**
+
+`crates/boxpilot-platform/src/linux/service.rs`:
+
+Copy the rest of `boxpilotd/src/systemd.rs` (zbus proxies, `DBusSystemd` struct, all impl bodies). Adapt the trait import:
+
+```rust
+use crate::traits::service::ServiceManager;
+use async_trait::async_trait;
+use boxpilot_ipc::{HelperError, UnitState};
+use zbus::{proxy, Connection};
+
+// ... (paste zbus #[proxy] traits SystemdManager / SystemdUnit / SystemdService verbatim)
+
+pub struct DBusSystemd {
+    conn: Connection,
+}
+
+impl DBusSystemd {
+    pub fn new(conn: Connection) -> Self {
+        Self { conn }
+    }
+}
+
+#[async_trait]
+impl ServiceManager for DBusSystemd {
+    // ... (paste all 9 methods verbatim from boxpilotd::systemd)
+}
+```
+
+- [ ] **Step 4: Windows stub**
+
+`crates/boxpilot-platform/src/windows/service.rs`:
+
+```rust
+use crate::traits::service::ServiceManager;
+use async_trait::async_trait;
+use boxpilot_ipc::{HelperError, UnitState};
+
+pub struct ScmServiceManager;
+
+#[async_trait]
+impl ServiceManager for ScmServiceManager {
+    async fn unit_state(&self, _unit_name: &str) -> Result<UnitState, HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn start_unit(&self, _: &str) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn stop_unit(&self, _: &str) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn restart_unit(&self, _: &str) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn enable_unit_files(&self, _: &[String]) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn disable_unit_files(&self, _: &[String]) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn reload(&self) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn fragment_path(&self, _: &str) -> Result<Option<String>, HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn unit_file_state(&self, _: &str) -> Result<Option<String>, HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+}
+```
+
+- [ ] **Step 5: Move `RecordingSystemd` fake**
+
+`crates/boxpilot-platform/src/fakes/service.rs`:
+
+Copy the `RecordingSystemd` from `boxpilotd::systemd::testing` verbatim, adjusting trait imports.
+
+- [ ] **Step 6: Wire mods + replace `boxpilotd/src/systemd.rs`**
+
+`crates/boxpilotd/src/systemd.rs`:
+
+```rust
+//! Re-export shell. Production impl lives in
+//! `boxpilot-platform::linux::service`. The trait is renamed
+//! `ServiceManager`; `Systemd` is a backwards-compat alias.
+
+pub use boxpilot_platform::traits::service::{Systemd, ServiceManager};
+pub use boxpilot_platform::linux::service::DBusSystemd;
+
+#[cfg(test)]
+pub mod testing {
+    pub use boxpilot_platform::fakes::service::*;
+}
+```
+
+- [ ] **Step 7: Run tests**
+
+Run: `cargo test -p boxpilotd`
+Expected: green. Test imports of `crate::systemd::testing::RecordingSystemd` keep working.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/systemd.rs
+git commit -m "refactor(platform): move Systemd trait to ServiceManager (verbatim port; per COQ4)"
+```
+
+---
+
+## Task 5.2: Move `JournalReader` → `LogReader` (verbatim port)
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/logs.rs`
+- Create: `crates/boxpilot-platform/src/linux/logs.rs`
+- Create: `crates/boxpilot-platform/src/windows/logs.rs`
+- Create: `crates/boxpilot-platform/src/fakes/logs.rs`
+- Modify: `crates/boxpilotd/src/systemd.rs` — also re-export the new names
+
+The existing `JournalReader` lives in `boxpilotd::systemd` (lines ~295+); `JournalctlProcess` is the production impl.
+
+- [ ] **Step 1: Trait def**
+
+`crates/boxpilot-platform/src/traits/logs.rs`:
+
+```rust
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+
+#[async_trait]
+pub trait LogReader: Send + Sync {
+    /// Tail the last `lines` log entries for `unit_name`.
+    /// Linux: `journalctl --unit <unit> -n <lines> -o cat`.
+    /// Windows: `EvtQuery` filter (Sub-project #2).
+    async fn tail(&self, unit_name: &str, lines: usize) -> Result<Vec<String>, HelperError>;
+}
+
+pub use LogReader as JournalReader;
+```
+
+- [ ] **Step 2: Linux impl**
+
+`crates/boxpilot-platform/src/linux/logs.rs`:
+
+Move `JournalctlProcess` from `boxpilotd::systemd`. Single struct + `LogReader` impl that spawns `journalctl`.
+
+- [ ] **Step 3: Windows stub + fake**
+
+`crates/boxpilot-platform/src/windows/logs.rs`:
+
+```rust
+use crate::traits::logs::LogReader;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+
+pub struct EventLogReader;
+
+#[async_trait]
+impl LogReader for EventLogReader {
+    async fn tail(&self, _unit_name: &str, _lines: usize) -> Result<Vec<String>, HelperError> {
+        Ok(vec!["log reading not implemented on Windows in Sub-project #1".into()])
+    }
+}
+```
+
+`crates/boxpilot-platform/src/fakes/logs.rs`:
+
+```rust
+use crate::traits::logs::LogReader;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::sync::Mutex;
+
+pub struct InMemoryLogReader(Mutex<Vec<String>>);
+
+impl InMemoryLogReader {
+    pub fn with_lines(lines: Vec<String>) -> Self {
+        Self(Mutex::new(lines))
+    }
+}
+
+#[async_trait]
+impl LogReader for InMemoryLogReader {
+    async fn tail(&self, _unit_name: &str, lines: usize) -> Result<Vec<String>, HelperError> {
+        let all = self.0.lock().unwrap().clone();
+        Ok(all.into_iter().take(lines).collect())
+    }
+}
+```
+
+- [ ] **Step 4: Wire mods**
+
+Add `pub mod logs;` to `traits/mod.rs`, `linux/mod.rs`, `windows/mod.rs`, `fakes/mod.rs`.
+
+- [ ] **Step 5: Update `boxpilotd::systemd` re-exports**
+
+In `boxpilotd/src/systemd.rs`, append:
+
+```rust
+pub use boxpilot_platform::traits::logs::{JournalReader, LogReader};
+pub use boxpilot_platform::linux::logs::JournalctlProcess;
+
+#[cfg(test)]
+pub mod testing_logs {
+    pub use boxpilot_platform::fakes::logs::InMemoryLogReader;
+}
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/systemd.rs
+git commit -m "refactor(platform): move JournalReader to LogReader (verbatim port)"
+```
+
+---
+
+## PR 5 smoke
+
+```bash
+cargo test --workspace                                                  # Linux non-regression
+git grep "trait Systemd\|trait JournalReader" crates/boxpilotd/src       # zero matches (only re-exports)
+cargo check --target x86_64-pc-windows-gnu --workspace || true          # still allow-fail
+```
+
+---
