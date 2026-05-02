@@ -109,6 +109,20 @@ mod platform_extra_tests {
         let back: UnitState = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
     }
+
+    #[test]
+    fn known_state_deserializes_payload_without_platform_extra() {
+        // Forward-compat: old IPC clients (pre-PR 1.1) don't send platform_extra.
+        // The #[serde(default)] attribute on the field must keep this working.
+        let old = r#"{"kind":"known","active_state":"active","sub_state":"running","load_state":"loaded","n_restarts":0,"exec_main_status":0}"#;
+        let s: UnitState = serde_json::from_str(old).unwrap();
+        match s {
+            UnitState::Known { platform_extra, .. } => {
+                assert_eq!(platform_extra, PlatformUnitExtra::Linux);
+            }
+            _ => panic!("expected Known"),
+        }
+    }
 }
 
 #[cfg(test)]
