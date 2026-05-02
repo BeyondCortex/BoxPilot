@@ -2,18 +2,20 @@ name: windows-check
 on:
   pull_request:
   push:
-    branches: [main, "feat/windows-support"]
+    branches: [main, "feat/**"]
 
 jobs:
   cargo-check-windows-msvc:
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
-    # Sub-project #1 ships `boxpilot-ipc` and `boxpilot-platform` as the
-    # cross-platform surface plus the new Windows real impls (Authority,
-    # FileLock, IpcServer/Client, FsPermissions stub). The boxpilotd bin
-    # itself still has unix-only paths (zbus, nix, std::os::fd::OwnedFd in
-    # several modules) that Sub-project #2 will cfg-gate; until then we
-    # scope the gate to the two crates that MUST compile on Windows.
+    # Sub-project #2 batch ① closed the full-workspace Windows compile
+    # gap. iface.rs/credentials.rs (zbus parts) cfg-gated to Linux;
+    # symlink call sites route through the new CurrentPointer trait or
+    # are gated; legacy/backup.rs uses the FsPermissions trait. CI gate
+    # widens accordingly. (cargo test full-workspace lands once batch ③'s
+    # real Windows ServiceManager + ActivePointer impls are in place —
+    # no point running tests against ServiceManager stubs that all
+    # return NotImplemented.)
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -22,7 +24,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-msvc
-      - name: cargo check (x86_64-pc-windows-msvc) for boxpilot-ipc + boxpilot-platform
-        run: cargo check --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform
+      - name: cargo check (x86_64-pc-windows-msvc) — full workspace
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets
       - name: cargo test (boxpilot-ipc + boxpilot-platform)
         run: cargo test --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform --no-fail-fast
