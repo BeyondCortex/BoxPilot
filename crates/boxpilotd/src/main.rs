@@ -8,6 +8,7 @@ mod core;
 mod credentials;
 mod diagnostics;
 mod dispatch;
+mod dispatch_handler;
 mod handlers;
 mod iface;
 mod legacy;
