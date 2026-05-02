@@ -200,7 +200,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "zbus",
 ]
 
 [[package]]

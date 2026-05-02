@@ -407,47 +407,16 @@ pub async fn profile_activate(
         verify_window_secs,
         expected_total_bytes: Some(prepared.tar_size),
     };
-    let req_json = serde_json::to_string(&req).map_err(|e| CommandError {
-        code: "encode".into(),
-        message: e.to_string(),
-    })?;
 
-    let conn = zbus::Connection::system().await.map_err(|e| CommandError {
-        code: "dbus_connect".into(),
-        message: e.to_string(),
-    })?;
-    let proxy = zbus::Proxy::new(
-        &conn,
-        "app.boxpilot.Helper",
-        "/app/boxpilot/Helper",
-        "app.boxpilot.Helper1",
-    )
-    .await
-    .map_err(|e| CommandError {
-        code: "dbus_proxy".into(),
-        message: e.to_string(),
-    })?;
-
-    // PR 11 will invert the IPC layer so callers no longer have to peel
-    // an `OwnedFd` out of the AuxStream — until then, this is the
-    // Linux-only escape hatch.
-    let memfd = prepared.stream.into_owned_fd().ok_or_else(|| CommandError {
-        code: "transport".into(),
-        message: "AuxStream did not yield an OwnedFd; expected memfd-backed bundle on Linux".into(),
-    })?;
-    let fd_z: zbus::zvariant::OwnedFd = memfd.into();
-    let resp_json: String = proxy
-        .call("ProfileActivateBundle", &(req_json, fd_z))
+    // PR 11b: the AuxStream travels through the typed `HelperClient`
+    // wrapper now — no more raw `zbus::Proxy` handling on the GUI side.
+    let client = crate::helper_client::HelperClient::connect()
         .await
-        .map_err(|e| CommandError {
-            code: "dbus_call".into(),
-            message: e.to_string(),
-        })?;
-    let resp: boxpilot_ipc::ActivateBundleResponse =
-        serde_json::from_str(&resp_json).map_err(|e| CommandError {
-            code: "decode".into(),
-            message: e.to_string(),
-        })?;
+        .map_err(CommandError::from)?;
+    let resp = client
+        .profile_activate_bundle(&req, prepared.stream)
+        .await
+        .map_err(CommandError::from)?;
     let outcome = match resp.outcome {
         boxpilot_ipc::ActivateOutcome::Active => "active",
         boxpilot_ipc::ActivateOutcome::RolledBack => "rolled_back",

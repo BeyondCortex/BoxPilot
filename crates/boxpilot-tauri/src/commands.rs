@@ -14,9 +14,9 @@ impl From<ClientError> for CommandError {
     fn from(e: ClientError) -> Self {
         match e {
             ClientError::Method { code, message } => CommandError { code, message },
-            ClientError::Connect(inner) => CommandError {
+            ClientError::Ipc(message) => CommandError {
                 code: "ipc".into(),
-                message: format!("connect to system bus: {inner}"),
+                message,
             },
             ClientError::Decode(message) => CommandError {
                 code: "decode".into(),
