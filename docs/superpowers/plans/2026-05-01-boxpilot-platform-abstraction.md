@@ -4065,3 +4065,710 @@ git grep "nix::sys::memfd\|nix::fcntl::SealFlag" crates/boxpilot-profile/src
 PR description should call out: "After this PR, Windows compile gate flips from `allow-failure: true` to **required**. CI workflow update lands in PR 11a."
 
 ---
+
+# PR 11a: `IpcServer` + `IpcConnection` + `HelperDispatch` traits + Linux IpcServer impl + iface.rs refactor
+
+**Size:** L (per Round 6/6.3) · **Touches:** `boxpilot-platform/src/traits/ipc.rs`, `boxpilot-platform/src/linux/ipc.rs`, `boxpilot-platform/src/fakes/ipc.rs`, `boxpilot-ipc/src/method.rs` (additive accessors), `boxpilotd/src/iface.rs` (becomes thin shell), `boxpilotd/src/dispatch_handler.rs` (NEW), `boxpilotd/src/handlers/*.rs` (NEW). **Linux non-regression:** zbus method names + bus-name + object-path are unchanged (PR 4 guard test still passes).
+
+This is the structural inversion. Per Round 6/6.3 + COQ15: `iface.rs` becomes a thin shell that decodes zbus args → `(method, body, aux)` and calls `HelperDispatch::handle`. Each existing `do_*` body migrates into `boxpilotd/src/handlers/<verb>.rs`, taking `(CallerPrincipal, body, aux)`. A new `dispatch_handler.rs` owns the giant `match HelperMethod { … }` route table.
+
+**Windows compile gate flips to required at the end of this PR.**
+
+## Task 11a.1: Define IPC traits + AuxShape + wire-id accessors
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/ipc.rs`
+- Modify: `crates/boxpilot-ipc/src/method.rs` — additive `wire::*` accessors
+
+- [ ] **Step 1: Trait surface**
+
+`crates/boxpilot-platform/src/traits/ipc.rs`:
+
+```rust
+//! Cross-platform IPC server / dispatch / client surface. Per spec §5.4 +
+//! COQ8/9/10/15.
+
+use crate::traits::authority::CallerPrincipal;
+use crate::traits::bundle_aux::AuxStream;
+use async_trait::async_trait;
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
+
+#[derive(Debug, Clone)]
+pub struct ConnectionInfo {
+    pub caller: CallerPrincipal,
+}
+
+#[async_trait]
+pub trait IpcServer: Send + Sync {
+    /// Block until the platform-native acceptance loop returns. Linux:
+    /// owns the zbus connection / ObjectServer registration. Windows
+    /// (PR 12): `windows-service::service_dispatcher::start` + Named Pipe
+    /// accept loop on `\\.\pipe\boxpilot-helper`.
+    async fn run(&self, dispatch: std::sync::Arc<dyn HelperDispatch>) -> Result<(), HelperError>;
+}
+
+#[async_trait]
+pub trait HelperDispatch: Send + Sync {
+    async fn handle(
+        &self,
+        conn: ConnectionInfo,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
+    ) -> HelperResult<Vec<u8>>;
+}
+
+#[async_trait]
+pub trait IpcClient: Send + Sync {
+    async fn call(
+        &self,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
+    ) -> HelperResult<Vec<u8>>;
+}
+```
+
+- [ ] **Step 2: Additive accessors on `HelperMethod`**
+
+`crates/boxpilot-ipc/src/method.rs` — append:
+
+```rust
+/// Wire-format helpers for the Windows Named Pipe transport (per spec §5.4.1).
+/// Linux's zbus transport uses typed proxy methods and does not need these.
+pub mod wire {
+    use super::HelperMethod;
+
+    /// Per-method aux-shape contract (per spec §5.4 + COQ17/4.7).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AuxShape {
+        /// Method does not accept an aux stream.
+        None,
+        /// Method requires an aux stream (currently only ProfileActivateBundle).
+        Required,
+    }
+
+    impl HelperMethod {
+        /// Stable u32 ID used in the §5.4.1 wire envelope. Do not renumber
+        /// without bumping the wire format version (which would also imply
+        /// a `boxpilot-ipc` schema change). New variants get the next free id.
+        pub fn wire_id(self) -> u32 {
+            match self {
+                HelperMethod::ServiceStatus => 0x0001,
+                HelperMethod::ServiceStart => 0x0002,
+                HelperMethod::ServiceStop => 0x0003,
+                HelperMethod::ServiceRestart => 0x0004,
+                HelperMethod::ServiceEnable => 0x0005,
+                HelperMethod::ServiceDisable => 0x0006,
+                HelperMethod::ServiceInstallManaged => 0x0007,
+                HelperMethod::ServiceLogs => 0x0008,
+                HelperMethod::ProfileActivateBundle => 0x0010,
+                HelperMethod::ProfileRollbackRelease => 0x0011,
+                HelperMethod::CoreDiscover => 0x0020,
+                HelperMethod::CoreInstallManaged => 0x0021,
+                HelperMethod::CoreUpgradeManaged => 0x0022,
+                HelperMethod::CoreRollbackManaged => 0x0023,
+                HelperMethod::CoreAdopt => 0x0024,
+                HelperMethod::LegacyObserveService => 0x0030,
+                HelperMethod::LegacyMigrateService => 0x0031,
+                HelperMethod::ControllerTransfer => 0x0040,
+                HelperMethod::DiagnosticsExportRedacted => 0x0050,
+                HelperMethod::HomeStatus => 0x0060,
+            }
+        }
+
+        pub fn from_wire_id(id: u32) -> Option<HelperMethod> {
+            HelperMethod::ALL.iter().copied().find(|m| m.wire_id() == id)
+        }
+
+        pub fn aux_shape(self) -> AuxShape {
+            match self {
+                HelperMethod::ProfileActivateBundle => AuxShape::Required,
+                _ => AuxShape::None,
+            }
+        }
+
+        /// Per-method aux-bytes cap. Defaults to BUNDLE_MAX_TOTAL_BYTES for
+        /// activate; other methods don't accept aux today, so cap is 0.
+        pub fn aux_size_cap(self) -> u64 {
+            match self {
+                HelperMethod::ProfileActivateBundle => crate::BUNDLE_MAX_TOTAL_BYTES as u64,
+                _ => 0,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn wire_ids_round_trip() {
+            for m in HelperMethod::ALL {
+                let id = m.wire_id();
+                assert_eq!(HelperMethod::from_wire_id(id), Some(m), "method {m:?}");
+            }
+        }
+
+        #[test]
+        fn aux_shape_required_only_for_activate() {
+            for m in HelperMethod::ALL {
+                let expected = if m == HelperMethod::ProfileActivateBundle {
+                    AuxShape::Required
+                } else {
+                    AuxShape::None
+                };
+                assert_eq!(m.aux_shape(), expected, "method {m:?}");
+            }
+        }
+
+        #[test]
+        fn wire_ids_are_unique() {
+            let mut seen = std::collections::HashSet::new();
+            for m in HelperMethod::ALL {
+                assert!(seen.insert(m.wire_id()), "duplicate wire id for {m:?}");
+            }
+        }
+    }
+}
+```
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test -p boxpilot-ipc -p boxpilot-platform`
+Expected: 3 new wire tests pass.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/traits/ipc.rs crates/boxpilot-ipc/src/method.rs
+git commit -m "feat(ipc,platform): IpcServer/Dispatch/Client traits + wire-id accessors (COQ9/15)"
+```
+
+---
+
+## Task 11a.2: Extract `do_*` bodies into `boxpilotd/src/handlers/` modules
+
+**Files:**
+- Create: `crates/boxpilotd/src/handlers/mod.rs`
+- Create one module per verb in `crates/boxpilotd/src/handlers/<verb>.rs`
+- Modify: `crates/boxpilotd/src/iface.rs` — each `do_*` becomes a thin call into the new handler
+
+This is the rote part of the refactor. For each existing `do_*` method:
+
+- Extract the body into `handlers/<verb>.rs::handle(ctx, principal, body, aux) -> HelperResult<Vec<u8>>`.
+- The handler's `body: Vec<u8>` is parsed via `serde_json::from_slice(&body)` into the existing typed request struct.
+- The handler returns `serde_json::to_vec(&response)?` — same wire shape as today.
+- For `ProfileActivateBundle`, the handler also consumes `aux`.
+
+Pattern for a no-aux verb (using `service.status` as exemplar):
+
+`crates/boxpilotd/src/handlers/service_status.rs`:
+
+```rust
+use crate::context::HelperContext;
+use crate::dispatch;
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult, ServiceStatusResponse};
+use boxpilot_platform::traits::authority::CallerPrincipal;
+use boxpilot_platform::traits::bundle_aux::AuxStream;
+use std::sync::Arc;
+
+pub async fn handle(
+    ctx: Arc<HelperContext>,
+    principal: CallerPrincipal,
+    _body: Vec<u8>,
+    aux: AuxStream,
+) -> HelperResult<Vec<u8>> {
+    if !aux.is_none() {
+        return Err(HelperError::Ipc {
+            message: "service.status does not accept aux".into(),
+        });
+    }
+
+    let call = dispatch::authorize(&ctx, &principal, HelperMethod::ServiceStatus).await?;
+    let cfg = ctx.load_config().await?;
+    let unit_name = cfg.target_service.clone();
+    let unit_state = ctx.systemd.unit_state(&unit_name).await?;
+    let controller = call.controller.to_status();
+
+    let resp = ServiceStatusResponse {
+        unit_name,
+        unit_state,
+        controller,
+        state_schema_mismatch: ctx.state_schema_mismatch,
+    };
+    serde_json::to_vec(&resp).map_err(|e| HelperError::Ipc {
+        message: format!("serialize: {e}"),
+    })
+}
+```
+
+Pattern for a with-aux verb (`profile.activate_bundle`):
+
+`crates/boxpilotd/src/handlers/profile_activate_bundle.rs`:
+
+```rust
+use crate::context::HelperContext;
+use crate::dispatch;
+use boxpilot_ipc::{ActivateBundleRequest, HelperError, HelperMethod, HelperResult};
+use boxpilot_platform::traits::authority::CallerPrincipal;
+use boxpilot_platform::traits::bundle_aux::AuxStream;
+use std::sync::Arc;
+
+pub async fn handle(
+    ctx: Arc<HelperContext>,
+    principal: CallerPrincipal,
+    body: Vec<u8>,
+    aux: AuxStream,
+) -> HelperResult<Vec<u8>> {
+    if aux.is_none() {
+        return Err(HelperError::Ipc {
+            message: "profile.activate_bundle requires aux".into(),
+        });
+    }
+    let req: ActivateBundleRequest = serde_json::from_slice(&body).map_err(|e| HelperError::Ipc {
+        message: format!("parse activate body: {e}"),
+    })?;
+
+    let call = dispatch::authorize(&ctx, &principal, HelperMethod::ProfileActivateBundle).await?;
+    let controller = dispatch::maybe_claim_controller(
+        call.will_claim_controller,
+        &principal,
+        &*ctx.user_lookup,
+    )?;
+
+    let deps = crate::profile::activate::ActivateDeps {
+        paths: ctx.paths.clone(),
+        systemd: &*ctx.systemd,
+        verifier: &*ctx.verifier,
+        checker: &*ctx.checker,
+    };
+    let resp =
+        crate::profile::activate::activate_bundle(req, aux, controller, &deps).await?;
+    serde_json::to_vec(&resp).map_err(|e| HelperError::Ipc {
+        message: format!("serialize: {e}"),
+    })
+}
+```
+
+(Note: `crate::profile::activate::activate_bundle` was previously taking `OwnedFd`; PR 10 already changed it to take `AuxStream`. If not, fold that signature change into this PR's first task.)
+
+- [ ] **Step 1: List the verbs (one handler module each)**
+
+The handler modules to create: `service_status`, `home_status`, `service_start`, `service_stop`, `service_restart`, `service_enable`, `service_disable`, `service_install_managed`, `service_logs`, `profile_activate_bundle`, `profile_rollback_release`, `core_discover`, `core_install_managed`, `core_upgrade_managed`, `core_rollback_managed`, `core_adopt`, `legacy_observe_service`, `legacy_migrate_service`, `controller_transfer`, `diagnostics_export_redacted`. **20 handlers.**
+
+- [ ] **Step 2: Create all 20 handlers**
+
+For each, follow the no-aux pattern (or with-aux pattern for `profile_activate_bundle` only). Body is a copy of the existing `do_*` method body, with the JSON-parse and JSON-serialize moved to the handler boundary.
+
+To avoid this plan exploding to 20× the verbose detail: the work is **mechanical per-verb extraction**. The executor consults the existing `boxpilotd::iface::Helper::do_<verb>` body and pastes it into the new handler.
+
+- [ ] **Step 3: Wire `handlers/mod.rs`**
+
+```rust
+pub mod service_status;
+pub mod home_status;
+pub mod service_start;
+pub mod service_stop;
+pub mod service_restart;
+pub mod service_enable;
+pub mod service_disable;
+pub mod service_install_managed;
+pub mod service_logs;
+pub mod profile_activate_bundle;
+pub mod profile_rollback_release;
+pub mod core_discover;
+pub mod core_install_managed;
+pub mod core_upgrade_managed;
+pub mod core_rollback_managed;
+pub mod core_adopt;
+pub mod legacy_observe_service;
+pub mod legacy_migrate_service;
+pub mod controller_transfer;
+pub mod diagnostics_export_redacted;
+```
+
+- [ ] **Step 4: Add `mod handlers;` to `main.rs` (or `lib.rs` if migrated)**
+
+- [ ] **Step 5: Run tests at this checkpoint**
+
+Tests still call into `Helper::do_*` directly (not yet updated). Both should compile (handlers and `do_*` coexist temporarily).
+
+Run: `cargo test -p boxpilotd`
+Expected: green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add crates/boxpilotd/src/handlers crates/boxpilotd/src/main.rs
+git commit -m "refactor(boxpilotd): extract do_* bodies into handlers/<verb>.rs modules"
+```
+
+---
+
+## Task 11a.3: `dispatch_handler` — the giant match
+
+**Files:**
+- Create: `crates/boxpilotd/src/dispatch_handler.rs`
+
+- [ ] **Step 1: Write the dispatcher**
+
+```rust
+//! Platform-neutral verb router. Implements `HelperDispatch::handle` by
+//! decoding `HelperMethod` and forwarding to the matching `handlers::*`
+//! module. Lives in `boxpilotd` (NOT `boxpilot-platform`) because handlers
+//! reference `HelperContext`.
+
+use crate::context::HelperContext;
+use crate::handlers;
+use async_trait::async_trait;
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
+use boxpilot_platform::traits::authority::CallerPrincipal;
+use boxpilot_platform::traits::bundle_aux::AuxStream;
+use boxpilot_platform::traits::ipc::{ConnectionInfo, HelperDispatch};
+use std::sync::Arc;
+
+pub struct DispatchHandler {
+    ctx: Arc<HelperContext>,
+}
+
+impl DispatchHandler {
+    pub fn new(ctx: Arc<HelperContext>) -> Self {
+        Self { ctx }
+    }
+}
+
+#[async_trait]
+impl HelperDispatch for DispatchHandler {
+    async fn handle(
+        &self,
+        conn: ConnectionInfo,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
+    ) -> HelperResult<Vec<u8>> {
+        let principal = conn.caller;
+
+        // Aux-shape contract enforcement (per spec §5.4 + COQ17/4.7).
+        use boxpilot_ipc::method::wire::AuxShape;
+        match (method.aux_shape(), aux.is_none()) {
+            (AuxShape::None, false) => {
+                return Err(HelperError::Ipc {
+                    message: format!("method {method:?} does not accept aux"),
+                });
+            }
+            (AuxShape::Required, true) => {
+                return Err(HelperError::Ipc {
+                    message: format!("method {method:?} requires aux"),
+                });
+            }
+            _ => {}
+        }
+
+        let ctx = Arc::clone(&self.ctx);
+        match method {
+            HelperMethod::ServiceStatus => handlers::service_status::handle(ctx, principal, body, aux).await,
+            HelperMethod::HomeStatus => handlers::home_status::handle(ctx, principal, body, aux).await,
+            HelperMethod::ServiceStart => handlers::service_start::handle(ctx, principal, body, aux).await,
+            HelperMethod::ServiceStop => handlers::service_stop::handle(ctx, principal, body, aux).await,
+            HelperMethod::ServiceRestart => handlers::service_restart::handle(ctx, principal, body, aux).await,
+            HelperMethod::ServiceEnable => handlers::service_enable::handle(ctx, principal, body, aux).await,
+            HelperMethod::ServiceDisable => handlers::service_disable::handle(ctx, principal, body, aux).await,
+            HelperMethod::ServiceInstallManaged => handlers::service_install_managed::handle(ctx, principal, body, aux).await,
+            HelperMethod::ServiceLogs => handlers::service_logs::handle(ctx, principal, body, aux).await,
+            HelperMethod::ProfileActivateBundle => handlers::profile_activate_bundle::handle(ctx, principal, body, aux).await,
+            HelperMethod::ProfileRollbackRelease => handlers::profile_rollback_release::handle(ctx, principal, body, aux).await,
+            HelperMethod::CoreDiscover => handlers::core_discover::handle(ctx, principal, body, aux).await,
+            HelperMethod::CoreInstallManaged => handlers::core_install_managed::handle(ctx, principal, body, aux).await,
+            HelperMethod::CoreUpgradeManaged => handlers::core_upgrade_managed::handle(ctx, principal, body, aux).await,
+            HelperMethod::CoreRollbackManaged => handlers::core_rollback_managed::handle(ctx, principal, body, aux).await,
+            HelperMethod::CoreAdopt => handlers::core_adopt::handle(ctx, principal, body, aux).await,
+            HelperMethod::LegacyObserveService => handlers::legacy_observe_service::handle(ctx, principal, body, aux).await,
+            HelperMethod::LegacyMigrateService => handlers::legacy_migrate_service::handle(ctx, principal, body, aux).await,
+            HelperMethod::ControllerTransfer => handlers::controller_transfer::handle(ctx, principal, body, aux).await,
+            HelperMethod::DiagnosticsExportRedacted => handlers::diagnostics_export_redacted::handle(ctx, principal, body, aux).await,
+        }
+    }
+}
+```
+
+- [ ] **Step 2: Wire `mod dispatch_handler;` in `main.rs`**
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test -p boxpilotd`
+Expected: green.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilotd/src/dispatch_handler.rs crates/boxpilotd/src/main.rs
+git commit -m "feat(boxpilotd): dispatch_handler routes HelperMethod -> handlers::*"
+```
+
+---
+
+## Task 11a.4: Linux IpcServer impl wraps zbus + makes `iface.rs` a thin shell
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/linux/ipc.rs`
+- Modify: `crates/boxpilotd/src/iface.rs` (every `do_*` becomes a thin call into `dispatch_handler`)
+- Modify: `crates/boxpilotd/src/main.rs` (uses `IpcServer::run`)
+
+`crates/boxpilot-platform/src/linux/ipc.rs` is the bridge that lets `boxpilotd::iface::Helper` call into a `HelperDispatch`. The trick: zbus typed handlers receive arguments as their typed forms; we adapt at the boundary by calling `serde_json::to_vec` on the typed request and `serde_json::from_slice` on the typed response.
+
+Since `boxpilotd::iface::Helper` already does this (request/response is JSON over zbus), the change is small:
+
+- The `do_*` body becomes:
+
+```rust
+async fn do_service_status(
+    &self,
+    sender_bus_name: &str,
+) -> Result<ServiceStatusResponse, HelperError> {
+    let principal = resolve_caller_principal(&self.ctx, sender_bus_name).await?;
+    self.ctx.authority_subject.set(sender_bus_name);
+    let conn = ConnectionInfo { caller: principal };
+    let body_json = self
+        .dispatch
+        .handle(conn, HelperMethod::ServiceStatus, vec![], AuxStream::none())
+        .await?;
+    serde_json::from_slice(&body_json).map_err(|e| HelperError::Ipc {
+        message: format!("decode: {e}"),
+    })
+}
+```
+
+(`self.dispatch: Arc<dyn HelperDispatch>` is added to `Helper`.)
+
+For verbs that take a JSON request (`request_json: String`):
+
+```rust
+let body = request_json.into_bytes();
+let resp_bytes = self.dispatch.handle(conn, HelperMethod::CoreInstallManaged, body, AuxStream::none()).await?;
+serde_json::from_slice::<CoreInstallResponse>(&resp_bytes)?
+```
+
+For `profile_activate_bundle` (which has `bundle_fd: zvariant::OwnedFd`):
+
+```rust
+let aux = AuxStream::from_owned_fd(bundle_fd.into());
+let body = request_json.into_bytes();
+let resp_bytes = self.dispatch.handle(conn, HelperMethod::ProfileActivateBundle, body, aux).await?;
+serde_json::from_slice::<ActivateBundleResponse>(&resp_bytes)?
+```
+
+The `IpcServer` Linux impl is then a small wrapper that constructs the zbus connection, registers the `Helper` interface, and blocks on signal:
+
+`crates/boxpilot-platform/src/linux/ipc.rs`:
+
+```rust
+//! Linux IpcServer — currently a thin facade over zbus's typed
+//! ObjectServer registration. The actual #[interface] impl lives in
+//! boxpilotd::iface::Helper; this module just owns the Connection and
+//! the run loop. The HelperDispatch arrives via `Helper::new(ctx,
+//! dispatch)` set up in boxpilotd::main.
+
+use crate::traits::ipc::{HelperDispatch, IpcServer};
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::sync::Arc;
+use tokio::sync::Notify;
+use zbus::Connection;
+
+pub struct ZbusIpcServer {
+    pub conn: Connection,
+    /// Caller has already registered the Helper interface against the
+    /// connection's ObjectServer before calling `run()`.
+    pub stop: Arc<Notify>,
+}
+
+#[async_trait]
+impl IpcServer for ZbusIpcServer {
+    async fn run(&self, _dispatch: Arc<dyn HelperDispatch>) -> Result<(), HelperError> {
+        // Linux: HelperDispatch is wired through boxpilotd::iface::Helper
+        // at construction time; this run() just blocks on the stop signal.
+        // (The dispatch arg is here for parity with Windows, where the
+        // Named Pipe accept loop directly references it.)
+        self.stop.notified().await;
+        Ok(())
+    }
+}
+```
+
+`boxpilotd::main.rs`:
+
+```rust
+let dispatch: Arc<dyn HelperDispatch> = Arc::new(DispatchHandler::new(ctx.clone()));
+let helper = Helper::new(ctx.clone(), Arc::clone(&dispatch));
+let conn = zbus::connection::Builder::system()?.build().await?;
+conn.object_server().at(OBJECT_PATH, helper).await?;
+conn.request_name(BUS_NAME).await?;
+
+let stop = Arc::new(Notify::new());
+let stop_for_signal = stop.clone();
+tokio::spawn(async move {
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()).unwrap();
+    tokio::select! {
+        _ = sigterm.recv() => {}
+        _ = sigint.recv() => {}
+    }
+    stop_for_signal.notify_one();
+});
+
+let server = ZbusIpcServer { conn, stop };
+server.run(Arc::clone(&dispatch)).await?;
+```
+
+- [ ] **Step 1: Write the Linux IpcServer module**
+
+(Per snippets above.)
+
+- [ ] **Step 2: Refactor `boxpilotd::iface::Helper`**
+
+For each `do_*`, replace the existing body with the dispatch call pattern. Drop the now-empty `Helper::do_*` private helpers (their bodies live in `handlers/<verb>.rs`).
+
+- [ ] **Step 3: Update `boxpilotd::main`**
+
+Per the snippet above — construct `DispatchHandler`, register `Helper`, spawn signal handler, block on `IpcServer::run`.
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test -p boxpilotd`
+Expected: existing tests pass — they call `Helper::do_*` directly, but those wrappers now route through dispatch. Behavior is preserved.
+
+- [ ] **Step 5: Run full workspace tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 6: Verify Windows compile passes (PR 10's gate flip)**
+
+Run: `cargo check --target x86_64-pc-windows-gnu --workspace`
+Expected: clean.
+
+- [ ] **Step 7: Update `.github/workflows/windows-check.yml` to drop allow-fail**
+
+Change `continue-on-error: true` to `continue-on-error: false` (or remove the line). From this PR onward, Windows compile is a required check.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/linux/ipc.rs crates/boxpilotd/src/iface.rs crates/boxpilotd/src/main.rs .github/workflows/windows-check.yml
+git commit -m "feat(boxpilotd): iface.rs becomes thin shell over IpcServer + HelperDispatch"
+```
+
+---
+
+## Task 11a.5: Cross-platform IPC fake (mpsc channel pair)
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/fakes/ipc.rs`
+
+For tests that want to exercise an IpcServer without zbus or Named Pipe:
+
+```rust
+//! In-memory IPC fake for tests. Server and client are wired by an
+//! `mpsc` channel pair carrying `(method, body, aux, response_tx)` tuples.
+
+use crate::traits::authority::CallerPrincipal;
+use crate::traits::bundle_aux::AuxStream;
+use crate::traits::ipc::{ConnectionInfo, HelperDispatch, IpcClient, IpcServer};
+use async_trait::async_trait;
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
+use std::sync::Arc;
+use tokio::sync::{mpsc, oneshot};
+
+pub fn pair(caller: CallerPrincipal) -> (FakeIpcClient, FakeIpcServer) {
+    let (req_tx, req_rx) = mpsc::channel::<Request>(16);
+    (
+        FakeIpcClient { tx: req_tx },
+        FakeIpcServer { rx: tokio::sync::Mutex::new(req_rx), caller },
+    )
+}
+
+struct Request {
+    method: HelperMethod,
+    body: Vec<u8>,
+    aux: AuxStream,
+    resp_tx: oneshot::Sender<HelperResult<Vec<u8>>>,
+}
+
+pub struct FakeIpcClient {
+    tx: mpsc::Sender<Request>,
+}
+
+#[async_trait]
+impl IpcClient for FakeIpcClient {
+    async fn call(
+        &self,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
+    ) -> HelperResult<Vec<u8>> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.tx
+            .send(Request { method, body, aux, resp_tx })
+            .await
+            .map_err(|_| HelperError::Ipc {
+                message: "fake ipc: server gone".into(),
+            })?;
+        resp_rx.await.map_err(|_| HelperError::Ipc {
+            message: "fake ipc: response dropped".into(),
+        })?
+    }
+}
+
+pub struct FakeIpcServer {
+    rx: tokio::sync::Mutex<mpsc::Receiver<Request>>,
+    caller: CallerPrincipal,
+}
+
+#[async_trait]
+impl IpcServer for FakeIpcServer {
+    async fn run(&self, dispatch: Arc<dyn HelperDispatch>) -> Result<(), HelperError> {
+        let mut rx = self.rx.lock().await;
+        while let Some(Request { method, body, aux, resp_tx }) = rx.recv().await {
+            let conn = ConnectionInfo { caller: self.caller.clone() };
+            let result = dispatch.handle(conn, method, body, aux).await;
+            let _ = resp_tx.send(result);
+        }
+        Ok(())
+    }
+}
+```
+
+- [ ] **Step 1: Write the fake**
+
+Per snippet above.
+
+- [ ] **Step 2: Wire `pub mod ipc;` into `fakes/mod.rs`**
+
+- [ ] **Step 3: Run tests**
+
+Run: `cargo test -p boxpilot-platform`
+Expected: green (no new tests yet; the fake is consumed in PR 12+).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilot-platform/src/fakes/ipc.rs crates/boxpilot-platform/src/fakes/mod.rs
+git commit -m "feat(platform): cross-platform IPC fake with mpsc channel pair"
+```
+
+---
+
+## PR 11a smoke
+
+```bash
+cargo test --workspace                                                    # Linux non-regression
+cargo check --target x86_64-pc-windows-gnu --workspace                    # required (no longer allow-fail)
+cargo test -p boxpilot-ipc method::wire::tests                             # 3 wire-id tests
+git grep "fn do_service_start\b\|fn do_service_stop\b\|fn do_core_discover\b" crates/boxpilotd/src
+# Expected: matches only inside iface.rs, but each body is now a 5-line dispatch call
+```
+
+PR description body MUST include: "After this PR, `.github/workflows/windows-check.yml` flips `continue-on-error` to false. Subsequent PRs with Windows-side build breakage will fail CI."
+
+---
