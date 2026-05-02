@@ -14,6 +14,7 @@
 
 pub mod active;
 pub mod authority;
+pub mod bundle_aux;
 pub mod core_assets;
 pub mod env;
 pub mod fs_meta;
@@ -24,3 +25,5 @@ pub mod service;
 pub mod trust;
 pub mod user_lookup;
 pub mod version;
+
+pub use bundle_aux::AuxStream;

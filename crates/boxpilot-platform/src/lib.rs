@@ -5,6 +5,7 @@
 //! `docs/superpowers/specs/2026-05-01-boxpilot-platform-abstraction-design.md`.
 
 pub mod traits;
+pub use traits::AuxStream;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
