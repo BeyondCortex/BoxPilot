@@ -2,6 +2,8 @@
 //! `current` exists. The caller (iface.rs) already holds the global lock
 //! via `dispatch::authorize`'s AuthorizedCall.
 
+#![cfg(target_os = "linux")]
+
 use boxpilot_ipc::{ArchRequest, HelperError, HelperResult, VersionRequest};
 
 pub fn resolve_arch(req: &ArchRequest) -> HelperResult<&'static str> {

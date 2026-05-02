@@ -1,6 +1,8 @@
 //! Rollback: swing `current` symlink to a previously installed managed
 //! version or adopted directory. No directories are deleted.
 
+#![cfg(target_os = "linux")]
+
 use crate::core::commit::{StateCommit, TomlUpdates};
 use crate::core::install::parse_singbox_version_pub;
 use crate::core::state::read_state;
