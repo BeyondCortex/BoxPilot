@@ -1,16 +1,21 @@
-//! Linux `IpcServer` impl. The actual D-Bus interface methods live in
-//! `boxpilotd::iface` (a thin shell over [`HelperDispatch`]); this struct
-//! exists so [`IpcServer::run`] becomes the single "block until shutdown"
-//! await point that `main.rs` waits on. Constructing the server keeps the
-//! D-Bus connection + an opaque shutdown notifier; PR 12 will mirror the
-//! same trait shape with a Windows named-pipe impl.
+//! Linux `IpcServer` + `IpcClient` impls. The server side is a thin
+//! "block until shutdown" wrapper — the actual D-Bus interface methods
+//! live in `boxpilotd::iface` (a thin shell over [`HelperDispatch`]).
+//! The client side wraps `zbus::Proxy` so `boxpilot-tauri` no longer
+//! needs to depend on `zbus` directly.
 
-use crate::traits::ipc::{HelperDispatch, IpcServer};
+use crate::traits::bundle_aux::{AuxStream, AuxStreamRepr};
+use crate::traits::ipc::{HelperDispatch, IpcClient, IpcServer};
 use async_trait::async_trait;
-use boxpilot_ipc::HelperError;
+use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
 use std::sync::Arc;
 use tokio::sync::Notify;
+use zbus::zvariant::OwnedFd as ZbusOwnedFd;
 use zbus::Connection;
+
+const BUS_NAME: &str = "app.boxpilot.Helper";
+const OBJECT_PATH: &str = "/app/boxpilot/Helper";
+const INTERFACE: &str = "app.boxpilot.Helper1";
 
 pub struct ZbusIpcServer {
     /// Held to keep the bus connection alive for the duration of `run`.
@@ -39,5 +44,98 @@ impl IpcServer for ZbusIpcServer {
         let _conn = self.conn.clone();
         self.stop.notified().await;
         Ok(())
+    }
+}
+
+/// Linux `IpcClient` over the system D-Bus. Wraps `zbus::Proxy` so the
+/// GUI can call `app.boxpilot.Helper1.<Method>` without taking a direct
+/// `zbus` dependency.
+pub struct ZbusIpcClient {
+    pub conn: Connection,
+}
+
+impl ZbusIpcClient {
+    pub async fn connect_system() -> Result<Self, HelperError> {
+        let conn = Connection::system().await.map_err(|e| HelperError::Ipc {
+            message: format!("connect to system bus: {e}"),
+        })?;
+        Ok(Self { conn })
+    }
+}
+
+#[async_trait]
+impl IpcClient for ZbusIpcClient {
+    async fn call(
+        &self,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
+    ) -> HelperResult<Vec<u8>> {
+        let proxy = zbus::Proxy::new(&self.conn, BUS_NAME, OBJECT_PATH, INTERFACE)
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("build proxy: {e}"),
+            })?;
+
+        let method_name = camel_case_for(method);
+        let body_str = std::str::from_utf8(&body).map_err(|e| HelperError::Ipc {
+            message: format!("body not utf-8: {e}"),
+        })?;
+
+        let resp_str: String = match aux.into_repr() {
+            AuxStreamRepr::None => {
+                if body.is_empty() {
+                    proxy.call(method_name.as_str(), &()).await
+                } else {
+                    proxy.call(method_name.as_str(), &body_str).await
+                }
+                .map_err(|e| HelperError::Ipc {
+                    message: format!("call {method_name}: {e}"),
+                })?
+            }
+            AuxStreamRepr::AsyncRead(_) => {
+                return Err(HelperError::Ipc {
+                    message: "linux IpcClient: AsyncRead aux not supported (use from_owned_fd)"
+                        .into(),
+                });
+            }
+            AuxStreamRepr::LinuxFd(fd) => {
+                let z_fd = ZbusOwnedFd::from(fd);
+                proxy
+                    .call::<_, _, String>(method_name.as_str(), &(body_str, z_fd))
+                    .await
+                    .map_err(|e| HelperError::Ipc {
+                        message: format!("call {method_name} with fd: {e}"),
+                    })?
+            }
+        };
+
+        Ok(resp_str.into_bytes())
+    }
+}
+
+/// `HelperMethod` → D-Bus method name. zbus converts `fn service_status`
+/// in the helper's `#[interface]` impl to `ServiceStatus` on the wire by
+/// default, which matches `format!("{HelperMethod::ServiceStatus:?}")`.
+fn camel_case_for(m: HelperMethod) -> String {
+    format!("{m:?}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camel_case_matches_dbus_method_names() {
+        assert_eq!(camel_case_for(HelperMethod::ServiceStatus), "ServiceStatus");
+        assert_eq!(
+            camel_case_for(HelperMethod::ProfileActivateBundle),
+            "ProfileActivateBundle"
+        );
+        assert_eq!(camel_case_for(HelperMethod::HomeStatus), "HomeStatus");
+        assert_eq!(
+            camel_case_for(HelperMethod::DiagnosticsExportRedacted),
+            "DiagnosticsExportRedacted"
+        );
     }
 }
