@@ -14,6 +14,9 @@ pub mod windows;
 
 pub mod fakes;
 
+pub mod paths;
+pub use paths::Paths;
+
 #[cfg(test)]
 mod tests {
     #[test]
