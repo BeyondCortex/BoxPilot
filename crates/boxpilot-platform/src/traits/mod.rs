@@ -14,6 +14,7 @@
 
 pub mod active;
 pub mod authority;
+pub mod core_assets;
 pub mod env;
 pub mod fs_meta;
 pub mod fs_perms;

@@ -6,6 +6,7 @@
 #![cfg(target_os = "windows")]
 
 pub mod active;
+pub mod core_assets;
 pub mod env;
 pub mod fs_meta;
 pub mod fs_perms;
