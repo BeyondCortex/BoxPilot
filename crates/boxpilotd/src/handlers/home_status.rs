@@ -48,6 +48,7 @@ pub async fn handle(
         _ => None,
     };
 
+    #[cfg(target_os = "linux")]
     let core_version = match discover(&ctx).await {
         Ok(list) => cfg
             .core_path
@@ -57,6 +58,8 @@ pub async fn handle(
             .unwrap_or_else(|| "unknown".to_string()),
         Err(_) => "unknown".to_string(),
     };
+    #[cfg(not(target_os = "linux"))]
+    let core_version = "unknown".to_string();
     let core = boxpilot_ipc::CoreSnapshot {
         path: cfg.core_path.clone(),
         state: cfg.core_state,
@@ -82,7 +85,9 @@ pub async fn handle(
 /// Inline equivalent of the former `Helper::discover_for_home` — runs the
 /// core discovery sub-pipeline so home.status can fold the active core's
 /// version into its snapshot. Discovery failure is non-fatal at the call
-/// site; the rest of the page still renders.
+/// site; the rest of the page still renders. Linux-only because
+/// `core::discover` uses Linux trust APIs.
+#[cfg(target_os = "linux")]
 async fn discover(ctx: &HelperContext) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
     let deps = crate::core::discover::DiscoverDeps {
         paths: ctx.paths.clone(),

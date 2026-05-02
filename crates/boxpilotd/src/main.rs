@@ -21,6 +21,7 @@ mod profile;
 mod service;
 mod systemd;
 
+
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()

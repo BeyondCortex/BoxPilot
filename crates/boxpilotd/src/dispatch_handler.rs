@@ -60,51 +60,67 @@ impl HelperDispatch for DispatchHandler {
             HelperMethod::ServiceStatus => {
                 handlers::service_status::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ServiceStart => {
                 handlers::service_start::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ServiceStop => {
                 handlers::service_stop::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ServiceRestart => {
                 handlers::service_restart::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ServiceEnable => {
                 handlers::service_enable::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ServiceDisable => {
                 handlers::service_disable::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ServiceInstallManaged => {
                 handlers::service_install_managed::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ServiceLogs => {
                 handlers::service_logs::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ProfileActivateBundle => {
                 handlers::profile_activate_bundle::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::ProfileRollbackRelease => {
                 handlers::profile_rollback_release::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::CoreDiscover => {
                 handlers::core_discover::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::CoreInstallManaged => {
                 handlers::core_install_managed::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::CoreUpgradeManaged => {
                 handlers::core_upgrade_managed::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::CoreRollbackManaged => {
                 handlers::core_rollback_managed::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::CoreAdopt => {
                 handlers::core_adopt::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::LegacyObserveService => {
                 handlers::legacy_observe_service::handle(ctx, principal, body, aux).await
             }
+            #[cfg(target_os = "linux")]
             HelperMethod::LegacyMigrateService => {
                 handlers::legacy_migrate_service::handle(ctx, principal, body, aux).await
             }
@@ -117,6 +133,12 @@ impl HelperDispatch for DispatchHandler {
             HelperMethod::HomeStatus => {
                 handlers::home_status::handle(ctx, principal, body, aux).await
             }
+            // Windows batch ③/④ will fill in real implementations for the
+            // Linux-only verbs above. Until then, return NotImplemented so
+            // a Windows caller sees a clear error rather than a compile
+            // failure.
+            #[cfg(not(target_os = "linux"))]
+            _ => Err(HelperError::NotImplemented),
         }
     }
 }
@@ -174,6 +196,7 @@ mod tests {
         assert!(matches!(r, Err(HelperError::Ipc { .. })));
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn dispatch_rejects_missing_aux_for_activate_bundle() {
         let tmp = tempdir().unwrap();
