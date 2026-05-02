@@ -57,6 +57,15 @@ impl Paths {
         &self.user_root
     }
 
+    /// Join `child` under the configured `system_root`. Used by the
+    /// Windows boxpilotd entry to place `logs/` next to the rest of the
+    /// `%ProgramData%\BoxPilot\` tree (no Linux equivalent — Linux logs
+    /// flow through journald). Linux callers can also use this for ad-hoc
+    /// paths that don't deserve a dedicated accessor.
+    pub fn system_root_join(&self, child: &str) -> PathBuf {
+        self.system_root.join(child)
+    }
+
     // ---- §5.3 system runtime state ------------------------------------
 
     pub fn boxpilot_toml(&self) -> PathBuf {
