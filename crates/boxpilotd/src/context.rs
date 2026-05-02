@@ -9,6 +9,7 @@ use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
 use boxpilot_platform::traits::active::ActivePointer;
+use boxpilot_platform::traits::current::CurrentPointer;
 use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
 use crate::profile::verifier::ServiceVerifier;
@@ -44,6 +45,11 @@ pub struct HelperContext {
     /// future refactors don't have to thread it through `HelperContext::new`.
     #[allow(dead_code)]
     pub active: Arc<dyn ActivePointer>,
+    /// PR 1.4: platform-neutral atomic "current core" pointer. Linux uses
+    /// `SymlinkCurrentPointer`; Windows stub returns `Unsupported` until
+    /// Sub-project #2 PR 3.5 fills in the junction-based real impl.
+    /// Used by `core::commit::StateCommit::apply` to stage `cores/current`.
+    pub current_pointer: Arc<dyn CurrentPointer>,
     /// Set when `install-state.json` parsed at startup with a
     /// `schema_version` other than the compiled-in
     /// `INSTALL_STATE_SCHEMA_VERSION` (spec §7.6). `dispatch::authorize`
@@ -78,6 +84,7 @@ impl HelperContext {
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
         config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
         active: Arc<dyn ActivePointer>,
+        current_pointer: Arc<dyn CurrentPointer>,
         state_schema_mismatch: Option<u32>,
     ) -> Self {
         Self {
@@ -97,6 +104,7 @@ impl HelperContext {
             fs_fragment_reader,
             config_reader,
             active,
+            current_pointer,
             state_schema_mismatch,
         }
     }
@@ -176,6 +184,8 @@ pub mod testing {
         let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
             paths.releases_dir(),
         ));
+        let current_pointer =
+            Arc::new(boxpilot_platform::fakes::current::InMemoryCurrent::new());
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -199,6 +209,7 @@ pub mod testing {
             Arc::new(NoFragments),
             Arc::new(NoConfig),
             active,
+            current_pointer,
             None,
         )
     }
@@ -229,6 +240,8 @@ pub mod testing {
         let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
             paths.releases_dir(),
         ));
+        let current_pointer =
+            Arc::new(boxpilot_platform::fakes::current::InMemoryCurrent::new());
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -252,6 +265,7 @@ pub mod testing {
             Arc::new(NoFragments),
             Arc::new(NoConfig),
             active,
+            current_pointer,
             None,
         )
     }
@@ -282,6 +296,8 @@ pub mod testing {
         let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
             paths.releases_dir(),
         ));
+        let current_pointer =
+            Arc::new(boxpilot_platform::fakes::current::InMemoryCurrent::new());
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -309,6 +325,7 @@ pub mod testing {
             Arc::new(NoFragments),
             Arc::new(NoConfig),
             active,
+            current_pointer,
             None,
         )
     }

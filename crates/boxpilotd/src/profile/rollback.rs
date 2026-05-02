@@ -129,7 +129,7 @@ pub async fn rollback_release(
                 },
                 controller,
                 install_state: boxpilot_ipc::InstallState::empty(),
-                current_symlink_target: None,
+                current_core_update: None,
             };
             commit.apply().await?;
             Ok(ActivateBundleResponse {
@@ -240,7 +240,7 @@ fn window_from_request(secs: Option<u32>) -> Duration {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::profile::verifier::testing::ScriptedVerifier;

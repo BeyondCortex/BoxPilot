@@ -166,7 +166,7 @@ pub async fn activate_bundle(
                 },
                 controller,
                 install_state: boxpilot_ipc::InstallState::empty(),
-                current_symlink_target: None,
+                current_core_update: None,
             };
             commit.apply().await?;
 
@@ -373,7 +373,7 @@ async fn rollback_after_verify_failure(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
     use crate::profile::checker::testing::FakeChecker;

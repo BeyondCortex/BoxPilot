@@ -182,6 +182,7 @@ mod tests {
         "2026-04-30T22-00-00Z".to_string()
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn happy_path_writes_tarball_with_redacted_active_config() {
         let tmp = tempdir().unwrap();

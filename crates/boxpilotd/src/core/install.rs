@@ -69,6 +69,7 @@ use crate::core::trust::{
     VersionChecker,
 };
 use crate::dispatch::ControllerWrites;
+use boxpilot_platform::traits::current::CurrentPointer;
 use boxpilot_platform::Paths;
 use boxpilot_ipc::{
     CoreInstallRequest, CoreInstallResponse, CoreKind, CoreSource, CoreState, DiscoveredCore,
@@ -82,6 +83,7 @@ pub struct InstallDeps<'a> {
     pub downloader: &'a dyn Downloader,
     pub fs: &'a dyn FsMetadataProvider,
     pub version_checker: &'a dyn VersionChecker,
+    pub current_pointer: std::sync::Arc<dyn CurrentPointer>,
 }
 
 pub async fn install_or_upgrade(
@@ -244,7 +246,7 @@ pub async fn install_or_upgrade(
         },
         controller,
         install_state: state.clone(),
-        current_symlink_target: Some(target_dir.clone()),
+        current_core_update: Some((target_dir.clone(), deps.current_pointer.clone())),
     };
     commit.apply().await?;
 
@@ -412,6 +414,9 @@ mod pipeline_tests {
             downloader: &downloader,
             fs: &fs,
             version_checker: &vc,
+            current_pointer: std::sync::Arc::new(
+                boxpilot_platform::fakes::current::InMemoryCurrent::new(),
+            ),
         };
         let req = CoreInstallRequest {
             version: VersionRequest::Latest,
@@ -468,6 +473,9 @@ mod pipeline_tests {
             downloader: &downloader,
             fs: &fs,
             version_checker: &vc,
+            current_pointer: std::sync::Arc::new(
+                boxpilot_platform::fakes::current::InMemoryCurrent::new(),
+            ),
         };
         let req = CoreInstallRequest {
             version: VersionRequest::Exact {
@@ -541,6 +549,9 @@ mod pipeline_tests {
                 downloader: &downloader,
                 fs: &fs,
                 version_checker: &vc,
+                current_pointer: std::sync::Arc::new(
+                    boxpilot_platform::fakes::current::InMemoryCurrent::new(),
+                ),
             };
             install_or_upgrade(&req, &deps, None).await.unwrap();
         }
@@ -561,6 +572,9 @@ mod pipeline_tests {
                 downloader: &downloader,
                 fs: &fs,
                 version_checker: &vc,
+                current_pointer: std::sync::Arc::new(
+                    boxpilot_platform::fakes::current::InMemoryCurrent::new(),
+                ),
             };
             let resp = install_or_upgrade(&req, &deps, None).await.unwrap();
             assert_eq!(resp.installed.version, "1.10.0");
@@ -621,6 +635,9 @@ mod pipeline_tests {
             downloader: &downloader,
             fs: &fs,
             version_checker: &vc,
+            current_pointer: std::sync::Arc::new(
+                boxpilot_platform::fakes::current::InMemoryCurrent::new(),
+            ),
         };
         let req = CoreInstallRequest {
             version: VersionRequest::Exact {

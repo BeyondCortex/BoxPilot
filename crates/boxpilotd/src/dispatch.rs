@@ -136,7 +136,7 @@ pub async fn commit_controller_claim(
         toml_updates: crate::core::commit::TomlUpdates::default(),
         controller: Some(c),
         install_state: boxpilot_ipc::InstallState::empty(),
-        current_symlink_target: None,
+        current_core_update: None,
     };
     commit.apply().await
 }

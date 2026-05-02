@@ -32,6 +32,7 @@ pub async fn handle(
         paths: ctx.paths.clone(),
         fs: &*ctx.fs_meta,
         version_checker: &*ctx.version_checker,
+        current_pointer: ctx.current_pointer.clone(),
     };
     let resp = crate::core::rollback::rollback(&req, &deps, controller).await?;
     serde_json::to_vec(&resp).map_err(|e| HelperError::Ipc {

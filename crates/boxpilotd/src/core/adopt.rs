@@ -135,7 +135,7 @@ pub async fn adopt(
         toml_updates: TomlUpdates::default(), // adopt does NOT change core_path/state
         controller,
         install_state: state.clone(),
-        current_symlink_target: None,
+        current_core_update: None,
     };
     commit.apply().await?;
 

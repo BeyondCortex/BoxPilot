@@ -143,6 +143,8 @@ pub async fn run() -> Result<()> {
         active: paths.active_symlink(),
         releases_dir: paths.releases_dir(),
     });
+    let current_pointer =
+        Arc::new(boxpilot_platform::linux::current::SymlinkCurrentPointer);
     let ctx = Arc::new(context::HelperContext::new(
         paths,
         Arc::new(credentials::DBusCallerResolver::new(conn.clone())),
@@ -163,6 +165,7 @@ pub async fn run() -> Result<()> {
         fragment_reader,
         config_reader,
         active,
+        current_pointer,
         state_schema_mismatch,
     ));
 

@@ -34,6 +34,7 @@ pub async fn handle(
         downloader: &*ctx.downloader,
         fs: &*ctx.fs_meta,
         version_checker: &*ctx.version_checker,
+        current_pointer: ctx.current_pointer.clone(),
     };
     let resp = crate::core::install::install_or_upgrade(&req, &deps, controller).await?;
     serde_json::to_vec(&resp).map_err(|e| HelperError::Ipc {
