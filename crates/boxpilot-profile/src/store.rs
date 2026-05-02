@@ -11,20 +11,16 @@ impl ProfileStorePaths {
         Self { root }
     }
 
-    /// Compute the spec-mandated `~/.local/share/boxpilot/` path from the
-    /// environment. Honours `XDG_DATA_HOME`, falls back to `$HOME/.local/share`.
-    pub fn from_env() -> std::io::Result<Self> {
-        let base = if let Some(v) = std::env::var_os("XDG_DATA_HOME") {
-            PathBuf::from(v)
-        } else if let Some(h) = std::env::var_os("HOME") {
-            PathBuf::from(h).join(".local/share")
-        } else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "neither XDG_DATA_HOME nor HOME is set",
-            ));
-        };
-        Ok(Self::new(base.join("boxpilot")))
+    /// Build from a `boxpilot_platform::Paths`. This is the production
+    /// constructor used by Tauri command handlers (per spec §5.1 / COQ16).
+    /// `root` becomes `paths.user_root()` so the legacy
+    /// `profiles_dir()`/`remotes_json()`/`ui_state_json()` methods continue
+    /// to resolve to spec-§5.6 layout (i.e.
+    /// `~/.local/share/boxpilot/{profiles,remotes.json,ui-state.json}`).
+    pub fn from_paths(paths: &boxpilot_platform::Paths) -> Self {
+        Self {
+            root: paths.user_root().to_path_buf(),
+        }
     }
 
     pub fn root(&self) -> &Path {

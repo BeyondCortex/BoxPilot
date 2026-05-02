@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 boxpilot-ipc = { path = "../boxpilot-ipc" }
+boxpilot-platform = { path = "../boxpilot-platform" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

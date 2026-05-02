@@ -19,6 +19,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 boxpilot-ipc = { path = "../boxpilot-ipc" }
 boxpilot-profile = { path = "../boxpilot-profile" }
+boxpilot-platform = { path = "../boxpilot-platform" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
