@@ -9,13 +9,21 @@ jobs:
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
     # Sub-project #2 batch ① closed the full-workspace Windows compile
-    # gap. iface.rs/credentials.rs (zbus parts) cfg-gated to Linux;
-    # symlink call sites route through the new CurrentPointer trait or
-    # are gated; legacy/backup.rs uses the FsPermissions trait. CI gate
-    # widens accordingly. (cargo test full-workspace lands once batch ③'s
-    # real Windows ServiceManager + ActivePointer impls are in place —
-    # no point running tests against ServiceManager stubs that all
-    # return NotImplemented.)
+    # gap for the Rust crates. iface.rs/credentials.rs (zbus parts)
+    # cfg-gated to Linux; symlink call sites route through the new
+    # CurrentPointer trait or are gated; legacy/backup.rs uses the
+    # FsPermissions trait. CI gate widens accordingly.
+    #
+    # `boxpilot-tauri` is excluded: tauri-build requires `icons/icon.ico`
+    # to generate a Windows .rc file at build time, and the Windows icon
+    # asset story (along with the installer) is Sub-project #3's scope.
+    # The Tauri shell itself is platform-specifically built/packaged in
+    # the release pipeline anyway.
+    #
+    # `cargo test --workspace` lands once batch ③'s real Windows
+    # ServiceManager + ActivePointer impls are in place — no point
+    # running tests against ServiceManager stubs that all return
+    # NotImplemented.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -24,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-msvc
-      - name: cargo check (x86_64-pc-windows-msvc) — full workspace
-        run: cargo check --target x86_64-pc-windows-msvc --workspace --all-targets
+      - name: cargo check (x86_64-pc-windows-msvc) — workspace minus Tauri shell
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --exclude boxpilot --all-targets
       - name: cargo test (boxpilot-ipc + boxpilot-platform)
         run: cargo test --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform --no-fail-fast
