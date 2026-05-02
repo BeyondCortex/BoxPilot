@@ -18,7 +18,12 @@ pub async fn handle(
             message: "service.restart takes no aux stream".into(),
         });
     }
-    let _call = dispatch::authorize(&ctx, &principal, HelperMethod::ServiceRestart).await?;
+    let call = dispatch::authorize(&ctx, &principal, HelperMethod::ServiceRestart).await?;
+    let controller = dispatch::maybe_claim_controller(
+        call.will_claim_controller,
+        &call.principal,
+        &*ctx.user_lookup,
+    )?;
     let cfg = ctx.load_config().await?;
     let resp = crate::service::control::run(
         crate::service::control::Verb::Restart,
@@ -26,6 +31,7 @@ pub async fn handle(
         &*ctx.systemd,
     )
     .await?;
+    dispatch::commit_controller_claim(&ctx.paths, controller).await?;
     serde_json::to_vec(&resp).map_err(|e| HelperError::Ipc {
         message: format!("encode: {e}"),
     })

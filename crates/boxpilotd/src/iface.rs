@@ -458,8 +458,12 @@ impl Helper {
         body: Vec<u8>,
         aux: AuxStream,
     ) -> HelperResult<Vec<u8>> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        // Set the sender shuttle BEFORE any await: `ZbusSubject::current_sender()`
+        // (read inside `DBusAuthority::check`) must observe this call's sender,
+        // not a concurrent call's. Awaiting first would let another `dispatch_call`
+        // overwrite the shared slot before our authorize step runs.
         self.ctx.authority_subject.set(sender);
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
         let conn = ConnectionInfo { caller: principal };
         self.dispatch.handle(conn, method, body, aux).await
     }
@@ -986,6 +990,36 @@ mod tests {
             .calls()
             .iter()
             .any(|c| matches!(c, RecordedCall::StartUnit(_))));
+    }
+
+    /// Regression for the missing `maybe_claim_controller` + commit in the
+    /// service.{start,stop,restart,enable,disable} handlers (PR #4 review
+    /// finding r3158446532): when `ControllerState::Unset` and polkit
+    /// allows the mutating call, the handler must persist the claim so the
+    /// next mutating call sees `ControllerState::Set` and refuses non-
+    /// controllers under §6.6. Uses the running process's own uid so the
+    /// real `PasswdLookup` resolves a username on the CI host.
+    #[tokio::test]
+    async fn service_start_claims_controller_when_unset() {
+        let me_uid = nix::unistd::Uid::current().as_raw();
+        let tmp = tempdir().unwrap();
+        let rec = Arc::new(RecordingSystemd::new(UnitState::NotFound));
+        // No controller_uid in the toml → ControllerState::Unset.
+        let ctx = Arc::new(ctx_with_recording(
+            &tmp,
+            Some("schema_version = 1\n"),
+            CannedAuthority::allowing(&["app.boxpilot.helper.service.start"]),
+            rec.clone(),
+            &[(":1.42", me_uid)],
+        ));
+        let paths = ctx.paths.clone();
+        let h = Helper::new(ctx);
+        h.do_service_start(":1.42").await.unwrap();
+        let toml_after = std::fs::read_to_string(paths.boxpilot_toml()).unwrap();
+        assert!(
+            toml_after.contains(&format!("controller_uid = {me_uid}")),
+            "expected controller_uid = {me_uid} in toml, got:\n{toml_after}"
+        );
     }
 
     #[tokio::test]

@@ -113,6 +113,34 @@ pub fn maybe_claim_controller(
     }
 }
 
+/// Atomically persist a `ControllerWrites` claim for verbs that don't have
+/// their own state-mutation pipeline (e.g. `service.{start,stop,...}`).
+/// No-ops when `controller` is `None`. Mirrors the commit block in
+/// `handlers/service_install_managed.rs`: empty `InstallState` + the
+/// preserve-existing-on-disk guard inside `StateCommit::apply` so the cores
+/// ledger is left untouched.
+///
+/// Atomicity note: callers run the underlying systemd action *before*
+/// invoking this. If the commit fails, the action already happened but the
+/// controller claim is not recorded; the next mutating call re-enters
+/// `will_claim_controller` and retries the commit, so the corner is benign.
+pub async fn commit_controller_claim(
+    paths: &boxpilot_platform::Paths,
+    controller: Option<ControllerWrites>,
+) -> HelperResult<()> {
+    let Some(c) = controller else {
+        return Ok(());
+    };
+    let commit = crate::core::commit::StateCommit {
+        paths: paths.clone(),
+        toml_updates: crate::core::commit::TomlUpdates::default(),
+        controller: Some(c),
+        install_state: boxpilot_ipc::InstallState::empty(),
+        current_symlink_target: None,
+    };
+    commit.apply().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
