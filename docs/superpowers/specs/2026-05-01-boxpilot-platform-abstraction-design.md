@@ -894,15 +894,167 @@ trait's documented contract must say "implementation MUST ACL the
 staging dir before writing bytes" so Sub-project #2 doesn't ship the
 hole. Spec is silent on this contract.
 
+### Round 4 — Re-review after COQ resolutions (perspective: post-resolution gaps)
+
+After the COQ1–7 resolutions were folded into the spec body, a re-read
+surfaced several issues that the resolutions glossed over or created.
+
+**4.1 `AuxStream::Bytes(Box<dyn AsyncRead>)` cannot recover an
+`OwnedFd` for Linux FD-passing (§5.2).** The amended §5.2 says the
+Linux IpcClient "detects an `OwnedFd` backing (or uses a small 'would
+you like the FD?' escape hatch in the AsyncRead)". This is not a real
+Rust mechanism. `Box<dyn AsyncRead>` cannot be downcast to a concrete
+type unless it also implements `Any`, and even then the FD is buried
+inside the `tokio::fs::File`. To preserve zero-copy FD-passing on Linux
+the spec must commit to one of:
+
+- **A.** Add a cfg-gated variant: `#[cfg(target_os = "linux")]
+  AuxStream::OwnedFd(std::os::fd::OwnedFd)`. Linux `prepare()` returns
+  this variant; Linux IpcClient matches and FD-passes; `AuxStream::Bytes`
+  remains the cross-platform fallback.
+- **B.** Make `AuxStream` opaque with crate-private accessors:
+  `AuxStream::from_owned_fd(fd)` (Linux) and `AuxStream::from_bytes(r)`
+  (any), with crate-private `into_linux_fd()` / `into_async_read()` used
+  inside the platform crate. Construction and consumption stay in
+  `boxpilot-platform`, so the type stays clean publicly.
+- **C.** Drop zero-copy: always copy bytes through `AsyncRead`, accept
+  the perf hit (≤64 MiB bundles, copy is ≤80 ms on modern HW). Sealing
+  is then redundant; rely entirely on SHA256 verification on both
+  platforms.
+
+The current spec language does not pick one. **Recommend B**:
+keeps `AuxStream` shape platform-agnostic in the public API while
+preserving Linux's memfd zero-copy. → blocks PR 10 / PR 11.
+
+**4.2 Windows wire format for IPC is undefined (§5.4 + §8 PR 12 + PR 13
++ PR 14b).** The spec says the Windows IpcServer "carries `aux:
+AuxStream` per call" and that PR 14b's `boxpilotctl` uses `IpcClient`,
+but does not specify the byte-level frame format on the Named Pipe.
+Without it, three concrete things cannot ship:
+
+- The Windows IpcServer impl cannot decode method/body/aux from raw
+  bytes off the pipe.
+- `boxpilotctl` cannot encode requests.
+- The chunked-frame aux protocol (`[u32 len][bytes]` is mentioned but
+  never specified end-to-end: e.g., is length network-byte-order? how
+  is method name encoded? is body length-prefixed JSON? what's the
+  response error envelope?).
+
+Need a §5.4.x sub-section pinning down the frame format. **Blocks PR 12
+/ PR 13.**
+
+**4.3 `CallerResolver` trait does not unify cleanly across platforms
+(§5 trait inventory; §8 PR 4).** Linux `CallerResolver::resolve(&str)
+-> u32` takes a D-Bus sender bus name. Windows analog takes a Named
+Pipe handle (or process id from `GetNamedPipeClientProcessId`) and
+returns a SID string. Different inputs, different outputs. A unified
+trait either:
+- Takes an opaque `NativeCallerId` enum that is always one of the two
+  variants (callers cfg-gate on construction), making the trait useless
+  as an abstraction; or
+- Disappears entirely: each platform's IpcServer impl resolves the
+  caller internally and hands a `CallerPrincipal` to dispatch, so the
+  trait `CallerResolver` lives in `linux/` only (with an analogous
+  Windows-internal helper in `windows/`).
+
+The second is cleaner. Spec implies the first by listing
+`CallerResolver` as a cross-platform trait in §5. **Blocks PR 4.**
+
+**4.4 `dispatch::authorize` is heavily Linux-coupled — PR scope
+underestimated (§8 PR 4 + PR 11).** Inspecting the existing
+`boxpilotd::dispatch::authorize`:
+- Takes `sender_bus_name: &str` (D-Bus specific input)
+- Returns `caller_uid: u32` in `AuthorizedCall` (Linux principal type)
+- Reads `controller_uid` from `boxpilot.toml` (schema field is u32)
+- Calls `ctx.authority.check(action_id, sender_bus_name)` — passing
+  the D-Bus sender to polkit
+- Acquires `/run/boxpilot/lock` directly (no `FileLock` trait yet)
+- `maybe_claim_controller` returns `ControllerWrites { uid: u32,
+  username: String }` (Linux-shaped)
+
+Refactoring this to a platform-neutral `authorize(ctx, principal:
+&CallerPrincipal, method)` requires changes to: `AuthorizedCall`,
+`ControllerWrites`, `ControllerState`, the `boxpilot.toml`
+controller-claim flow, and every caller site in `iface.rs`. None of
+this is mechanical. PR 4 (move CallerResolver) and PR 11 (introduce
+IPC traits) cannot ship without it. Either:
+- Insert a new "PR 4.5: refactor `dispatch::authorize` to operate on
+  `CallerPrincipal`, keeping Linux semantics identical", or
+- Acknowledge that PR 4 is **L** not **S** and includes the dispatch
+  refactor.
+
+**Blocks PR 4 sizing accuracy.**
+
+**4.5 `HelperError` variant naming inconsistency: spec says
+`Unimplemented`, code has `NotImplemented` (multiple places).** AC5
+and §1 use `HelperError::Unimplemented { os: "windows" }`. Existing
+code at `boxpilotd::iface::to_zbus_err` uses `HelperError::NotImplemented`.
+The variant doesn't carry an `os` payload either. This is either:
+- A spec drift (intent: keep `NotImplemented`, drop the `{ os }`
+  payload, just return the existing variant), or
+- A schema bump (add new variant `Unimplemented { os: String }` to
+  `boxpilot-ipc::HelperError`, alongside `NotImplemented`)
+
+The latter is `boxpilot-ipc` schema change, which Non-goal #5 prohibits
+this phase. **Recommend updating spec to use `NotImplemented` (existing
+variant) without the `{ os }` payload.** → cosmetic, but every PR 12 /
+13 / AC5 reference is wrong as written.
+
+**4.6 `AuxStream` consumed-once + drop-on-error semantics undocumented
+(§5.2 / §5.4).** If a verb's body returns an error before it consumes
+the entire `AuxStream::Bytes`, the reader is dropped:
+- **Linux:** memfd FD closes, no leftover state.
+- **Windows:** the Named Pipe stream still has un-drained chunked
+  frames in the pipe. The next request from the same client would
+  read these as if they were the next request body. The IpcServer
+  must explicitly close the connection on aux-incomplete-drop, or
+  drain to EOF before processing the next request.
+
+Spec is silent. → important behavior contract; PR 12 / 13.
+
+**4.7 Per-method aux-shape contract — where does the table live?
+(§5.4)** §5.4 says "per-method aux-shape contract enforced at IPC
+layer; methods that require aux fail if absent". Implementation needs
+a method→shape map, e.g.,
+
+```rust
+impl HelperMethod {
+    pub fn aux_shape(&self) -> AuxShape {
+        match self {
+            HelperMethod::ProfileActivateBundle => AuxShape::Required,
+            _ => AuxShape::Forbidden,
+        }
+    }
+}
+```
+
+This is a `boxpilot-ipc` addition (Non-goal #5 prohibits schema
+*changes* but additive accessors are arguably allowed). Or it lives
+in `boxpilot-platform` as a free function. Spec doesn't say. **PR 11.**
+
+**4.8 D-Bus wire-name guard test (carried over from 3.3, not addressed
+in any PR).** Should be a unit test in PR 4 or 11 asserting
+`BUS_NAME == "app.boxpilot.Helper"` and
+`OBJECT_PATH == "/app/boxpilot/Helper"`. Trivial; just hasn't been
+added to any PR's task list.
+
+### Round 4 priority summary
+
+Blocking plan-writing: 4.1 (AuxStream/OwnedFd), 4.2 (Windows wire
+format), 4.3 (CallerResolver unification), 4.4 (dispatch refactor
+scope).
+
+Important but defer-to-plan-time: 4.6 (AuxStream drop semantics), 4.7
+(aux-shape table location).
+
+Cosmetic: 4.5 (NotImplemented naming), 4.8 (wire-name guard test).
+
 ### Stop criterion
 
-Three rounds covered: API contract (Round 1), AC5/observability
-(Round 2), build/dep/process minutiae (Round 3). The remaining
-unaddressed items I can identify (e.g., specific tokio version vs
-windows-service 0.7 compat; whether `nix` should be removed from
-each crate's Cargo.toml individually; whether MSVC vs GNU runner is
-in plan-time vs spec-time scope) are derivative of the items
-already raised, and would not surface new categorical risks. Calling
-review complete.
+Round 4 found four blocking issues that the COQ resolutions had
+glossed over. After resolving those, a fifth round would likely find
+plan-time-resolvable detail (e.g., specific zbus 5 method names for
+FD passing, error mapping minutiae, exact tracing-appender rotation
+config) but no new categorical risks. Calling review complete.
 
 <promise>SPEC_REVIEW_DONE</promise>
