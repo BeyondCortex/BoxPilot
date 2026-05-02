@@ -174,7 +174,15 @@ async fn main() -> Result<()> {
         state_schema_mismatch,
     ));
 
-    let helper = iface::Helper::new(ctx);
+    // PR 11a: route every D-Bus call through HelperDispatch. The legacy
+    // `iface::Helper` shell still owns the zbus object registration, but
+    // each method now defers to `DispatchHandler::handle` so the verb
+    // bodies are platform-neutral. A future PR (12+) will let the
+    // Windows IpcServer impl drive the dispatch directly without going
+    // through a zbus interface at all.
+    let dispatch: std::sync::Arc<dyn boxpilot_platform::traits::ipc::HelperDispatch> =
+        std::sync::Arc::new(dispatch_handler::DispatchHandler::new(ctx.clone()));
+    let helper = iface::Helper::with_dispatch(ctx, dispatch.clone());
     conn.object_server()
         .at(OBJECT_PATH, helper)
         .await
@@ -184,13 +192,45 @@ async fn main() -> Result<()> {
         .context("acquire bus name")?;
     info!(bus = BUS_NAME, "ready");
 
-    // Block until SIGTERM / SIGINT.
-    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
-    tokio::select! {
-        _ = sigterm.recv() => info!("SIGTERM received"),
-        _ = sigint.recv()  => info!("SIGINT received"),
-    }
+    // PR 11a: block on the platform-neutral `IpcServer::run`. On Linux,
+    // `ZbusIpcServer::run` is a `notify().await` because zbus serves
+    // requests on background tasks owned by `conn`; the SIGTERM/SIGINT
+    // task notifies the same `Notify` to unblock it.
+    let stop = std::sync::Arc::new(tokio::sync::Notify::new());
+    let server = boxpilot_platform::linux::ipc::ZbusIpcServer {
+        conn: conn.clone(),
+        stop: stop.clone(),
+    };
+    let signal_stop = stop.clone();
+    tokio::spawn(async move {
+        let mut sigterm =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("install SIGTERM handler: {e}");
+                    return;
+                }
+            };
+        let mut sigint =
+            match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("install SIGINT handler: {e}");
+                    return;
+                }
+            };
+        tokio::select! {
+            _ = sigterm.recv() => info!("SIGTERM received"),
+            _ = sigint.recv()  => info!("SIGINT received"),
+        }
+        signal_stop.notify_waiters();
+    });
+
+    use boxpilot_platform::traits::ipc::IpcServer;
+    server
+        .run(dispatch)
+        .await
+        .map_err(|e| anyhow::anyhow!("ipc server: {e}"))?;
     info!("shutting down");
     Ok(())
 }

@@ -1,18 +1,25 @@
-//! `app.boxpilot.Helper1` D-Bus interface. Each method goes through
-//! [`crate::dispatch::authorize`] before doing any work — including the
-//! stubs awaiting later plans. Authorization on stubs avoids leaking which
-//! methods exist to unauthorized callers and exercises the §6 contract for
-//! every method from day one.
+//! `app.boxpilot.Helper1` D-Bus interface — thin shell over
+//! [`HelperDispatch`] (PR 11a). Each interface method:
+//!   1. extracts the D-Bus sender bus name from the message header
+//!   2. resolves it to a `CallerPrincipal::LinuxUid` via the platform
+//!      `CallerResolver`
+//!   3. sets `ctx.authority_subject` so the `DBusAuthority` impl can
+//!      hand the original sender string to polkit (Linux subject form)
+//!   4. encodes any typed request body to JSON bytes
+//!   5. calls `self.dispatch.handle(conn, method, body, aux)` and
+//!      returns the response, decoded back to the typed shape
 //!
-//! Method names on the bus are CamelCase per D-Bus convention; the logical
-//! action mapping is in `boxpilot_ipc::HelperMethod`.
+//! Method names on the bus are CamelCase per D-Bus convention; the
+//! logical action mapping is in `boxpilot_ipc::HelperMethod`.
 
 use crate::authority::CallerPrincipal;
 use crate::context::HelperContext;
-use crate::dispatch;
+use crate::dispatch_handler::DispatchHandler;
 use boxpilot_ipc::{HelperError, HelperMethod, HelperResult, ServiceStatusResponse};
+use boxpilot_platform::traits::bundle_aux::AuxStream;
+use boxpilot_platform::traits::ipc::{ConnectionInfo, HelperDispatch};
 use std::sync::Arc;
-use tracing::{instrument, warn};
+use tracing::instrument;
 use zbus::interface;
 
 /// Well-known D-Bus name the helper claims at startup. Lives here (with
@@ -28,20 +35,31 @@ pub const OBJECT_PATH: &str = "/app/boxpilot/Helper";
 
 pub struct Helper {
     ctx: Arc<HelperContext>,
+    dispatch: Arc<dyn HelperDispatch>,
 }
 
 impl Helper {
+    /// Convenience constructor that builds the default `DispatchHandler`
+    /// from `ctx`. Production code in `main.rs` and every helper-side
+    /// unit test funnels through this.
     pub fn new(ctx: Arc<HelperContext>) -> Self {
-        Self { ctx }
+        let dispatch: Arc<dyn HelperDispatch> = Arc::new(DispatchHandler::new(ctx.clone()));
+        Self { ctx, dispatch }
+    }
+
+    /// Plumb a custom `dispatch` (e.g. an mpsc fake from
+    /// `boxpilot_platform::fakes::ipc`). Used by integration smoke tests
+    /// that want to intercept verbs without re-wiring the rest of the
+    /// `HelperContext`.
+    #[allow(dead_code)]
+    pub fn with_dispatch(ctx: Arc<HelperContext>, dispatch: Arc<dyn HelperDispatch>) -> Self {
+        Self { ctx, dispatch }
     }
 }
 
 /// Resolve the kernel uid for a D-Bus sender via the platform `CallerResolver`
-/// and wrap it as a `CallerPrincipal::LinuxUid`. This is the Linux-specific
-/// principal-construction step; the Windows IpcServer (PR 11a/12) builds a
-/// `WindowsSid` from the named-pipe client token instead. Once `CallerResolver`
-/// inverts to `boxpilot-platform` (PR 11a), this helper goes away — the
-/// IpcServer hands a fully-formed principal to `dispatch::authorize`.
+/// and wrap it as a `CallerPrincipal::LinuxUid`. The Windows IpcServer
+/// (PR 12) builds a `WindowsSid` from the named-pipe client token instead.
 async fn resolve_caller_principal(
     ctx: &HelperContext,
     sender: &str,
@@ -110,9 +128,6 @@ fn extract_sender(header: &zbus::message::Header<'_>) -> zbus::fdo::Result<Strin
 
 #[interface(name = "app.boxpilot.Helper1")]
 impl Helper {
-    /// Returns spec §3.1 / §6.3 `service.status`. Read-only; no controller
-    /// required; orphaned controller is reported in the response, not as an
-    /// error.
     #[instrument(skip(self, header))]
     async fn service_status(
         &self,
@@ -129,10 +144,6 @@ impl Helper {
         })
     }
 
-    /// Returns spec §3.1 first-paint bundle. Read-only; no controller
-    /// required. Bundles service status, active profile fields from
-    /// boxpilot.toml, core path/version, and the active-symlink corruption
-    /// flag so the GUI can render Home in one round-trip.
     #[instrument(skip(self, header))]
     async fn home_status(
         &self,
@@ -144,11 +155,6 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
-
-    // ----- Stubs for the remaining actions (filled in by later plans). -----
-    // Each goes through dispatch::authorize first — an unauthorized caller
-    // sees NotAuthorized, not NotImplemented. Later plans replace each body
-    // with the real implementation while keeping the authorize chokepoint.
 
     async fn service_start(
         &self,
@@ -210,6 +216,7 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
+
     async fn service_install_managed(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -242,6 +249,7 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
+
     async fn profile_activate_bundle(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -261,6 +269,7 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
+
     async fn profile_rollback_release(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -279,6 +288,7 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
+
     async fn core_discover(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -365,6 +375,7 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
+
     async fn legacy_observe_service(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -378,6 +389,7 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
+
     async fn legacy_migrate_service(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -396,13 +408,20 @@ impl Helper {
             zbus::fdo::Error::Failed(format!("app.boxpilot.Helper1.Ipc: serialize: {e}"))
         })
     }
+
     async fn controller_transfer(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> zbus::fdo::Result<String> {
-        self.do_stub(&header, HelperMethod::ControllerTransfer)
-            .await
+        let sender = extract_sender(&header)?;
+        // controller.transfer is currently a stub; surfaces NotImplemented
+        // (or NotAuthorized for denied callers) via the dispatch chokepoint.
+        match self.do_controller_transfer(&sender).await {
+            Ok(()) => Ok(String::new()),
+            Err(e) => Err(to_zbus_err(e)),
+        }
     }
+
     async fn diagnostics_export_redacted(
         &self,
         #[zbus(header)] header: zbus::message::Header<'_>,
@@ -418,239 +437,143 @@ impl Helper {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Thin shells around `dispatch.handle(...)`. Tests in this module call
+// these directly; production traffic arrives via the zbus interface above
+// and lands in the same shells. Each shell:
+//   - resolves the sender to a `CallerPrincipal::LinuxUid`
+//   - sets `ctx.authority_subject` so polkit gets the original sender
+//   - encodes the request to JSON bytes (or empty for nullary verbs)
+//   - calls `dispatch.handle(...)` (no aux for all but activate-bundle)
+//   - decodes the response JSON bytes back to the typed shape
+//
+// Bypassing `dispatch.handle` would re-grow the duplication PR 11a was
+// designed to remove, so the shells stay minimal.
+
 impl Helper {
+    async fn dispatch_call(
+        &self,
+        sender: &str,
+        method: HelperMethod,
+        body: Vec<u8>,
+        aux: AuxStream,
+    ) -> HelperResult<Vec<u8>> {
+        let principal = resolve_caller_principal(&self.ctx, sender).await?;
+        self.ctx.authority_subject.set(sender);
+        let conn = ConnectionInfo { caller: principal };
+        self.dispatch.handle(conn, method, body, aux).await
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> HelperResult<T> {
+        serde_json::from_slice(bytes).map_err(|e| HelperError::Ipc {
+            message: format!("decode: {e}"),
+        })
+    }
+
+    fn encode<T: serde::Serialize>(value: &T) -> HelperResult<Vec<u8>> {
+        serde_json::to_vec(value).map_err(|e| HelperError::Ipc {
+            message: format!("encode: {e}"),
+        })
+    }
+
     async fn do_service_status(
         &self,
-        sender_bus_name: &str,
+        sender: &str,
     ) -> Result<ServiceStatusResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender_bus_name).await?;
-        self.ctx.authority_subject.set(sender_bus_name);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceStatus).await?;
-        let cfg = self.ctx.load_config().await?;
-        let unit_name = cfg.target_service.clone();
-        let unit_state = self.ctx.systemd.unit_state(&unit_name).await?;
-        let controller = call.controller.to_status();
-        Ok(ServiceStatusResponse {
-            unit_name,
-            unit_state,
-            controller,
-            state_schema_mismatch: self.ctx.state_schema_mismatch,
-        })
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::ServiceStatus, vec![], AuxStream::none())
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_home_status(
         &self,
-        sender_bus_name: &str,
+        sender: &str,
     ) -> Result<boxpilot_ipc::HomeStatusResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender_bus_name).await?;
-        self.ctx.authority_subject.set(sender_bus_name);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::HomeStatus).await?;
-
-        // Service: same shape as do_service_status, using the call we just
-        // authorized so we don't re-run polkit.
-        let cfg = self.ctx.load_config().await?;
-        let unit_name = cfg.target_service.clone();
-        let unit_state = self.ctx.systemd.unit_state(&unit_name).await?;
-        let controller = call.controller.to_status();
-        let service = ServiceStatusResponse {
-            unit_name,
-            unit_state,
-            controller,
-            state_schema_mismatch: self.ctx.state_schema_mismatch,
-        };
-
-        // Active profile: read straight from boxpilot.toml. All four
-        // identity fields must be populated for the snapshot to count as
-        // "activated"; otherwise it's None.
-        let active_profile = match (
-            cfg.active_profile_id.as_ref(),
-            cfg.active_profile_sha256.as_ref(),
-            cfg.active_release_id.as_ref(),
-            cfg.activated_at.as_ref(),
-        ) {
-            (Some(id), Some(sha), Some(rel), Some(at)) => {
-                Some(boxpilot_ipc::ActiveProfileSnapshot {
-                    profile_id: id.clone(),
-                    profile_name: cfg.active_profile_name.clone(),
-                    profile_sha256: sha.clone(),
-                    release_id: rel.clone(),
-                    activated_at: at.clone(),
-                })
-            }
-            _ => None,
-        };
-
-        // Core: discover and find the entry whose path matches cfg.core_path.
-        // Discovery failure is non-fatal — the rest of the page still renders.
-        let core_version = match self.discover_for_home().await {
-            Ok(list) => cfg
-                .core_path
-                .as_deref()
-                .and_then(|p| list.cores.iter().find(|c| c.path == p))
-                .map(|c| c.version.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
-            Err(_) => "unknown".to_string(),
-        };
-        let core = boxpilot_ipc::CoreSnapshot {
-            path: cfg.core_path.clone(),
-            state: cfg.core_state,
-            version: core_version,
-        };
-
-        // Active corrupt: identical predicate to the daemon-startup
-        // recovery path so the GUI banner can never disagree with the
-        // recovery report. Read-only; safe to call on every poll.
-        let active_corrupt = crate::profile::recovery::check_active_status(&self.ctx.paths)
-            .await
-            .corrupt;
-
-        Ok(boxpilot_ipc::HomeStatusResponse {
-            schema_version: boxpilot_ipc::HOME_STATUS_SCHEMA_VERSION,
-            service,
-            active_profile,
-            core,
-            active_corrupt,
-        })
-    }
-
-    async fn discover_for_home(&self) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
-        let deps = crate::core::discover::DiscoverDeps {
-            paths: self.ctx.paths.clone(),
-            fs: &*self.ctx.fs_meta,
-            version_checker: &*self.ctx.version_checker,
-        };
-        crate::core::discover::discover(&deps).await
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::HomeStatus, vec![], AuxStream::none())
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_service_start(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call = dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceStart).await?;
-        let cfg = self.ctx.load_config().await?;
-        crate::service::control::run(
-            crate::service::control::Verb::Start,
-            &cfg.target_service,
-            &*self.ctx.systemd,
-        )
-        .await
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::ServiceStart, vec![], AuxStream::none())
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_service_stop(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call = dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceStop).await?;
-        let cfg = self.ctx.load_config().await?;
-        crate::service::control::run(
-            crate::service::control::Verb::Stop,
-            &cfg.target_service,
-            &*self.ctx.systemd,
-        )
-        .await
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::ServiceStop, vec![], AuxStream::none())
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_service_restart(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceRestart).await?;
-        let cfg = self.ctx.load_config().await?;
-        crate::service::control::run(
-            crate::service::control::Verb::Restart,
-            &cfg.target_service,
-            &*self.ctx.systemd,
-        )
-        .await
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::ServiceRestart,
+                vec![],
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_service_enable(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceEnable).await?;
-        let cfg = self.ctx.load_config().await?;
-        crate::service::control::run(
-            crate::service::control::Verb::Enable,
-            &cfg.target_service,
-            &*self.ctx.systemd,
-        )
-        .await
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::ServiceEnable,
+                vec![],
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_service_disable(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceControlResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceDisable).await?;
-        let cfg = self.ctx.load_config().await?;
-        crate::service::control::run(
-            crate::service::control::Verb::Disable,
-            &cfg.target_service,
-            &*self.ctx.systemd,
-        )
-        .await
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::ServiceDisable,
+                vec![],
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_service_install_managed(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::ServiceInstallManagedResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceInstallManaged).await?;
-        let controller = dispatch::maybe_claim_controller(
-            call.will_claim_controller,
-            &call.principal,
-            &*self.ctx.user_lookup,
-        )?;
-        let cfg = self.ctx.load_config().await?;
-        let deps = crate::service::install::InstallDeps {
-            paths: self.ctx.paths.clone(),
-            systemd: &*self.ctx.systemd,
-            fs: &*self.ctx.fs_meta,
-        };
-        let mut resp = crate::service::install::install_managed(&cfg, &deps).await?;
-        resp.claimed_controller = controller.is_some();
-
-        // Persist controller-name + boxpilot.toml + polkit drop-in if claiming.
-        // T8 made StateCommit also write the polkit drop-in atomically with
-        // controller-name. The install_state passed here is empty because
-        // service.install_managed does not change the cores ledger; the guard
-        // inside StateCommit::apply preserves any on-disk install-state.json.
-        //
-        // Atomicity note: the unit file + daemon-reload above are NOT atomic
-        // with the StateCommit below. If the commit fails, the unit lives on
-        // disk but the controller claim is not recorded; the next attempt
-        // rewrites both, so the corner is benign rather than blocking.
-        if let Some(c) = controller {
-            let commit = crate::core::commit::StateCommit {
-                paths: self.ctx.paths.clone(),
-                toml_updates: crate::core::commit::TomlUpdates::default(),
-                controller: Some(c),
-                install_state: boxpilot_ipc::InstallState::empty(),
-                current_symlink_target: None,
-            };
-            commit.apply().await?;
-        }
-
-        Ok(resp)
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::ServiceInstallManaged,
+                vec![],
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_service_logs(
@@ -658,52 +581,21 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::ServiceLogsRequest,
     ) -> Result<boxpilot_ipc::ServiceLogsResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call = dispatch::authorize(&self.ctx, &principal, HelperMethod::ServiceLogs).await?;
-        let cfg = self.ctx.load_config().await?;
-        crate::service::logs::read(&req, &cfg.target_service, &*self.ctx.journal).await
-    }
-
-    /// Run the §6 dispatch contract (caller-uid → controller → polkit →
-    /// optional lock) for a method whose body isn't implemented yet, then
-    /// return `NotImplemented`. Unauthorized callers see `NotAuthorized`
-    /// rather than `NotImplemented`, which is both more honest and avoids
-    /// leaking which methods exist.
-    async fn do_stub(
-        &self,
-        header: &zbus::message::Header<'_>,
-        method: HelperMethod,
-    ) -> zbus::fdo::Result<String> {
-        let sender = extract_sender(header)?;
-        let principal = resolve_caller_principal(&self.ctx, &sender)
-            .await
-            .map_err(to_zbus_err)?;
-        self.ctx.authority_subject.set(&sender);
-        dispatch::authorize(&self.ctx, &principal, method)
-            .await
-            .map_err(to_zbus_err)?;
-        warn!(
-            method = method.as_logical(),
-            "called a not-yet-implemented helper method"
-        );
-        Err(to_zbus_err(HelperError::NotImplemented))
+        let body = Self::encode(&req)?;
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::ServiceLogs, body, AuxStream::none())
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_core_discover(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::CoreDiscoverResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreDiscover).await?;
-        let deps = crate::core::discover::DiscoverDeps {
-            paths: self.ctx.paths.clone(),
-            fs: &*self.ctx.fs_meta,
-            version_checker: &*self.ctx.version_checker,
-        };
-        crate::core::discover::discover(&deps).await
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::CoreDiscover, vec![], AuxStream::none())
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_core_install_managed(
@@ -711,23 +603,16 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreInstallRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreInstallManaged).await?;
-        let controller = dispatch::maybe_claim_controller(
-            call.will_claim_controller,
-            &call.principal,
-            &*self.ctx.user_lookup,
-        )?;
-        let deps = crate::core::install::InstallDeps {
-            paths: self.ctx.paths.clone(),
-            github: &*self.ctx.github,
-            downloader: &*self.ctx.downloader,
-            fs: &*self.ctx.fs_meta,
-            version_checker: &*self.ctx.version_checker,
-        };
-        crate::core::install::install_or_upgrade(&req, &deps, controller).await
+        let body = Self::encode(&req)?;
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::CoreInstallManaged,
+                body,
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_core_upgrade_managed(
@@ -735,23 +620,16 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreInstallRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreUpgradeManaged).await?;
-        let controller = dispatch::maybe_claim_controller(
-            call.will_claim_controller,
-            &call.principal,
-            &*self.ctx.user_lookup,
-        )?;
-        let deps = crate::core::install::InstallDeps {
-            paths: self.ctx.paths.clone(),
-            github: &*self.ctx.github,
-            downloader: &*self.ctx.downloader,
-            fs: &*self.ctx.fs_meta,
-            version_checker: &*self.ctx.version_checker,
-        };
-        crate::core::install::install_or_upgrade(&req, &deps, controller).await
+        let body = Self::encode(&req)?;
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::CoreUpgradeManaged,
+                body,
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_core_rollback_managed(
@@ -759,21 +637,16 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreRollbackRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreRollbackManaged).await?;
-        let controller = dispatch::maybe_claim_controller(
-            call.will_claim_controller,
-            &call.principal,
-            &*self.ctx.user_lookup,
-        )?;
-        let deps = crate::core::rollback::RollbackDeps {
-            paths: self.ctx.paths.clone(),
-            fs: &*self.ctx.fs_meta,
-            version_checker: &*self.ctx.version_checker,
-        };
-        crate::core::rollback::rollback(&req, &deps, controller).await
+        let body = Self::encode(&req)?;
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::CoreRollbackManaged,
+                body,
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_core_adopt(
@@ -781,20 +654,11 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::CoreAdoptRequest,
     ) -> Result<boxpilot_ipc::CoreInstallResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let call = dispatch::authorize(&self.ctx, &principal, HelperMethod::CoreAdopt).await?;
-        let controller = dispatch::maybe_claim_controller(
-            call.will_claim_controller,
-            &call.principal,
-            &*self.ctx.user_lookup,
-        )?;
-        let deps = crate::core::adopt::AdoptDeps {
-            paths: self.ctx.paths.clone(),
-            fs: &*self.ctx.fs_meta,
-            version_checker: &*self.ctx.version_checker,
-        };
-        crate::core::adopt::adopt(&req, &deps, controller).await
+        let body = Self::encode(&req)?;
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::CoreAdopt, body, AuxStream::none())
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_profile_activate_bundle(
@@ -803,22 +667,12 @@ impl Helper {
         req: boxpilot_ipc::ActivateBundleRequest,
         fd: std::os::fd::OwnedFd,
     ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::ProfileActivateBundle).await?;
-        let controller = dispatch::maybe_claim_controller(
-            call.will_claim_controller,
-            &call.principal,
-            &*self.ctx.user_lookup,
-        )?;
-        let deps = crate::profile::activate::ActivateDeps {
-            paths: self.ctx.paths.clone(),
-            systemd: &*self.ctx.systemd,
-            verifier: &*self.ctx.verifier,
-            checker: &*self.ctx.checker,
-        };
-        crate::profile::activate::activate_bundle(req, fd, controller, &deps).await
+        let body = Self::encode(&req)?;
+        let aux = AuxStream::from_owned_fd(fd);
+        let bytes = self
+            .dispatch_call(sender, HelperMethod::ProfileActivateBundle, body, aux)
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_profile_rollback_release(
@@ -826,61 +680,31 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::RollbackRequest,
     ) -> Result<boxpilot_ipc::ActivateBundleResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::ProfileRollbackRelease)
-                .await?;
-        let controller = dispatch::maybe_claim_controller(
-            call.will_claim_controller,
-            &call.principal,
-            &*self.ctx.user_lookup,
-        )?;
-        let deps = crate::profile::rollback::RollbackDeps {
-            paths: self.ctx.paths.clone(),
-            systemd: &*self.ctx.systemd,
-            verifier: &*self.ctx.verifier,
-        };
-        crate::profile::rollback::rollback_release(req, controller, &deps).await
+        let body = Self::encode(&req)?;
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::ProfileRollbackRelease,
+                body,
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_legacy_observe_service(
         &self,
         sender: &str,
     ) -> Result<boxpilot_ipc::LegacyObserveServiceResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::LegacyObserveService).await?;
-        let cfg = self.ctx.load_config().await?;
-        let deps = crate::legacy::observe::ObserveDeps {
-            systemd: &*self.ctx.systemd,
-            fs_read: &*self.ctx.fs_fragment_reader,
-        };
-        crate::legacy::observe::observe(&cfg, &deps).await
-    }
-
-    async fn do_diagnostics_export_redacted(
-        &self,
-        sender: &str,
-    ) -> Result<boxpilot_ipc::DiagnosticsExportResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call = dispatch::authorize(
-            &self.ctx,
-            &principal,
-            HelperMethod::DiagnosticsExportRedacted,
-        )
-        .await?;
-        let cfg = self.ctx.load_config().await?;
-        crate::diagnostics::compose(crate::diagnostics::ComposeInputs {
-            paths: &self.ctx.paths,
-            unit_name: &cfg.target_service,
-            journal: &*self.ctx.journal,
-            os_release_path: std::path::Path::new("/etc/os-release"),
-            now_iso: || chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string(),
-        })
-        .await
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::LegacyObserveService,
+                vec![],
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
     }
 
     async fn do_legacy_migrate_service(
@@ -888,23 +712,46 @@ impl Helper {
         sender: &str,
         req: boxpilot_ipc::LegacyMigrateRequest,
     ) -> Result<boxpilot_ipc::LegacyMigrateResponse, HelperError> {
-        let principal = resolve_caller_principal(&self.ctx, sender).await?;
-        self.ctx.authority_subject.set(sender);
-        let _call =
-            dispatch::authorize(&self.ctx, &principal, HelperMethod::LegacyMigrateService).await?;
-        let cfg = self.ctx.load_config().await?;
-        let prep = crate::legacy::migrate::PrepareDeps {
-            systemd: &*self.ctx.systemd,
-            fs_read: &*self.ctx.fs_fragment_reader,
-            config_reader: &*self.ctx.config_reader,
-        };
-        let backups_dir = self.ctx.paths.backups_units_dir();
-        let cut = crate::legacy::migrate::CutoverDeps {
-            systemd: &*self.ctx.systemd,
-            backups_units_dir: &backups_dir,
-            now_iso: || chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string(),
-        };
-        crate::legacy::migrate::run(&cfg, req, &prep, &cut).await
+        let body = Self::encode(&req)?;
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::LegacyMigrateService,
+                body,
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
+    }
+
+    async fn do_diagnostics_export_redacted(
+        &self,
+        sender: &str,
+    ) -> Result<boxpilot_ipc::DiagnosticsExportResponse, HelperError> {
+        let bytes = self
+            .dispatch_call(
+                sender,
+                HelperMethod::DiagnosticsExportRedacted,
+                vec![],
+                AuxStream::none(),
+            )
+            .await?;
+        Self::decode(&bytes)
+    }
+
+    /// `controller.transfer` is a stub today — it runs the dispatch
+    /// chokepoint (so denied callers see NotAuthorized) and surfaces
+    /// NotImplemented for the real transition. Returns `()` because the
+    /// stub has no payload.
+    async fn do_controller_transfer(&self, sender: &str) -> Result<(), HelperError> {
+        self.dispatch_call(
+            sender,
+            HelperMethod::ControllerTransfer,
+            vec![],
+            AuxStream::none(),
+        )
+        .await
+        .map(|_| ())
     }
 }
 
@@ -915,6 +762,7 @@ mod tests {
     use crate::context::testing::ctx_with;
     use crate::context::testing::ctx_with_journal_lines;
     use crate::context::testing::ctx_with_recording;
+    use crate::dispatch;
     use crate::systemd::testing::{RecordedCall, RecordingSystemd};
     use boxpilot_ipc::UnitState;
     use tempfile::tempdir;
