@@ -51,7 +51,7 @@ reads.
 **Resolution:** Sub-project #1's Windows `Authority` impl is
 `AlwaysAllow`, with a `warn!`-level startup log line stating that
 authorization is bypassed pending Sub-project #2. AC5 therefore reaches
-the dispatch's `Unimplemented` response. §5.4 amended.
+the dispatch's `NotImplemented` response. §5.4 amended.
 
 ## COQ4. ServiceManager trait shaped against systemd alone — RESOLVED (with deferred risk)
 
@@ -87,6 +87,293 @@ service starts. §3 AC5 verification line and §8 PR table amended.
 `["macros", "rt-multi-thread", "signal", "fs", "sync", "net", "io-util"]`.
 §4 deps comment + §8 PR 1 amended.
 
+## COQ8. `AuxStream::Bytes(Box<dyn AsyncRead>)` cannot recover an `OwnedFd` — RESOLVED
+
+**Original concern (Round 4 / 4.1):** spec §5.2 said the Linux IpcClient
+"detects an `OwnedFd` backing" — not a real Rust mechanism;
+`Box<dyn AsyncRead>` cannot be downcast without `Any`.
+
+**Resolution:** `AuxStream` becomes an opaque struct with crate-private
+accessors. Public construction:
+
+```rust
+pub struct AuxStream { /* private */ }
+
+impl AuxStream {
+    pub fn none() -> Self;
+    pub fn from_async_read(r: impl AsyncRead + Send + Unpin + 'static) -> Self;
+    #[cfg(target_os = "linux")]
+    pub fn from_owned_fd(fd: std::os::fd::OwnedFd) -> Self;
+}
+```
+
+Crate-private inside `boxpilot-platform`:
+
+```rust
+pub(crate) enum AuxStreamRepr {
+    None,
+    AsyncRead(Box<dyn AsyncRead + Send + Unpin>),
+    #[cfg(target_os = "linux")]
+    LinuxFd(std::os::fd::OwnedFd),
+}
+
+impl AuxStream {
+    pub(crate) fn into_repr(self) -> AuxStreamRepr { … }
+}
+```
+
+Linux IpcClient calls `into_repr()`, matches `LinuxFd(fd)` and FD-passes
+zero-copy; `AsyncRead(r)` falls back to copying bytes into a fresh
+sealed memfd then FD-passing. Linux IpcServer always emits
+`AsyncRead(_)` (the `OwnedFd` is wrapped in `tokio::fs::File`); dispatch
+sees a uniform AsyncRead. Windows IpcClient sees only `None` or
+`AsyncRead(_)`. The `LinuxFd` variant is invisible to Windows-side code
+because it's gated. §5.2 amended.
+
+## COQ9. Windows IPC wire format undefined — RESOLVED
+
+**Original concern (Round 4 / 4.2):** §5.4 mentioned
+"chunked frames" but did not specify byte-level layout;
+`boxpilotctl` and the Windows IpcServer cannot ship without it.
+
+**Resolution:** new §5.4.1 specifies the wire format:
+
+```text
+Per-call envelope on the Named Pipe (Windows) or D-Bus message body
+(Linux fakes for tests):
+
+  HEADER:
+    [u32 magic = 0xB0B91107]   "BoxPilot"
+    [u32 method_id]             # boxpilot_ipc::HelperMethod::wire_id()
+    [u32 flags]                 # bit0 = aux_present, others reserved
+    [u64 body_len]
+    [u32 body_sha256_present]   # 0 or 1
+    [u8  body_sha256[32]]       # only if present (bundle bytes integrity)
+  BODY:
+    [u8 ; body_len]             # JSON-serialized request payload
+  AUX (only if flags.aux_present):
+    repeat:
+      [u32 chunk_len]           # 0 means EOF
+      [u8 ; chunk_len]
+  RESPONSE:
+    [u32 status]                # 0 = ok, nonzero = HelperError variant id
+    [u64 body_len]
+    [u8 ; body_len]             # JSON-serialized response or error detail
+```
+
+All multi-byte integers are **little-endian** (matches x86_64 native;
+documented to forestall network-byte-order confusion). Method-id and
+HelperError-variant-id mappings live in `boxpilot-ipc::method::wire`
+as additive accessors (not a schema change to `HelperMethod` itself).
+
+The same envelope is used by:
+- Windows Named Pipe IpcServer / IpcClient.
+- The cross-platform fake (writes/reads on a `tokio::sync::mpsc` channel
+  pair carrying these byte vectors).
+- `boxpilotctl` (Windows side; Linux side uses zbus directly).
+
+Linux native impl uses zbus's typed call mechanism (no envelope
+serialization; method args are zbus-typed). The envelope format is
+Windows-side only. §5.4 + new §5.4.1 amended.
+
+## COQ10. `CallerResolver` does not unify across platforms — RESOLVED
+
+**Original concern (Round 4 / 4.3):** Linux input is D-Bus sender
+string, output uid; Windows input is Named Pipe handle, output SID.
+A unified trait is fictional.
+
+**Resolution:** `CallerResolver` is **dropped from the trait surface**.
+Each platform's IpcServer impl resolves the caller internally and hands
+a fully-resolved `CallerPrincipal` to dispatch. Linux IpcServer holds a
+`Connection` and calls `GetConnectionUnixUser` per message; Windows
+IpcServer accepts a Named Pipe connection and calls
+`GetNamedPipeClientProcessId` + `OpenProcessToken` once per connection,
+caches the SID for the connection's lifetime.
+
+What changes vs the spec body:
+- §5 trait inventory: `CallerResolver` row deleted.
+- §5.4 `ConnectionInfo` is what dispatch sees; it already has
+  `caller: CallerPrincipal`.
+- §8 PR 4: rewritten to "move `Authority` to platform crate; absorb the
+  Linux `DBusCallerResolver` into the Linux `IpcServer` impl, **not**
+  into a standalone `CallerResolver` trait". The `caller_resolver`
+  field on `HelperContext` goes away; dispatch's `authorize` receives
+  `CallerPrincipal` directly (see COQ11).
+
+§5 trait inventory + §8 PR 4 amended.
+
+## COQ11. `dispatch::authorize` is heavily Linux-coupled — RESOLVED
+
+**Original concern (Round 4 / 4.4):** Existing `authorize` takes
+`sender_bus_name: &str`, returns `caller_uid: u32`, reads
+`controller_uid` (u32), passes the D-Bus sender to polkit, hardcodes
+`/run/boxpilot/lock`. Refactoring this is a major task spec called "S".
+
+**Resolution:** PR 4 expands to encompass the dispatch refactor.
+Re-shaped:
+
+- Old `authorize(ctx, sender_bus_name: &str, method) -> AuthorizedCall`
+  becomes `authorize(ctx, principal: &CallerPrincipal, method)
+  -> AuthorizedCall`.
+- `AuthorizedCall::caller_uid: u32` becomes
+  `AuthorizedCall::principal: CallerPrincipal`.
+- `ControllerWrites { uid, username }` stays as-is **on Linux**; Windows
+  cannot use it because schema field is u32. Sub-project #2 introduces
+  `ControllerWrites` v2 alongside `controller_principal` schema bump.
+- `ctx.authority.check(action_id, sender_bus_name)` becomes
+  `ctx.authority.check(action_id, &principal)`. Linux Authority impl
+  internally maps `CallerPrincipal::LinuxUid(u32)` back to a D-Bus
+  proxy via the IpcServer's connection (or accepts a `(uid, sender)`
+  pair stashed in `ConnectionInfo`).
+- `ctx.paths.run_lock()` stays as-is (Linux path); FileLock trait (PR 6)
+  cleans this up later.
+
+Sized: **PR 4 = L** (was S). Approximately 400–500 LOC of changes
+including test updates. §8 PR 4 amended.
+
+## COQ12. `boxpilot-profile` is Linux-coupled beyond `bundle.rs` — RESOLVED
+
+**Original concern (Round 5 / 5.1):** `store.rs:1` is
+`use std::os::unix::fs::PermissionsExt;` at module top — breaks Windows
+compile of the entire workspace before PR 12 can possibly fix it.
+Plus `meta.rs`, `import.rs`, `remotes.rs` (chmod for 0700/0600).
+
+**Resolution:** New trait `FsPermissions` in `boxpilot-platform`:
+
+```rust
+#[async_trait]
+pub trait FsPermissions: Send + Sync {
+    /// Restrict path to owner-only access. Linux: chmod 0700 dir / 0600
+    /// file. Windows: SetSecurityInfo to clear inheritance and grant
+    /// only the owner SID full access.
+    async fn restrict_to_owner(&self, path: &Path, kind: PathKind) -> Result<()>;
+}
+
+pub enum PathKind { Directory, File }
+```
+
+PR 3 (currently moves `FsMetadataProvider`/`VersionChecker`/
+`UserLookup`) is expanded to also introduce `FsPermissions`. Linux
+impl wraps the existing `PermissionsExt::set_mode(0o700/0o600)` calls;
+Windows impl uses `windows-sys` `SetSecurityInfo`. All five
+`boxpilot-profile` files (`store.rs`, `meta.rs`, `import.rs`,
+`remotes.rs`, plus the test in `import.rs`) replace
+`use std::os::unix::fs::PermissionsExt;` with calls into the trait.
+
+Sized: PR 3 grows from S to **M**. §8 PR 3 amended; §5 trait
+inventory adds `FsPermissions`.
+
+## COQ13. Windows-compile-must-pass gate timing — RESOLVED
+
+**Original concern (Round 5 / 5.2):** `boxpilot-profile/src/bundle.rs`
+uses `nix::sys::memfd` until PR 10 moves it. Therefore Windows
+compilation cannot pass until PR 10 lands. PR 1's "allow-to-fail" gate
+spans PRs 1–9, not just PR 1.
+
+**Resolution:** §3 AC3's verification line is amended:
+
+> CI step `cargo check --target x86_64-pc-windows-gnu --workspace`
+> runs **on every PR from PR 1 onward**, but the `allow_failure: true`
+> flag is **set through PR 10** (where bundle's nix usage moves out)
+> and **dropped at PR 11**. From PR 11 onward, Windows compile is a
+> required check. The MSVC target replaces the GNU target at PR 14
+> (where the Windows runner is enabled).
+
+§8 PR 1 + PR 11 + PR 14 task descriptions amended to mention the
+gate flips. AC3 verification reads "from PR 11 onward, hard-required;
+PRs 1–10 allow-to-fail".
+
+## COQ14. `check.rs` subprocess-tree kill on Windows — RESOLVED
+
+**Original concern (Round 5 / 5.3):** `run_singbox_check` does
+`unsafe { libc::kill(-pgid, libc::SIGKILL) }` on timeout — no Windows
+analog (would need `JobObject` + `TerminateJobObject`).
+
+**Resolution (option (c) from Round 5):** On Windows in this
+sub-project, `run_singbox_check` is short-circuited:
+
+```rust
+#[cfg(target_os = "windows")]
+pub fn run_singbox_check(_: &Path, _: &Path) -> Result<CheckOutput, CheckError> {
+    Ok(CheckOutput {
+        success: true,
+        stdout: "sing-box check skipped on Windows in Sub-project #1".to_string(),
+        stderr: String::new(),
+    })
+}
+```
+
+The Linux impl is unchanged; cfg-gated. Real Windows impl with
+JobObject moves to Sub-project #2 (when `service.install_managed` /
+`profile.activate_bundle` actually need preflight on Windows). Best-
+effort preflight per Linux design spec §10 step 3 documents this
+fallback as acceptable. New PR 9b or merged into PR 9. §8 amended.
+
+## COQ15. `helper_client.rs` rewrite scope — split PR 11 — RESOLVED
+
+**Original concern (Round 5 / 5.4):** `boxpilot-tauri/src/helper_client.rs`
+is 314 lines of typed zbus proxies + `profile_cmds.rs` raw FD-passing
+proxy. Spec PR 11 sized "L" understates a near-total rewrite.
+
+**Resolution:** PR 11 splits into:
+
+- **PR 11a (M):** introduce `IpcServer` / `IpcConnection` /
+  `HelperDispatch` traits + Linux IpcServer impl (helper-side only).
+  `boxpilotd::iface` routes incoming zbus calls through
+  `HelperDispatch::handle`. `boxpilot-tauri` is unchanged in this PR.
+- **PR 11b (L):** introduce `IpcClient` trait + Linux IpcClient impl;
+  rewrite `boxpilot-tauri/src/helper_client.rs` to use
+  `IpcClient::call`; absorb the raw `zbus::Proxy` FD-passing code from
+  `boxpilot-tauri/src/profile_cmds.rs` into `boxpilot-platform/linux/ipc.rs`.
+  Remove `zbus` direct dep from `boxpilot-tauri/Cargo.toml`.
+
+§8 PR 11 split into 11a + 11b, both required before COQ13's gate flip.
+
+## COQ16. `ProfileStorePaths::from_env` plus Tauri `Paths` plumbing — RESOLVED
+
+**Original concern (Round 5 / 5.5):** `from_env()` reads
+`XDG_DATA_HOME` / `HOME`; Windows has neither. Migration requires
+`Paths` to be threaded through Tauri command state.
+
+**Resolution:** PR 2 (Paths migration) gains a sub-task:
+
+- Delete `boxpilot_profile::store::ProfileStorePaths::from_env()`.
+- Add `ProfileStorePaths::from_paths(p: &boxpilot_platform::Paths)`
+  that returns the `Paths::user_root().join("profiles")` sub-tree.
+- Update Tauri:
+  - `boxpilot-tauri/src/main.rs` constructs a single
+    `boxpilot_platform::Paths::system()` at startup, registers it as
+    a Tauri `tauri::State`.
+  - `commands.rs` and `profile_cmds.rs` take
+    `tauri::State<'_, boxpilot_platform::Paths>` and pass it to
+    `ProfileStorePaths::from_paths(...)` per call.
+  - Tests use `Paths::with_root(tmpdir)` as the state.
+
+Sized: PR 2 grows from S to **M**. §8 PR 2 amended.
+
+## COQ17 (carried-over from Rounds 1–4, plan-time-only). Cosmetic / test-only
+
+These are folded into the relevant PRs without dedicated COQs:
+
+- **4.5** spec body says `HelperError::NotImplemented`
+  but the existing variant is `HelperError::NotImplemented` with no
+  payload. **Decision:** spec uses the existing variant.
+  All occurrences of `Unimplemented` in this doc are read as
+  `NotImplemented`. Non-goal #5 (no schema change) is preserved.
+- **4.6** `AuxStream` early-drop semantics: Linux closes the FD harmlessly;
+  Windows IpcServer **must close the Named Pipe connection** rather
+  than drain leftover chunked frames, because frame boundaries between
+  one request and the next would otherwise be ambiguous. Documented
+  in §5.4.1 (the wire format section added by COQ9).
+- **4.7** Per-method aux-shape table lives at
+  `boxpilot_ipc::method::HelperMethod::aux_shape() -> AuxShape`
+  as an additive accessor. PR 11a defines this. Non-goal #5 is
+  preserved (additive accessor, no struct/enum change).
+- **4.8** PR 4 task list adds: "unit test in `boxpilotd::iface` (or wherever
+  `BUS_NAME` / `OBJECT_PATH` end up after the Authority move)
+  asserting the constants are unchanged from v0.1.1, with a comment
+  explaining the wire-protocol freeze."
+
 ---
 
 ## 1. Positioning
@@ -101,7 +388,7 @@ sub-project lands:
   implementations (mostly `unimplemented!()`), and cross-platform fakes.
 - Windows can `cargo check --target x86_64-pc-windows-msvc --workspace` and
   `boxpilotd.exe` registers as a Windows Service under SCM, accepts Named
-  Pipe connections, and responds with `Unimplemented` to every helper verb.
+  Pipe connections, and responds with `NotImplemented` to every helper verb.
 
 It does **not** deliver any working Windows feature. The two follow-up
 sub-projects are sketched in §11.
@@ -131,7 +418,7 @@ standpoint.
    (`sc create boxpilotd binPath= "...\boxpilotd.exe"`) and started,
    transitions through `START_PENDING → RUNNING`, accepts a Named Pipe
    connection on `\\.\pipe\boxpilot-helper`, returns
-   `HelperError::Unimplemented { os: "windows" }` for every helper verb,
+   `HelperError::NotImplemented` for every helper verb,
    and stops cleanly on `sc stop boxpilotd`.
 5. **Cross-platform fake-based tests.** Helper-side unit tests that use
    the new platform fakes pass on both the Linux and Windows CI runners.
@@ -157,9 +444,9 @@ standpoint.
 |---|-----------|-------------|
 | AC1 | Linux smoke does not regress | All `docs/superpowers/plans/*-smoke-procedure.md` pass on a fresh Debian/Ubuntu VM |
 | AC2 | Linux unit + integration tests green | `cargo test --workspace` on `x86_64-unknown-linux-gnu` |
-| AC3 | Windows compiles | CI step `cargo check --target x86_64-pc-windows-msvc --workspace` returns 0 |
+| AC3 | Windows compiles | CI step `cargo check --target x86_64-pc-windows-{gnu,msvc} --workspace` returns 0. Per COQ13: GNU target runs from PR 1, allow-to-fail through PR 10 (bundle still uses `nix::memfd`); **required from PR 11a onward**. MSVC target replaces GNU at PR 14 once the Windows runner is enabled. |
 | AC4 | Windows fake tests run | CI step `cargo test --workspace` on `windows-latest` returns 0 |
-| AC5 | Windows boot smoke | Manual: `sc create boxpilotd binPath= "<absolute>"` → `sc start` → run `boxpilotctl service.status` (the debug client added in PR 14b) → response is `Unimplemented` (Authority is `AlwaysAllow` in this phase, so `Unimplemented` is reachable) → `sc stop` exits cleanly |
+| AC5 | Windows boot smoke | Manual: `sc create boxpilotd binPath= "<absolute>"` → `sc start` → run `boxpilotctl service.status` (the debug client added in PR 14b) → response is `NotImplemented` (Authority is `AlwaysAllow` in this phase, so `NotImplemented` is reachable) → `sc stop` exits cleanly |
 | AC6 | No leaked OS calls | `rg "nix::|std::os::unix::|libc::" crates/` reports hits only inside `crates/boxpilot-platform/src/linux/` |
 | AC7 | `.deb` upgrade preserves state | Install v0.1.1 → activate a profile → upgrade to this build → `boxpilot-sing-box.service` still active, profile still active, `boxpilot.toml` unchanged |
 
@@ -285,12 +572,26 @@ The downstream crates' role changes:
   `#[cfg(target_os = "linux")]` and behind feature-equivalent traits or
   cfg-gated module loads.
 - `boxpilot-profile` — bundle preparation (validation, asset checking,
-  manifest building) stays here. Bundle *transfer* is now
-  `BundleClient` from `boxpilot-platform`. The `nix::sys::memfd` /
-  `nix::fcntl` direct usage in `bundle.rs` is moved to
-  `boxpilot-platform/src/linux/bundle.rs`.
-- `boxpilot-tauri` — `helper_client.rs` now wraps an `IpcClient` from
-  `boxpilot-platform`. Tauri command handlers are unchanged.
+  manifest building) stays here. Bundle byte transfer flows through
+  `AuxStream` (no separate trait). The `nix::sys::memfd` / `nix::fcntl`
+  direct usage in `bundle.rs` is moved to
+  `boxpilot-platform/src/linux/bundle.rs`. Beyond `bundle.rs` (per
+  COQ12), five files have module-top `use std::os::unix::fs::PermissionsExt;`
+  (`store.rs`, `meta.rs`, `import.rs`, `remotes.rs`, plus `import.rs`
+  test) — these become `FsPermissions::restrict_to_owner(...)` calls
+  through the platform crate. `check.rs::run_singbox_check` is
+  short-circuited on Windows in this sub-project (per COQ14); real
+  JobObject impl in Sub-project #2. `ProfileStorePaths::from_env()` is
+  removed and replaced with `from_paths(&boxpilot_platform::Paths)`
+  (per COQ16). nix and libc deps are moved from package-level to
+  `[target.'cfg(unix)'.dependencies]`.
+- `boxpilot-tauri` — `helper_client.rs` is **rewritten** in PR 11b
+  (per COQ15): each typed method body collapses to
+  `IpcClient::call(method, body, aux)` + serde wrapping. The custom
+  raw-`zbus::Proxy` FD-passing code in `profile_cmds.rs` is absorbed
+  into `boxpilot-platform/src/linux/ipc.rs`. zbus direct dep is removed
+  from `boxpilot-tauri/Cargo.toml`. Tauri command handlers gain a
+  `tauri::State<'_, boxpilot_platform::Paths>` parameter (per COQ16).
 
 ## 5. Trait Inventory
 
@@ -299,13 +600,14 @@ The downstream crates' role changes:
 | `Paths` (struct, not trait) | unix layout under `/` | windows layout under `%ProgramData%`, `%LocalAppData%` | `with_root` for tests | partly exists in `boxpilotd::paths` |
 | `FileLock` | `flock(2)` via `fs2` | `LockFileEx` (real impl, simple enough to ship now) | `tokio::sync::Mutex` | inline (`boxpilotd/src/lock.rs`) |
 | `IpcServer` + `IpcConnection` | zbus `ObjectServer`, system bus name `app.boxpilot.Helper` | `windows-service` driven Named Pipe accept loop on `\\.\pipe\boxpilot-helper` (real for AC5; carries `aux: AuxStream` per call) | `mpsc` channel pair + in-memory `AuxStream` | inline (`boxpilotd/src/iface.rs`) |
-| `IpcClient` | zbus client (FD-passes a sealed memfd built from `AuxStream::Bytes`) | Named Pipe client (real; chunked-frames `AuxStream::Bytes` after the request body) | `mpsc` partner | exists (`boxpilot-tauri/src/helper_client.rs`) |
-| `ServiceManager` | systemd via zbus (verbatim port of existing `Systemd` trait — surface NOT expanded; SCM-shape redesign deferred to Sub-project #2 per COQ4) | `unimplemented!()` returning `HelperError::Unimplemented` | in-memory state machine | exists as `Systemd` |
+| `IpcClient` | zbus client (translates `AuxStream::LinuxFd` → D-Bus FD-pass; `AsyncRead` fallback copies into a fresh sealed memfd) | Named Pipe client (real; chunked-frames `AuxStream::AsyncRead` after the request body, per §5.4.1) | `mpsc` partner | exists (`boxpilot-tauri/src/helper_client.rs`) |
+| `ServiceManager` | systemd via zbus (verbatim port of existing `Systemd` trait — surface NOT expanded; SCM-shape redesign deferred to Sub-project #2 per COQ4) | `unimplemented!()` returning `HelperError::NotImplemented` | in-memory state machine | exists as `Systemd` |
 | `TrustChecker` | uid + mode bits + parent-dir walk + setuid check | `unimplemented!()` | always-trusted / always-rejected variants | inline (`boxpilotd/src/core/trust.rs`) |
 | ~~`BundleClient` / `BundleServer`~~ | **dropped per COQ1+COQ2**; bundle bytes flow via `AuxStream` on the dispatch + IpcClient methods. Bundle preparation in `boxpilot-profile` returns `(manifest, AsyncRead, sha256)` | — | — | — |
 | `ActivePointer` | symlink + `rename(2)` | `unimplemented!()` (marker-file design recorded) | in-memory state | inline (`boxpilotd/src/profile/release.rs`) |
-| `CallerResolver` | `GetConnectionUnixUser` over zbus | `unimplemented!()` (real for AC5: resolves Named Pipe peer via `GetNamedPipeClientProcessId` → SID) | static `CallerPrincipal` | exists (`DBusCallerResolver`) |
+| ~~`CallerResolver`~~ | **dropped per COQ10**; each platform's `IpcServer` resolves the caller internally and hands a `CallerPrincipal` to dispatch. Linux internal: `GetConnectionUnixUser`. Windows internal: `GetNamedPipeClientProcessId` + `OpenProcessToken`. Not a cross-platform trait. | — | — | — |
 | `UserLookup` | `getpwuid` via nix | `unimplemented!()` | static map | exists (`PasswdLookup`) |
+| `FsPermissions` (per COQ12) | chmod 0700 / 0600 via `PermissionsExt` | `SetSecurityInfo` (windows-sys) — owner-only DACL | always-success / record-calls | new — replaces module-top `use std::os::unix::fs::PermissionsExt` in `boxpilot-profile::store/meta/import/remotes` |
 | `Authority` | polkit `CheckAuthorization` | **`AlwaysAllow` with startup `warn!` log** (per COQ3); real SID checks deferred to Sub-project #2 | always-allow / always-deny / table-driven | exists (`DBusAuthority`) |
 | `LogReader` | `journalctl --unit … -o json` | `unimplemented!()` | in-memory ring buffer | exists (`JournalReader`) |
 | `FsMetadataProvider` | `std::fs` + nix metadata | `unimplemented!()` | in-memory map | exists |
@@ -338,7 +640,7 @@ This is the only place in the platform crate that isn't a trait. Tests
 that exercise path layouts are pure value tests and don't benefit from
 trait indirection.
 
-### 5.2 Bundle byte transfer (no separate trait — COQ1+COQ2 resolution)
+### 5.2 Bundle byte transfer (no separate trait — COQ1+COQ2 resolution; AuxStream shape per COQ8)
 
 Bundles flow as bytes over the same call envelope that carries the
 typed verb. There is no `BundleClient` or `BundleServer` trait. The IPC
@@ -346,15 +648,32 @@ layer carries an `aux: AuxStream` parameter alongside the typed body
 (see §5.4); the dispatch consumes it, the platform-specific IPC impl
 plumbs platform-native auxiliary handles through it.
 
+`AuxStream` is an **opaque struct** with crate-private internals (per
+COQ8). Public API:
+
 ```rust
-pub enum AuxStream {
+pub struct AuxStream { /* private */ }
+
+impl AuxStream {
+    pub fn none() -> Self;
+    pub fn from_async_read(r: impl AsyncRead + Send + Unpin + 'static) -> Self;
+    #[cfg(target_os = "linux")]
+    pub fn from_owned_fd(fd: std::os::fd::OwnedFd) -> Self;
+}
+```
+
+Crate-private inside `boxpilot-platform`:
+
+```rust
+pub(crate) enum AuxStreamRepr {
     None,
-    /// A read-only byte source. Reader is consumed once by the dispatch.
-    /// Caller-side: typically constructed from a memfd (Linux), tempfile
-    /// (Windows), or `Cursor<Vec<u8>>` (fakes).
-    /// Bytes are subject to per-method size caps applied at the dispatch
-    /// layer (`HelperError::BundleTooLarge` if exceeded).
-    Bytes(Box<dyn AsyncRead + Send + Unpin>),
+    AsyncRead(Box<dyn AsyncRead + Send + Unpin>),
+    #[cfg(target_os = "linux")]
+    LinuxFd(std::os::fd::OwnedFd),
+}
+
+impl AuxStream {
+    pub(crate) fn into_repr(self) -> AuxStreamRepr { … }
 }
 ```
 
@@ -363,30 +682,39 @@ Bundle preparation in `boxpilot-profile`:
 ```rust
 pub struct PreparedBundle {
     pub manifest: ActivationManifest,  // serializes into request body
-    pub stream: AuxStream,             // AsyncRead over tar bytes
+    pub stream: AuxStream,
     pub sha256: [u8; 32],              // included in the request body for server-side verification
 }
 
-pub async fn prepare(staging: &Path) -> Result<PreparedBundle, BundleError>;
+pub async fn prepare(
+    staging: &Path,
+    paths: &boxpilot_platform::Paths,
+) -> Result<PreparedBundle, BundleError>;
 ```
 
 Linux impl of `prepare`: builds tar into a `memfd_create()` FD,
 seal-applies `F_SEAL_WRITE | F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL`,
-wraps the now-immutable FD as `tokio::fs::File` and returns it as
-`AuxStream::Bytes`. The IpcClient (Linux) receives `AuxStream::Bytes`,
-detects an `OwnedFd` backing (or uses a small "would you like the FD?"
-escape hatch in the AsyncRead), and FD-passes it through D-Bus zero-copy.
+returns `AuxStream::from_owned_fd(fd)`. The Linux IpcClient calls
+`into_repr()`, matches `LinuxFd(fd)`, and FD-passes it through D-Bus
+zero-copy. If a caller hands an `AsyncRead`-backed AuxStream (e.g., from
+a fake or test), the Linux IpcClient falls back to copying bytes into a
+fresh sealed memfd before FD-passing.
 
 Windows impl of `prepare`: builds tar into a tempfile under
 `%LocalAppData%\BoxPilot\tmp\bundle-<id>.tar`, ACL'd to the owner SID
-only; returns the file as `AuxStream::Bytes`. The IpcClient (Windows)
-chunked-frames the bytes (`[u32 len][bytes]`) on the same Named Pipe
-after writing the request body, ending with a zero-length frame.
+only; returns `AuxStream::from_async_read(File::open(...))`. The
+Windows IpcClient calls `into_repr()`, sees `AsyncRead(r)`, and
+chunked-frames the bytes per the wire format in §5.4.1.
 
-Server-side: IpcServer hands `AuxStream::Bytes` to dispatch. Dispatch
-hashes-while-reading into the staging dir, compares to `sha256` in the
-request body, fails with `HelperError::BundleAssetMismatch` on any
-mismatch.
+Linux IpcServer always emits `AsyncRead(_)` to dispatch (the incoming
+`OwnedFd` is wrapped in `tokio::fs::File`); dispatch sees a uniform
+`AsyncRead`, regardless of platform. The `LinuxFd` variant is invisible
+to Windows-side code because the variant is cfg-gated.
+
+Server-side: IpcServer hands the AuxStream to dispatch. Dispatch
+hashes-while-reading into the staging dir (single pass, no replay),
+compares to `sha256` in the request body, fails with
+`HelperError::BundleAssetMismatch` on any mismatch.
 
 Integrity property:
 
@@ -482,11 +810,29 @@ pub enum CallerPrincipal {
 ```
 
 For methods that take no auxiliary stream (everything except
-`profile.activate_bundle` today), callers pass `AuxStream::None`.
+`profile.activate_bundle` today), callers pass `AuxStream::none()`.
 Dispatch enforces the per-method aux-shape contract: methods that
 require aux fail `HelperError::Ipc { ... missing aux ... }` if absent;
 methods that forbid aux fail if present. This contract is asserted in
 the IPC layer's serialization, not in each verb's body.
+
+The aux-shape table lives at
+`boxpilot_ipc::method::HelperMethod::aux_shape() -> AuxShape` (per
+COQ17/4.7) — an additive accessor on the existing enum; no schema
+change. `AuxShape` enum has variants `None`, `Required`, `Optional`.
+Today only `HelperMethod::ProfileActivateBundle` returns `Required`;
+all others return `None`.
+
+Drop semantics (per COQ17/4.6): if a verb's body returns an error
+before consuming the entire aux stream, the reader is dropped:
+
+- **Linux:** memfd FD closes; no leftover state.
+- **Windows:** the Named Pipe still has un-drained chunked frames in
+  flight. The Windows IpcServer **must close the Named Pipe
+  connection** rather than try to drain leftover bytes — frame
+  boundaries between this request and the next would otherwise be
+  ambiguous. The client reconnects for its next call. This is
+  documented in the wire format (§5.4.1).
 
 `Authority` is invoked by the dispatch layer *after* `IpcServer` resolves
 `CallerPrincipal`. Its decision shape is unchanged from the current
@@ -505,6 +851,68 @@ UAC at the IPC boundary is the wrong shape on Windows because the GUI
 process is per-user and unprivileged while the helper service runs as
 `LocalSystem` — the elevation step happens at *installer* time, not at
 IPC-call time.
+
+### 5.4.1 Windows Named Pipe wire format (per COQ9)
+
+The Linux IpcServer / IpcClient use zbus's typed call mechanism — no
+envelope serialization, method args are zbus-typed (this preserves
+existing v0.1.1 wire compatibility on the system bus). The wire
+format in this section applies **only to the Windows Named Pipe
+transport and to the cross-platform fake** (which writes/reads byte
+vectors over a `tokio::sync::mpsc` channel pair).
+
+Per-call envelope on `\\.\pipe\boxpilot-helper`:
+
+```text
+HEADER (fixed, 60 bytes):
+  [u32 magic       = 0xB0B91107]   "BoxPilot" sentinel — IpcServer rejects mismatch.
+  [u32 method_id]                   boxpilot_ipc::method::HelperMethod::wire_id().
+  [u32 flags]                       bit0: aux_present. bits 1..31 reserved (must be 0).
+  [u64 body_len]                    JSON body length in bytes.
+  [u32 body_sha256_present]         0 or 1.
+  [u8 ; 32]  body_sha256             (zero-filled if not present).
+  [u32 reserved] = 0                 padding to 60-byte fixed header.
+BODY:
+  [u8 ; body_len]                   JSON-serialized request payload.
+AUX (only if flags.aux_present):
+  repeat:
+    [u32 chunk_len]                 0 means EOF — final marker.
+    [u8 ; chunk_len]                chunk bytes (0 < chunk_len ≤ 64 KiB).
+RESPONSE:
+  [u32 status]                      0 = ok; nonzero = HelperError::wire_id().
+  [u64 body_len]
+  [u8 ; body_len]                   JSON response or error detail.
+```
+
+All multi-byte integers are **little-endian** (matches x86_64 native).
+Documented explicitly to forestall network-byte-order assumptions.
+
+**Method-id and HelperError-id mappings** live at
+`boxpilot_ipc::method::wire` as additive `wire_id()` accessors and
+`from_wire_id()` reverse lookups. These are added in PR 11a; they are
+**additive accessors** on existing enums, not schema bumps to
+`HelperMethod` or `HelperError` (Non-goal #5 preserved).
+
+**Per-call connection lifecycle:** one IPC call = one client connect.
+After the response is read, the client closes the connection. Long-
+lived connections are an anti-pattern here because:
+1. SCM-restart races would invalidate any cached connection.
+2. Aux-drop semantics (above) require the connection to be torn down
+   on early-error anyway.
+The Linux side reuses a single zbus connection across calls because
+zbus / D-Bus has its own message-correlation (sender/serial), but
+Windows Named Pipes don't. Plan-time may revisit this for
+performance once Sub-project #2 lands real verbs.
+
+**Server-side limits enforced before dispatch:**
+- `magic` must equal `0xB0B91107` or connection is closed without
+  reading further.
+- `method_id` unknown to `HelperMethod::from_wire_id()` → response
+  status = HelperError::Ipc, no body read.
+- `body_len > 4 MiB` (typical request body cap; bundle bytes go in
+  AUX, not body) → response status = HelperError::Ipc.
+- AUX cumulative size capped per `HelperMethod::aux_size_cap()`
+  (defaults to `BUNDLE_MAX_TOTAL_BYTES` for ProfileActivateBundle).
 
 ## 6. `boxpilotd` Binary Structure
 
@@ -632,27 +1040,29 @@ back to `main` one at a time, matching the v0.1.0–v0.1.1 cadence.
 
 | # | Subject | Size |
 |---|---------|------|
-| 1 | scaffold `crates/boxpilot-platform`; add to workspace; empty traits + facade re-export. **Workspace-wide bumps in this PR:** `tokio` features += `["net", "io-util"]` (COQ7); add `tracing-appender` to `[workspace.dependencies]` (COQ5). CI: `cargo check --target x86_64-pc-windows-gnu` (cheap, no MSVC linker setup; "allowed-to-fail" gate); MSVC target enabled in PR 14. | XS |
-| 2 | introduce `EnvProvider` and `Paths` value type in `boxpilot-platform`; migrate `boxpilotd::paths::Paths` consumers to platform's `Paths`; Linux impl identical to current | S |
-| 3 | move `FsMetadataProvider`, `VersionChecker`, `UserLookup` traits + Linux impls to platform; re-host existing fakes; remove originals from `boxpilotd` | S |
-| 4 | move `CallerResolver` (renamed from `DBusCallerResolver`) and `Authority` (renamed from `DBusAuthority`) to platform; Linux behavior identical | S |
+| 1 | scaffold `crates/boxpilot-platform`; add to workspace; empty traits + facade re-export. **Workspace-wide bumps in this PR:** `tokio` features += `["net", "io-util"]` (COQ7); add `tracing-appender` to `[workspace.dependencies]`; move `nix` / `libc` from `boxpilot-profile`'s and `boxpilotd`'s package-level deps to `[target.'cfg(unix)'.dependencies]`. CI: `cargo check --target x86_64-pc-windows-gnu` runs **on every PR, allowed-to-fail through PR 10** (per COQ13 — `boxpilot-profile/bundle.rs` still uses `nix` until PR 10). MSVC target replaces GNU at PR 14. | S |
+| 2 | introduce `EnvProvider` and `Paths` value type in `boxpilot-platform`; migrate `boxpilotd::paths::Paths` consumers to platform's `Paths`; Linux impl identical to current. **Also (per COQ16):** delete `boxpilot_profile::store::ProfileStorePaths::from_env()`; add `from_paths(&Paths)`; thread `tauri::State<'_, Paths>` into `boxpilot-tauri` command handlers; tests use `Paths::with_root(tmpdir)`. | M |
+| 3 | move `FsMetadataProvider`, `VersionChecker`, `UserLookup` traits + Linux impls to platform; re-host existing fakes; remove originals from `boxpilotd`. **Also (per COQ12):** introduce `FsPermissions` trait; replace module-top `use std::os::unix::fs::PermissionsExt;` in `boxpilot-profile/{store,meta,import,remotes}.rs` with `FsPermissions::restrict_to_owner(...)` calls; Linux impl wraps existing chmod 0700/0600. | M |
+| 4 | move `Authority` (renamed from `DBusAuthority`) to platform; Linux behavior identical. **Drop the `CallerResolver` trait per COQ10** — Linux IpcServer absorbs `GetConnectionUnixUser` internally. **Refactor `dispatch::authorize` per COQ11** to take `&CallerPrincipal` (was `sender_bus_name: &str`); rename `AuthorizedCall::caller_uid → principal: CallerPrincipal`. Add a unit test pinning `BUS_NAME == "app.boxpilot.Helper"` and `OBJECT_PATH == "/app/boxpilot/Helper"` (COQ17/4.8). | L |
 | 5 | move `Systemd` → `ServiceManager` and `JournalReader` → `LogReader` to platform. **Trait surface NOT expanded** (per COQ4 resolution) — methods, parameter types, return types, and `UnitState` shape are byte-identical to current Linux. Sub-project #2 owns the SCM-shape redesign. | M |
 | 6 | introduce `FileLock` trait; replace direct `fs2`/`flock` calls in `boxpilotd::lock`; Linux impl wraps fs2 | S |
 | 7 | introduce `TrustChecker` trait; wrap existing `boxpilotd::core::trust` logic as Linux impl | S |
 | 8 | introduce `ActivePointer` trait; wrap existing symlink/rename logic in `boxpilotd::profile::release`; tests use fake | S |
-| 9 | introduce `CoreAssetNaming` + `CoreArchive`; wrap tar.gz extract logic from `boxpilotd::core::install` | S |
-| 10 | introduce `AuxStream` enum + bundle-flow refactor (per COQ1+COQ2 resolution). `boxpilot-profile::bundle::prepare()` returns `PreparedBundle { manifest, stream: AuxStream, sha256 }`. Linux impl preserves memfd+seal optimization internally; consumer side hashes-while-reading. **No `BundleClient` / `BundleServer` traits are introduced.** | L |
-| 11 | introduce `IpcServer` / `IpcConnection` / `IpcClient` + `HelperDispatch::handle(conn, method, body, aux: AuxStream)`; Linux impl wraps zbus and converts `bundle_fd: OwnedFd` ↔ `AuxStream::Bytes`; `boxpilotd::iface` and `boxpilot-tauri::helper_client` route through traits. Per-method aux-shape contract enforced at IPC layer. | L |
-| 12 | add Windows feature dependencies; provide Windows impls. **Real:** `EnvProvider`, `Paths`, `FileLock`, `IpcServer`/`IpcClient` (real for AC5), `Authority` = `AlwaysAllow` (per COQ3), `CallerResolver` (real for AC5: `GetNamedPipeClientProcessId` → SID). **Stub `unimplemented!()`:** everything else. `cargo check --target x86_64-pc-windows-msvc --workspace` passes on the Windows runner enabled in PR 14. **Sized:** L (not M as originally drafted; see Risk #4). | L |
-| 13 | `boxpilotd.exe` Windows Service entry: `windows-service::service_dispatcher::start`, SCM control handler, Named Pipe accept loop returning `Unimplemented` for every verb. **Includes `tracing-appender` daily-rolling file sink at `%ProgramData%\BoxPilot\logs\boxpilotd.log` initialized before any IPC server starts** (per COQ5). | M |
-| 14 | enable Windows GitHub Actions runner (`windows-latest`); switch PR 1's cargo-check target to `x86_64-pc-windows-msvc`; cross-platform fake-based unit tests added; AC3 + AC4 met | S |
-| 14b | introduce `boxpilotctl` debug bin at `crates/boxpilotd/src/bin/boxpilotctl.rs` (per COQ6). Cross-platform; uses `IpcClient` to invoke any `HelperMethod` with raw JSON body and prints the response. Used for AC5 verification. Linux dev: `boxpilotctl service.status` → talks D-Bus. Windows dev: same command → talks Named Pipe. | XS |
+| 9 | introduce `CoreAssetNaming` + `CoreArchive`; wrap tar.gz extract logic from `boxpilotd::core::install`. **Also (per COQ14):** `boxpilot_profile::check::run_singbox_check` becomes cfg-gated — Linux retains current pgid+SIGKILL impl; Windows returns a stub `CheckOutput { success: true, stdout: "skipped on Windows in Sub-project #1", … }`. JobObject-based real impl deferred to Sub-project #2. | M |
+| 10 | introduce `AuxStream` opaque struct (per COQ8) + bundle-flow refactor (per COQ1+COQ2). `boxpilot-profile::bundle::prepare(staging, paths)` returns `PreparedBundle { manifest, stream: AuxStream, sha256 }`. Linux impl preserves memfd+seal optimization via `AuxStream::from_owned_fd`; consumer side hashes-while-reading. **No `BundleClient` / `BundleServer` traits are introduced.** After this PR lands, `boxpilot-profile/bundle.rs` no longer uses `nix::*` directly → Windows allow-to-fail compile gate flips to **required from PR 11a onward** (COQ13). | L |
+| 11a | introduce `IpcServer` / `IpcConnection` + `HelperDispatch::handle(conn, method, body, aux: AuxStream)` (per COQ15 split); Linux IpcServer impl wraps zbus and converts `bundle_fd: OwnedFd` ↔ `AuxStream`; `boxpilotd::iface` routes through dispatch trait. Define `boxpilot_ipc::method::wire` accessors (per COQ9 / COQ17/4.7) — additive `wire_id()` / `from_wire_id()` / `aux_shape()`. **`boxpilot-tauri` unchanged in this PR.** **Windows allow-to-fail flag dropped from CI starting this PR.** | M |
+| 11b | introduce `IpcClient` trait + Linux IpcClient impl. **Rewrite `boxpilot-tauri/src/helper_client.rs`** to use `IpcClient::call`; absorb the raw `zbus::Proxy` FD-passing code from `profile_cmds.rs` into `boxpilot-platform/linux/ipc.rs`. Remove `zbus` direct dep from `boxpilot-tauri/Cargo.toml`. | L |
+| 12 | add Windows feature dependencies; provide Windows impls. **Real:** `EnvProvider`, `Paths`, `FileLock`, `IpcServer`/`IpcClient` (real for AC5), `Authority` = `AlwaysAllow` (per COQ3), Windows-internal caller resolution via `GetNamedPipeClientProcessId` (real for AC5; absorbed into the Windows IpcServer impl per COQ10), `FsPermissions` (real, ACL-based). **Stub `unimplemented!()`:** everything else. `cargo check --target x86_64-pc-windows-msvc --workspace` passes on the Windows runner enabled in PR 14. | L |
+| 13 | `boxpilotd.exe` Windows Service entry: `windows-service::service_dispatcher::start`, SCM control handler, Named Pipe accept loop returning `NotImplemented` for every verb. **Includes `tracing-appender` daily-rolling file sink at `%ProgramData%\BoxPilot\logs\boxpilotd.log` initialized before any IPC server starts** (per COQ5). | M |
+| 14 | enable Windows GitHub Actions runner (`windows-latest`); switch CI cargo-check target from `x86_64-pc-windows-gnu` to `x86_64-pc-windows-msvc`; cross-platform fake-based unit tests added; AC3 + AC4 met | S |
+| 14b | introduce `boxpilotctl` debug bin at `crates/boxpilotd/src/bin/boxpilotctl.rs` (per COQ6). Cross-platform; uses `IpcClient` to invoke any `HelperMethod` with raw JSON body and prints the response. Used for AC5 verification. Linux dev: `boxpilotctl service.status` → talks D-Bus. Windows dev: same command → talks Named Pipe (per §5.4.1 wire format). | XS |
 | 15 | spec doc updates: revise Linux design spec §1 to reference platform abstraction; commit Windows-port roadmap pointing at Sub-projects #2/#3 | XS |
 
-PRs 1–9 are Linux-only refactors and should each be reviewable in <300
-LOC of meaningful change. PR 10 (bundle) and PR 11 (IPC) are larger by
-necessity. PRs 12–14b are Windows-specific and don't touch Linux runtime
-behavior.
+PRs 1–9 are Linux-only refactors. Each ideally reviewable in <300 LOC
+of meaningful change; PR 4 (dispatch refactor per COQ11) and PR 10
+(bundle / AuxStream) are larger by necessity. PR 11 is split into 11a
+(server-side, M) and 11b (client-side rewrite, L) per COQ15. PRs
+12–14b are Windows-specific and don't touch Linux runtime behavior.
 
 ## 9. Risks
 
@@ -678,7 +1088,7 @@ behavior.
    `controller_principal: { kind: "uid" | "sid", value: ... }` with
    `schema_version=2` and a migration. Risk: a Windows install in this
    sub-project runs without `boxpilot.toml`, so all helper verbs are
-   guarded by missing-config returning `Unimplemented`, which matches
+   guarded by missing-config returning `NotImplemented`, which matches
    AC4 but means Windows is *not* exercising the controller-claim
    pathway at all yet. That's acceptable — it's the exact deferral.
 5. **Existing legacy / migration code is Linux-only.**
@@ -987,7 +1397,7 @@ IPC traits) cannot ship without it. Either:
 
 **4.5 `HelperError` variant naming inconsistency: spec says
 `Unimplemented`, code has `NotImplemented` (multiple places).** AC5
-and §1 use `HelperError::Unimplemented { os: "windows" }`. Existing
+and §1 use `HelperError::NotImplemented`. Existing
 code at `boxpilotd::iface::to_zbus_err` uses `HelperError::NotImplemented`.
 The variant doesn't carry an `os` payload either. This is either:
 - A spec drift (intent: keep `NotImplemented`, drop the `{ os }`
