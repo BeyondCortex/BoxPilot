@@ -8,5 +8,6 @@ pub mod fs_perms;
 pub mod lock;
 pub mod logs;
 pub mod service;
+pub mod trust;
 pub mod user_lookup;
 pub mod version;
