@@ -143,7 +143,7 @@ Per-call envelope on the Named Pipe (Windows) or D-Bus message body
 (Linux fakes for tests):
 
   HEADER:
-    [u32 magic = 0xB0B91107]   "BoxPilot"
+    [u32 magic = 0x426F7850]   ASCII "BoxP"
     [u32 method_id]             # boxpilot_ipc::HelperMethod::wire_id()
     [u32 flags]                 # bit0 = aux_present, others reserved
     [u64 body_len]
@@ -865,7 +865,7 @@ Per-call envelope on `\\.\pipe\boxpilot-helper`:
 
 ```text
 HEADER (fixed, 60 bytes):
-  [u32 magic       = 0xB0B91107]   "BoxPilot" sentinel — IpcServer rejects mismatch.
+  [u32 magic       = 0x426F7850]   ASCII "BoxP" sentinel — IpcServer rejects mismatch.
   [u32 method_id]                   boxpilot_ipc::method::HelperMethod::wire_id().
   [u32 flags]                       bit0: aux_present. bits 1..31 reserved (must be 0).
   [u64 body_len]                    JSON body length in bytes.
@@ -905,7 +905,7 @@ Windows Named Pipes don't. Plan-time may revisit this for
 performance once Sub-project #2 lands real verbs.
 
 **Server-side limits enforced before dispatch:**
-- `magic` must equal `0xB0B91107` or connection is closed without
+- `magic` must equal `0x426F7850` or connection is closed without
   reading further.
 - `method_id` unknown to `HelperMethod::from_wire_id()` → response
   status = HelperError::Ipc, no body read.
@@ -1040,17 +1040,17 @@ back to `main` one at a time, matching the v0.1.0–v0.1.1 cadence.
 
 | # | Subject | Size |
 |---|---------|------|
-| 1 | scaffold `crates/boxpilot-platform`; add to workspace; empty traits + facade re-export. **Workspace-wide bumps in this PR:** `tokio` features += `["net", "io-util"]` (COQ7); add `tracing-appender` to `[workspace.dependencies]`; move `nix` / `libc` from `boxpilot-profile`'s and `boxpilotd`'s package-level deps to `[target.'cfg(unix)'.dependencies]`. CI: `cargo check --target x86_64-pc-windows-gnu` runs **on every PR, allowed-to-fail through PR 10** (per COQ13 — `boxpilot-profile/bundle.rs` still uses `nix` until PR 10). MSVC target replaces GNU at PR 14. | S |
+| 1 | scaffold `crates/boxpilot-platform`; add to workspace; empty traits + facade re-export. **Workspace-wide bumps in this PR:** `tokio` features += `["net", "io-util"]` (COQ7); add `tracing-appender` to `[workspace.dependencies]`. (`nix` / `libc` deps stay at package level — per Round 6/6.2, the `cfg(unix)` move is overhead with no benefit; allow-to-fail covers Windows-side until usage moves out in PR 10.) CI: `cargo check --target x86_64-pc-windows-gnu` runs **on every PR, allowed-to-fail through PR 10** (per COQ13). MSVC target replaces GNU at PR 14. | XS |
 | 2 | introduce `EnvProvider` and `Paths` value type in `boxpilot-platform`; migrate `boxpilotd::paths::Paths` consumers to platform's `Paths`; Linux impl identical to current. **Also (per COQ16):** delete `boxpilot_profile::store::ProfileStorePaths::from_env()`; add `from_paths(&Paths)`; thread `tauri::State<'_, Paths>` into `boxpilot-tauri` command handlers; tests use `Paths::with_root(tmpdir)`. | M |
 | 3 | move `FsMetadataProvider`, `VersionChecker`, `UserLookup` traits + Linux impls to platform; re-host existing fakes; remove originals from `boxpilotd`. **Also (per COQ12):** introduce `FsPermissions` trait; replace module-top `use std::os::unix::fs::PermissionsExt;` in `boxpilot-profile/{store,meta,import,remotes}.rs` with `FsPermissions::restrict_to_owner(...)` calls; Linux impl wraps existing chmod 0700/0600. | M |
-| 4 | move `Authority` (renamed from `DBusAuthority`) to platform; Linux behavior identical. **Drop the `CallerResolver` trait per COQ10** — Linux IpcServer absorbs `GetConnectionUnixUser` internally. **Refactor `dispatch::authorize` per COQ11** to take `&CallerPrincipal` (was `sender_bus_name: &str`); rename `AuthorizedCall::caller_uid → principal: CallerPrincipal`. Add a unit test pinning `BUS_NAME == "app.boxpilot.Helper"` and `OBJECT_PATH == "/app/boxpilot/Helper"` (COQ17/4.8). | L |
+| 4 | move `Authority` (renamed from `DBusAuthority`) to platform; Linux behavior identical. **Keep `CallerResolver` as Linux-internal** (per Round 6/6.1) — either as a private `boxpilotd`-internal trait or as a non-trait helper in `boxpilot-platform/src/linux/credentials.rs`; full absorption into IpcServer happens in PR 11a per COQ10. **Refactor `dispatch::authorize` per COQ11** to take `&CallerPrincipal` (was `sender_bus_name: &str`); add a small `resolve_caller_principal(ctx, sender) -> CallerPrincipal` helper at the iface layer that calls the surviving CallerResolver, until PR 11a inverts to IpcServer-driven. Rename `AuthorizedCall::caller_uid → principal: CallerPrincipal`. Add a unit test pinning `BUS_NAME == "app.boxpilot.Helper"` and `OBJECT_PATH == "/app/boxpilot/Helper"` (COQ17/4.8). | L |
 | 5 | move `Systemd` → `ServiceManager` and `JournalReader` → `LogReader` to platform. **Trait surface NOT expanded** (per COQ4 resolution) — methods, parameter types, return types, and `UnitState` shape are byte-identical to current Linux. Sub-project #2 owns the SCM-shape redesign. | M |
 | 6 | introduce `FileLock` trait; replace direct `fs2`/`flock` calls in `boxpilotd::lock`; Linux impl wraps fs2 | S |
 | 7 | introduce `TrustChecker` trait; wrap existing `boxpilotd::core::trust` logic as Linux impl | S |
 | 8 | introduce `ActivePointer` trait; wrap existing symlink/rename logic in `boxpilotd::profile::release`; tests use fake | S |
 | 9 | introduce `CoreAssetNaming` + `CoreArchive`; wrap tar.gz extract logic from `boxpilotd::core::install`. **Also (per COQ14):** `boxpilot_profile::check::run_singbox_check` becomes cfg-gated — Linux retains current pgid+SIGKILL impl; Windows returns a stub `CheckOutput { success: true, stdout: "skipped on Windows in Sub-project #1", … }`. JobObject-based real impl deferred to Sub-project #2. | M |
 | 10 | introduce `AuxStream` opaque struct (per COQ8) + bundle-flow refactor (per COQ1+COQ2). `boxpilot-profile::bundle::prepare(staging, paths)` returns `PreparedBundle { manifest, stream: AuxStream, sha256 }`. Linux impl preserves memfd+seal optimization via `AuxStream::from_owned_fd`; consumer side hashes-while-reading. **No `BundleClient` / `BundleServer` traits are introduced.** After this PR lands, `boxpilot-profile/bundle.rs` no longer uses `nix::*` directly → Windows allow-to-fail compile gate flips to **required from PR 11a onward** (COQ13). | L |
-| 11a | introduce `IpcServer` / `IpcConnection` + `HelperDispatch::handle(conn, method, body, aux: AuxStream)` (per COQ15 split); Linux IpcServer impl wraps zbus and converts `bundle_fd: OwnedFd` ↔ `AuxStream`; `boxpilotd::iface` routes through dispatch trait. Define `boxpilot_ipc::method::wire` accessors (per COQ9 / COQ17/4.7) — additive `wire_id()` / `from_wire_id()` / `aux_shape()`. **`boxpilot-tauri` unchanged in this PR.** **Windows allow-to-fail flag dropped from CI starting this PR.** | M |
+| 11a | introduce `IpcServer` / `IpcConnection` + `HelperDispatch::handle(conn, method, body, aux: AuxStream)` (per COQ15 split); Linux IpcServer impl wraps zbus and converts `bundle_fd: OwnedFd` ↔ `AuxStream`. **Refactor `boxpilotd::iface`** (per Round 6/6.3): extract each `do_*` body into a method-handler module taking `(CallerPrincipal, body: Vec<u8>, aux: AuxStream)`; introduce a `boxpilotd::dispatch_handler` with the giant `match HelperMethod { … }` route table; `iface.rs`'s zbus `#[interface]` Helper becomes a thin shell that decodes zbus args → `(method, body, aux)` and forwards to `HelperDispatch::handle`. Absorb the surviving `CallerResolver` from PR 4 into the Linux IpcServer impl per COQ10. Add additive accessors at `boxpilot_ipc::method::wire`: `wire_id()` / `from_wire_id()` / `aux_shape()` / `aux_size_cap()` (per COQ9 / COQ17/4.7 + Round 6/6.5). **`boxpilot-tauri` unchanged in this PR.** **Windows allow-to-fail flag dropped from CI starting this PR.** | L |
 | 11b | introduce `IpcClient` trait + Linux IpcClient impl. **Rewrite `boxpilot-tauri/src/helper_client.rs`** to use `IpcClient::call`; absorb the raw `zbus::Proxy` FD-passing code from `profile_cmds.rs` into `boxpilot-platform/linux/ipc.rs`. Remove `zbus` direct dep from `boxpilot-tauri/Cargo.toml`. | L |
 | 12 | add Windows feature dependencies; provide Windows impls. **Real:** `EnvProvider`, `Paths`, `FileLock`, `IpcServer`/`IpcClient` (real for AC5), `Authority` = `AlwaysAllow` (per COQ3), Windows-internal caller resolution via `GetNamedPipeClientProcessId` (real for AC5; absorbed into the Windows IpcServer impl per COQ10), `FsPermissions` (real, ACL-based). **Stub `unimplemented!()`:** everything else. `cargo check --target x86_64-pc-windows-msvc --workspace` passes on the Windows runner enabled in PR 14. | L |
 | 13 | `boxpilotd.exe` Windows Service entry: `windows-service::service_dispatcher::start`, SCM control handler, Named Pipe accept loop returning `NotImplemented` for every verb. **Includes `tracing-appender` daily-rolling file sink at `%ProgramData%\BoxPilot\logs\boxpilotd.log` initialized before any IPC server starts** (per COQ5). | M |
@@ -1623,14 +1623,143 @@ recommend skip on Windows for Sub-project #1).
 Underestimated PR scope: 5.4 (split PR 11 into 11a + 11b),
 5.5 (`ProfileStorePaths::from_env` rewrite + Tauri state plumbing).
 
+### Round 6 — Re-review after Round 4+5 resolutions (perspective: spec/code reality fit)
+
+After folding COQ8–17 into the spec body, I went back and verified the
+new claims against the actual code state. Four spec-vs-code mismatches
+and two scope refinements surfaced:
+
+**6.1 PR 4 cannot fully "drop the `CallerResolver` trait per COQ10"
+because `IpcServer` doesn't exist yet at PR 4's point in the
+sequence.** The spec PR 4 description says "Drop the `CallerResolver`
+trait per COQ10". COQ10's resolution is that *each platform's
+IpcServer impl resolves the caller internally* — but PR 11a is when
+IpcServer exists. Between PR 4 and PR 11a, dispatch still needs to
+turn a D-Bus sender bus name into a `CallerPrincipal`. The cleanest
+shape: PR 4 leaves `CallerResolver` as a Linux-internal trait in
+`boxpilotd` (or as a non-trait-listed helper in
+`boxpilot-platform/src/linux/credentials.rs`), and PR 11a absorbs it
+into the Linux IpcServer impl. Spec PR 4 description needs to say
+"keep `CallerResolver` Linux-internal; absorption happens in PR 11a".
+**Direct spec contradiction; fix in body.**
+
+**6.2 PR 1's `[target.'cfg(unix)'.dependencies]` move for `nix` /
+`libc` is pointless overhead.** The `nix` crate compiles on Windows
+with reduced surface — what fails is source-code-level access to
+items that don't exist on Windows (e.g., `nix::sys::memfd`). Moving
+the dep behind `cfg(unix)` doesn't fix that; it just changes the
+failure mode from "no item in nix::sys::memfd" to "unresolved crate
+nix". Both rely on the allow-to-fail flag through PR 10. Until PR 10
+moves the source usage out, Windows compile fails for source reasons.
+After PR 10, no source uses nix on the Windows side, so leaving the
+dep at package-level is harmless. **The cfg(unix) move adds churn in
+two crate Cargo.tomls without enabling anything.** Spec PR 1 should
+drop this task. **Direct spec contradiction; fix in body.**
+
+**6.3 PR 11a is more than "route through dispatch trait".** The
+existing `boxpilotd::iface::Helper` impl uses zbus's `#[interface]`
+macro with strongly-typed methods that take
+`&zbus::message::Header<'_>`, `request_json: String`, and
+`bundle_fd: zvariant::OwnedFd`. Each `do_*` body extracts the sender
+header, parses the JSON, calls `dispatch::authorize`, then runs verb
+logic. Replacing this with a generic `HelperDispatch::handle(method,
+body, aux)` requires:
+
+- Extracting each `do_*` body into a method-handler module (one per
+  verb) that takes `(CallerPrincipal, body: Vec<u8>, aux: AuxStream)`.
+- Writing a giant `match HelperMethod { … }` that routes verb
+  dispatch — this is the new platform-neutral handler that lives
+  in `boxpilotd::dispatch_handler` (NOT `boxpilot-platform`, to avoid
+  circular deps with `HelperContext` types).
+- Adapting the zbus `#[interface]` Helper impl to be a thin shell
+  that decodes zbus args → `(method, body, aux)` and forwards into
+  `HelperDispatch::handle`.
+
+This is real refactoring of ~700 LOC of `iface.rs`. PR 11a sized "M"
+underestimates; **likely L**. Plan-time scope refinement — not
+contradicting the spec, but the size column is wrong.
+
+**6.4 PR 2's Tauri state-threading is smaller than Round 5 implied —
+only ONE call site for `ProfileStorePaths::from_env()`.** Grep finds
+exactly two references workspace-wide:
+- `boxpilot-profile/src/store.rs:16` — definition
+- `boxpilot-tauri/src/lib.rs:11` — single caller
+
+The Tauri command handlers in `commands.rs` and `profile_cmds.rs`
+already receive a path (likely from `lib.rs`'s setup) rather than
+calling `from_env()` per-command. That changes PR 2's threading work
+from "rewrite N command handlers" to "one site update + Tauri State
+registration". **PR 2 stays at M as currently sized; Round 5 finding
+5.5 was overstated. Verified, no spec change needed.**
+
+**6.5 `std::os::unix::fs::symlink` is used in non-test code in places
+PR 8 doesn't fully cover.** Beyond `boxpilotd/src/profile/release.rs:7`
+(module-top `use std::os::unix::fs::symlink;`, covered by PR 8's
+ActivePointer), grep finds:
+
+- `boxpilotd/src/core/commit.rs:154` — atomic symlink during polkit
+  drop-in write (Linux-only, polkit). Spec already cfg-gates polkit
+  drop-in code (Risk #6). This file needs explicit
+  `#[cfg(target_os = "linux")]` inside `commit.rs` for the symlink
+  call site, not a trait.
+- Test files (`profile/{activate,recovery,rollback}.rs`,
+  `iface.rs:1208`, `diagnostics/mod.rs:203`) — fixture setup using
+  `std::os::unix::fs::symlink` to construct test scenarios. After
+  PR 8 introduces `ActivePointer`, these tests should use the fake
+  via `ActivePointer::set(release_id)` — not raw symlinks. Otherwise
+  the test files don't compile on Windows even though the fake-based
+  tests do.
+
+PR 8's task list needs to call out: "audit existing tests using
+`std::os::unix::fs::symlink` and migrate to ActivePointer fake". This
+adds maybe 50–100 LOC of test rewrites. Plan-time refinement.
+
+**6.6 `boxpilotd/src/legacy/`, `core/commit.rs`, `core/adopt.rs`,
+`diagnostics/mod.rs`, `profile/unpack.rs` all have
+`PermissionsExt` usage (some in tests, some in src).** Mostly
+test-only, but `core/commit.rs` (polkit drop-in writer) is src.
+COQ12's `FsPermissions` trait covers the `boxpilot-profile` side
+(5 files), but the `boxpilotd`-side usage is not in PR 3's task
+list. PR 3 should expand to also touch `boxpilotd::legacy/backup.rs`
+(legacy unit backup ACL), `core/commit.rs` (polkit drop-in
+permissions), `core/adopt.rs` (adopted-core permission setup),
+`diagnostics/mod.rs` (diagnostic bundle export permissions), and
+`profile/unpack.rs` (release dir + asset permissions). Or the
+`boxpilotd`-side usages stay as `#[cfg(target_os = "linux")]`-gated
+because they're only ever called from Linux-only modules. The
+latter is simpler: legacy / polkit / unpack are all
+already-Linux-only flows. Plan-time decision.
+
+**6.7 Magic number `0xB0B91107` doesn't actually spell "BoxPilot".**
+The bytes are `B0 B9 11 07` (decimal: 176, 185, 17, 7) — not ASCII.
+The "BoxPilot sentinel" comment is misleading. If the intent is an
+ASCII-spelling magic, use `0x426F7850` ("BoxP" in ASCII) instead.
+Else change the comment to "arbitrary 32-bit magic". Cosmetic.
+
+### Round 6 priority summary
+
+Direct spec contradictions (fix in body now): 6.1 (PR 4 CallerResolver
+timing), 6.2 (PR 1 cfg(unix) dep move pointless).
+
+Plan-time scope refinements (note in spec without re-sizing): 6.3
+(PR 11a is L not M), 6.5 (PR 8 audits existing tests for raw symlink
+calls), 6.6 (boxpilotd-side `PermissionsExt` usage — leave Linux-only
+or expand PR 3).
+
+Cosmetic: 6.7 (magic number comment).
+
+Verified-not-an-issue: 6.4 (Round 5 finding 5.5 overstated;
+`from_env` has one call site, not many).
+
 ### Stop criterion
 
-Round 5 found five compile-realism issues all anchored in
-`boxpilot-profile` and `boxpilot-tauri` having Linux-coupling that the
-trait surface alone doesn't cover. After resolving these, a sixth
-round would surface in-the-weeds detail: the exact `tracing-appender`
-log rotation config, `JobObject` HRESULT mapping, Windows panicking
-service exit codes, etc. — all genuinely plan-time concerns. Calling
-review complete.
+Six rounds covered. Round 6 verified spec claims against the actual
+code and found two direct contradictions (small, fixable in body) and
+three scope refinements (plan-time level). A seventh round would dig
+into per-PR test-by-test minutiae — tracking each test fixture's
+required cfg-gate, exact `windows-sys` HRESULT-to-HelperError mapping,
+zbus 5 method-name preservation under `#[interface]` rename, etc. —
+all of which are appropriately plan-time concerns. **Calling review
+complete.**
 
 <promise>SPEC_REVIEW_DONE</promise>
