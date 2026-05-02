@@ -8,15 +8,8 @@ jobs:
   cargo-check-windows-msvc:
     name: cargo check (x86_64-pc-windows-msvc)
     runs-on: windows-latest
-    # Sub-project #2 batch ① widens the Windows compile gate to all
-    # cross-platform-by-design library crates: boxpilot-ipc,
-    # boxpilot-platform, and boxpilot-profile. boxpilotd batch ① pieces
-    # already done (iface.rs/credentials.rs cfg-gates, CurrentPointer
-    # trait, legacy/backup.rs FsPermissions); the remaining boxpilotd
-    # Windows-compile sweep (cfg-gating boxpilot_platform::linux::*
-    # consumers, std::os::unix/fd users, nix::sys consumers, the rest of
-    # the profile/* and core/trust unix code paths) is deferred to a
-    # dedicated sweep PR (or rolled into batch ② setup). The Tauri shell
+    # PR 1.7 (Sub-project #2 batch ①) cfg-gated all linux-only code in
+    # boxpilotd so the workspace-wide check now passes. The Tauri shell
     # (`boxpilot` package) is excluded: tauri-build requires
     # `icons/icon.ico` for Windows resources, which is Sub-project #3's
     # installer/asset scope.
@@ -31,7 +24,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: windows-msvc
-      - name: cargo check (x86_64-pc-windows-msvc) — cross-platform lib crates
-        run: cargo check --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform -p boxpilot-profile --all-targets
+      - name: cargo check (x86_64-pc-windows-msvc) — workspace minus Tauri shell
+        run: cargo check --target x86_64-pc-windows-msvc --workspace --exclude boxpilot --all-targets
       - name: cargo test (boxpilot-ipc + boxpilot-platform)
         run: cargo test --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform --no-fail-fast
