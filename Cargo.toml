@@ -5,6 +5,7 @@ members = [
     "crates/boxpilotd",
     "crates/boxpilot-tauri",
     "crates/boxpilot-profile",
+    "crates/boxpilot-platform",
 ]
 
 [workspace.package]
