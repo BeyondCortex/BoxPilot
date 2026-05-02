@@ -1,4 +1,3 @@
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -11,20 +10,16 @@ impl ProfileStorePaths {
         Self { root }
     }
 
-    /// Compute the spec-mandated `~/.local/share/boxpilot/` path from the
-    /// environment. Honours `XDG_DATA_HOME`, falls back to `$HOME/.local/share`.
-    pub fn from_env() -> std::io::Result<Self> {
-        let base = if let Some(v) = std::env::var_os("XDG_DATA_HOME") {
-            PathBuf::from(v)
-        } else if let Some(h) = std::env::var_os("HOME") {
-            PathBuf::from(h).join(".local/share")
-        } else {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "neither XDG_DATA_HOME nor HOME is set",
-            ));
-        };
-        Ok(Self::new(base.join("boxpilot")))
+    /// Build from a `boxpilot_platform::Paths`. This is the production
+    /// constructor used by Tauri command handlers (per spec §5.1 / COQ16).
+    /// `root` becomes `paths.user_root()` so the legacy
+    /// `profiles_dir()`/`remotes_json()`/`ui_state_json()` methods continue
+    /// to resolve to spec-§5.6 layout (i.e.
+    /// `~/.local/share/boxpilot/{profiles,remotes.json,ui-state.json}`).
+    pub fn from_paths(paths: &boxpilot_platform::Paths) -> Self {
+        Self {
+            root: paths.user_root().to_path_buf(),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -63,18 +58,30 @@ impl ProfileStorePaths {
 }
 
 /// Idempotent: creates `path` (and parents via `create_dir_all`) if missing,
-/// then forces **the leaf** to `0700`. Intermediate directories created by
-/// `create_dir_all` are NOT chmod'd — callers must call this helper on each
-/// path component they own (e.g. root, then `profiles/`, then a profile's
-/// own dir) if they need every level forced to `0700`.
+/// then forces **the leaf** to `0700` on Linux. Intermediate directories
+/// created by `create_dir_all` are NOT chmod'd — callers must call this
+/// helper on each path component they own (e.g. root, then `profiles/`, then
+/// a profile's own dir) if they need every level forced to `0700`.
+///
+/// On Windows the chmod is a no-op (ACL-style permissioning belongs to the
+/// `FsPermissions` trait; this helper stays POSIX-mode-shaped for now and
+/// Sub-project #2 will route directory creation through `AclFsPermissions`).
 pub fn ensure_dir_0700(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(path)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
 }
 
-/// Atomic write with `0600` mode. Writes to a uniquely-named temp file
-/// in the destination's parent directory, fsyncs, and renames into
+/// Atomic write with `0600` mode (Linux). Writes to a uniquely-named temp
+/// file in the destination's parent directory, fsyncs, and renames into
 /// place. Concurrent writers cannot collide on the temp file.
+///
+/// On Windows the mode bit is skipped (ACLs are handled separately via the
+/// `FsPermissions` trait); the atomic temp-file pattern still applies.
 pub fn write_file_0600_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let parent = match path.parent() {
@@ -84,7 +91,11 @@ pub fn write_file_0600_atomic(path: &Path, contents: &[u8]) -> std::io::Result<(
     std::fs::create_dir_all(parent)?;
     let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
     // Set 0600 BEFORE writing so even partial bytes are unreadable to others.
-    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))?;
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o600))?;
+    }
     tmp.write_all(contents)?;
     tmp.as_file().sync_all()?;
     tmp.persist(path)
@@ -96,6 +107,8 @@ pub fn write_file_0600_atomic(path: &Path, contents: &[u8]) -> std::io::Result<(
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    #[cfg(target_os = "linux")]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn paths_layout_matches_spec_5_6() {
@@ -126,6 +139,7 @@ mod tests {
         assert_eq!(p.ui_state_json(), PathBuf::from("/x/ui-state.json"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn ensure_dir_0700_creates_and_chmods() {
         let tmp = tempfile::tempdir().unwrap();
@@ -135,6 +149,7 @@ mod tests {
         assert_eq!(mode, 0o700);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn ensure_dir_0700_is_idempotent_and_repairs_perms() {
         let tmp = tempfile::tempdir().unwrap();
@@ -146,6 +161,7 @@ mod tests {
         assert_eq!(mode, 0o700);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn write_file_0600_atomic_creates_with_correct_mode() {
         let tmp = tempfile::tempdir().unwrap();

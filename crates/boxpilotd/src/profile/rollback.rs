@@ -6,7 +6,7 @@
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
 use crate::dispatch::ControllerWrites;
 use crate::lock;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use crate::profile::recovery;
 use crate::profile::release::{read_active_target, swap_active_symlink};
 use crate::profile::verifier::ServiceVerifier;

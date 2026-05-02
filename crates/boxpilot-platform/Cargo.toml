@@ -1,0 +1,41 @@
+[package]
+name = "boxpilot-platform"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+boxpilot-ipc = { path = "../boxpilot-ipc" }
+async-trait.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "sync", "net", "io-util"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus.workspace = true
+nix.workspace = true
+libc.workspace = true
+fs2.workspace = true
+tar.workspace = true
+flate2.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-service = "0.7"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+] }
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tempfile.workspace = true

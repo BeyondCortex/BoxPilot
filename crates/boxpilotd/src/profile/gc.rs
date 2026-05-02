@@ -5,7 +5,7 @@
 //!  - delete oldest first
 //!  - skip the active and previous targets always
 
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use std::path::PathBuf;
 use std::time::SystemTime;
 use tracing::{info, warn};

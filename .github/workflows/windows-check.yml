@@ -1,0 +1,28 @@
+name: windows-check
+on:
+  pull_request:
+  push:
+    branches: [main, "feat/windows-support"]
+
+jobs:
+  cargo-check-windows-msvc:
+    name: cargo check (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    # Sub-project #1 ships `boxpilot-ipc` and `boxpilot-platform` as the
+    # cross-platform surface plus the new Windows real impls (Authority,
+    # FileLock, IpcServer/Client, FsPermissions stub). The boxpilotd bin
+    # itself still has unix-only paths (zbus, nix, std::os::fd::OwnedFd in
+    # several modules) that Sub-project #2 will cfg-gate; until then we
+    # scope the gate to the two crates that MUST compile on Windows.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc
+      - name: cargo check (x86_64-pc-windows-msvc) for boxpilot-ipc + boxpilot-platform
+        run: cargo check --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform
+      - name: cargo test (boxpilot-ipc + boxpilot-platform)
+        run: cargo test --target x86_64-pc-windows-msvc -p boxpilot-ipc -p boxpilot-platform --no-fail-fast

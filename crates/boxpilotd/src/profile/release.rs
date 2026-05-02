@@ -2,6 +2,16 @@
 //! symlink swap of `/etc/boxpilot/active` via `rename(2)` on
 //! `active.new`). The `ln -sfn` path is intentionally not used — it
 //! unlinks first, leaving a window where `active` does not exist.
+//!
+//! These free functions predate the [`boxpilot_platform::traits::active::ActivePointer`]
+//! trait introduced in PR 8. They remain in place because activate.rs and
+//! rollback.rs rely on `read_active_target` returning a concrete `PathBuf`
+//! that's compared with previous-target paths during the rollback dance;
+//! migrating those call sites to `&dyn ActivePointer` is tracked as a
+//! follow-up. The symlink + rename pattern is Linux-only — Windows builds
+//! pull the trait + `MarkerFileActivePointer` instead.
+
+#![cfg(target_os = "linux")]
 
 use boxpilot_ipc::{HelperError, HelperResult};
 use std::os::unix::fs::symlink;

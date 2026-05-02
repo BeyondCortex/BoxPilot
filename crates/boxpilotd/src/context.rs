@@ -2,13 +2,14 @@
 //! [`crate::iface::Helper`] D-Bus interface struct small and lets unit tests
 //! swap any dependency.
 
-use crate::authority::Authority;
+use crate::authority::{Authority, ZbusSubject};
 use crate::controller::{ControllerState, UserLookup};
 use crate::core::download::Downloader;
 use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
-use crate::paths::Paths;
+use boxpilot_platform::traits::active::ActivePointer;
+use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
 use crate::profile::verifier::ServiceVerifier;
 use crate::systemd::{JournalReader, Systemd};
@@ -19,6 +20,12 @@ pub struct HelperContext {
     pub paths: Paths,
     pub callers: Arc<dyn CallerResolver>,
     pub authority: Arc<dyn Authority>,
+    /// Per-call sender shuttle that the iface methods write the D-Bus
+    /// sender into immediately before calling `dispatch::authorize`. The
+    /// Linux `DBusAuthority` reads it back via `SubjectProvider` to build
+    /// the polkit subject. Always present in `HelperContext` (even on
+    /// Windows where the field is unused) so dispatch stays platform-neutral.
+    pub authority_subject: Arc<ZbusSubject>,
     pub systemd: Arc<dyn Systemd>,
     pub journal: Arc<dyn JournalReader>,
     pub user_lookup: Arc<dyn UserLookup>,
@@ -30,6 +37,13 @@ pub struct HelperContext {
     pub verifier: Arc<dyn ServiceVerifier>,
     pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
     pub config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
+    /// PR 8: platform-neutral atomic active-release pointer. Linux uses
+    /// `SymlinkActivePointer`; Windows uses `MarkerFileActivePointer`.
+    /// Currently unused by activate/rollback (which still call the free
+    /// functions in `profile::release`); plumbing it here so PR 9+ and
+    /// future refactors don't have to thread it through `HelperContext::new`.
+    #[allow(dead_code)]
+    pub active: Arc<dyn ActivePointer>,
     /// Set when `install-state.json` parsed at startup with a
     /// `schema_version` other than the compiled-in
     /// `INSTALL_STATE_SCHEMA_VERSION` (spec §7.6). `dispatch::authorize`
@@ -51,6 +65,7 @@ impl HelperContext {
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
         authority: Arc<dyn Authority>,
+        authority_subject: Arc<ZbusSubject>,
         systemd: Arc<dyn Systemd>,
         journal: Arc<dyn JournalReader>,
         user_lookup: Arc<dyn UserLookup>,
@@ -62,12 +77,14 @@ impl HelperContext {
         verifier: Arc<dyn ServiceVerifier>,
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
         config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
+        active: Arc<dyn ActivePointer>,
         state_schema_mismatch: Option<u32>,
     ) -> Self {
         Self {
             paths,
             callers,
             authority,
+            authority_subject,
             systemd,
             journal,
             user_lookup,
@@ -79,6 +96,7 @@ impl HelperContext {
             verifier,
             fs_fragment_reader,
             config_reader,
+            active,
             state_schema_mismatch,
         }
     }
@@ -155,10 +173,14 @@ pub mod testing {
             crate::core::trust::version_testing::FixedVersionChecker::ok("sing-box version 1.10.0"),
         );
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
+        let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
+            paths.releases_dir(),
+        ));
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
+            Arc::new(ZbusSubject::new()),
             Arc::new(FixedSystemd {
                 answer: systemd_answer,
                 fragment_path: None,
@@ -176,6 +198,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            active,
             None,
         )
     }
@@ -203,10 +226,14 @@ pub mod testing {
             Vec::new(),
         ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
+        let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
+            paths.releases_dir(),
+        ));
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
+            Arc::new(ZbusSubject::new()),
             rec,
             journal,
             Arc::new(PasswdLookup),
@@ -224,6 +251,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            active,
             None,
         )
     }
@@ -251,10 +279,14 @@ pub mod testing {
             Vec::new(),
         ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines });
+        let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
+            paths.releases_dir(),
+        ));
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
             Arc::new(authority),
+            Arc::new(ZbusSubject::new()),
             Arc::new(crate::systemd::testing::FixedSystemd {
                 answer: systemd_answer,
                 fragment_path: None,
@@ -276,6 +308,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            active,
             None,
         )
     }

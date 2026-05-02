@@ -59,6 +59,7 @@ pub fn remote_id_for_url(url: &str) -> String {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -85,6 +86,7 @@ mod tests {
         assert_eq!(f.schema_version, REMOTES_SCHEMA_VERSION);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn write_uses_0600() {
         let tmp = tempfile::tempdir().unwrap();

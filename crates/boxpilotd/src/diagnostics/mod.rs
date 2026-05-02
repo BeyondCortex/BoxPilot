@@ -5,7 +5,7 @@ pub mod bundle;
 pub mod gc;
 pub mod sysinfo;
 
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use boxpilot_ipc::{
     DiagnosticsExportResponse, HelperError, HelperResult, DIAGNOSTICS_BUNDLE_CAP_BYTES,
     DIAGNOSTICS_JOURNAL_TAIL_LINES, DIAGNOSTICS_SCHEMA_VERSION,

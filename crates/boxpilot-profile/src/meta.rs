@@ -54,6 +54,7 @@ pub fn write_metadata(path: &Path, meta: &ProfileMetadata) -> std::io::Result<()
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
@@ -66,6 +67,7 @@ mod tests {
         assert!(back.remote_id.is_none());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn write_then_read() {
         let tmp = tempfile::tempdir().unwrap();

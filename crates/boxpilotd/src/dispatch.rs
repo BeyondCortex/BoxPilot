@@ -1,22 +1,27 @@
 //! Single chokepoint every interface method passes through:
-//! 1. resolve caller UID from D-Bus connection credentials
-//! 2. compute controller status, surface `controller_orphaned` (§6.6)
-//! 3. ask polkit for authorization
-//! 4. for mutating calls, acquire `/run/boxpilot/lock`
-//! 5. invoke the action body
+//! 1. compute controller status, surface `controller_orphaned` (§6.6)
+//! 2. ask polkit for authorization (using `CallerPrincipal`)
+//! 3. for mutating calls, acquire `/run/boxpilot/lock`
+//! 4. invoke the action body
 //!
-//! Step 5 is generic over the action body so each interface method stays
+//! Step 4 is generic over the action body so each interface method stays
 //! a 1-2 line wrapper. When `controller == Unset` and the call is mutating
 //! and polkit allowed it, `AuthorizedCall::will_claim_controller` is set
 //! so the body can atomically claim the controller under the acquired lock.
+//!
+//! Caller principal resolution moved out of this function in PR 4: the
+//! interface impl (`iface.rs`) resolves a platform-specific `CallerPrincipal`
+//! from the IPC connection (Linux: D-Bus sender → uid; Windows: pipe client
+//! token → SID) and passes it in. This keeps `dispatch` platform-neutral.
 
+use crate::authority::CallerPrincipal;
 use crate::context::HelperContext;
 use crate::controller::ControllerState;
 use crate::lock::{self, LockGuard};
 use boxpilot_ipc::{HelperError, HelperMethod, HelperResult};
 
 pub struct AuthorizedCall {
-    pub caller_uid: u32,
+    pub principal: CallerPrincipal,
     pub controller: ControllerState,
     /// True when the body should atomically claim the controller under the
     /// lock it holds.  Set only when `controller == Unset`, the call is
@@ -28,10 +33,9 @@ pub struct AuthorizedCall {
 
 pub async fn authorize(
     ctx: &HelperContext,
-    sender_bus_name: &str,
+    principal: &CallerPrincipal,
     method: HelperMethod,
 ) -> HelperResult<AuthorizedCall> {
-    let caller_uid = ctx.callers.resolve(sender_bus_name).await?;
     let controller = ctx.controller_state().await?;
 
     if let ControllerState::Orphaned { .. } = controller {
@@ -53,7 +57,7 @@ pub async fn authorize(
     }
 
     let action_id = method.polkit_action_id();
-    let allowed = ctx.authority.check(action_id, sender_bus_name).await?;
+    let allowed = ctx.authority.check(action_id, principal).await?;
     if !allowed {
         return Err(HelperError::NotAuthorized);
     }
@@ -68,7 +72,7 @@ pub async fn authorize(
     };
 
     Ok(AuthorizedCall {
-        caller_uid,
+        principal: principal.clone(),
         controller,
         will_claim_controller,
         _lock: lock,
@@ -84,14 +88,22 @@ pub struct ControllerWrites {
 /// If `will_claim` is true, look up the caller's username and produce the
 /// payload the body needs to write atomically (boxpilot.toml's
 /// controller_uid + /etc/boxpilot/controller-name).
+///
+/// Refuses non-Linux principals defensively: a `WindowsSid` here would
+/// signal a wiring bug (the controller-claim path is Linux-only until the
+/// Windows side ports it). Returns `ControllerOrphaned` rather than panic
+/// so a mistake degrades into a recoverable error.
 pub fn maybe_claim_controller(
     will_claim: bool,
-    caller_uid: u32,
+    principal: &CallerPrincipal,
     user_lookup: &dyn crate::controller::UserLookup,
 ) -> HelperResult<Option<ControllerWrites>> {
     if !will_claim {
         return Ok(None);
     }
+    let caller_uid = principal
+        .linux_uid()
+        .ok_or(HelperError::ControllerOrphaned)?;
     match user_lookup.lookup_username(caller_uid) {
         Some(username) => Ok(Some(ControllerWrites {
             uid: caller_uid,
@@ -101,6 +113,34 @@ pub fn maybe_claim_controller(
     }
 }
 
+/// Atomically persist a `ControllerWrites` claim for verbs that don't have
+/// their own state-mutation pipeline (e.g. `service.{start,stop,...}`).
+/// No-ops when `controller` is `None`. Mirrors the commit block in
+/// `handlers/service_install_managed.rs`: empty `InstallState` + the
+/// preserve-existing-on-disk guard inside `StateCommit::apply` so the cores
+/// ledger is left untouched.
+///
+/// Atomicity note: callers run the underlying systemd action *before*
+/// invoking this. If the commit fails, the action already happened but the
+/// controller claim is not recorded; the next mutating call re-enters
+/// `will_claim_controller` and retries the commit, so the corner is benign.
+pub async fn commit_controller_claim(
+    paths: &boxpilot_platform::Paths,
+    controller: Option<ControllerWrites>,
+) -> HelperResult<()> {
+    let Some(c) = controller else {
+        return Ok(());
+    };
+    let commit = crate::core::commit::StateCommit {
+        paths: paths.clone(),
+        toml_updates: crate::core::commit::TomlUpdates::default(),
+        controller: Some(c),
+        install_state: boxpilot_ipc::InstallState::empty(),
+        current_symlink_target: None,
+    };
+    commit.apply().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,6 +148,10 @@ mod tests {
     use crate::context::testing::ctx_with;
     use boxpilot_ipc::UnitState;
     use tempfile::tempdir;
+
+    fn p(uid: u32) -> CallerPrincipal {
+        CallerPrincipal::LinuxUid(uid)
+    }
 
     #[tokio::test]
     async fn read_only_call_with_polkit_yes_succeeds() {
@@ -119,7 +163,7 @@ mod tests {
             UnitState::NotFound,
             &[(":1.42", 1000)],
         );
-        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStatus).await;
+        let r = authorize(&ctx, &p(1000), HelperMethod::ServiceStatus).await;
         assert!(r.is_ok());
     }
 
@@ -133,7 +177,7 @@ mod tests {
             UnitState::NotFound,
             &[(":1.42", 1000)],
         );
-        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStatus).await;
+        let r = authorize(&ctx, &p(1000), HelperMethod::ServiceStatus).await;
         assert!(matches!(r, Err(HelperError::NotAuthorized)));
     }
 
@@ -147,7 +191,7 @@ mod tests {
             UnitState::NotFound,
             &[(":1.42", 1000)],
         );
-        let call = authorize(&ctx, ":1.42", HelperMethod::ServiceStart)
+        let call = authorize(&ctx, &p(1000), HelperMethod::ServiceStart)
             .await
             .unwrap();
         assert!(call.will_claim_controller);
@@ -164,7 +208,7 @@ mod tests {
             UnitState::NotFound,
             &[(":1.42", 1000)],
         );
-        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStart).await;
+        let r = authorize(&ctx, &p(1000), HelperMethod::ServiceStart).await;
         assert!(matches!(r, Err(HelperError::ControllerOrphaned)));
     }
 
@@ -179,7 +223,7 @@ mod tests {
             &[(":1.42", 1000)],
         );
         ctx.state_schema_mismatch = Some(99);
-        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStart).await;
+        let r = authorize(&ctx, &p(1000), HelperMethod::ServiceStart).await;
         assert!(matches!(
             r,
             Err(HelperError::UnsupportedSchemaVersion { got: 99 })
@@ -199,7 +243,7 @@ mod tests {
         ctx.state_schema_mismatch = Some(99);
         // Read-only verbs must still work so the GUI can fetch service.status
         // and surface the mismatch via its `state_schema_mismatch` field.
-        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStatus).await;
+        let r = authorize(&ctx, &p(1000), HelperMethod::ServiceStatus).await;
         assert!(r.is_ok());
     }
 
@@ -213,7 +257,7 @@ mod tests {
             UnitState::NotFound,
             &[(":1.42", 1000)],
         );
-        let r = authorize(&ctx, ":1.42", HelperMethod::ServiceStatus).await;
+        let r = authorize(&ctx, &p(1000), HelperMethod::ServiceStatus).await;
         assert!(r.is_ok());
     }
 
@@ -221,7 +265,7 @@ mod tests {
     fn no_claim_returns_none() {
         use crate::controller::testing::Fixed;
         let lookup = Fixed::new(&[(1000, "alice")]);
-        let r = maybe_claim_controller(false, 1000, &lookup).unwrap();
+        let r = maybe_claim_controller(false, &p(1000), &lookup).unwrap();
         assert!(r.is_none());
     }
 
@@ -229,7 +273,7 @@ mod tests {
     fn claim_with_known_user_returns_writes() {
         use crate::controller::testing::Fixed;
         let lookup = Fixed::new(&[(1000, "alice")]);
-        let r = maybe_claim_controller(true, 1000, &lookup).unwrap();
+        let r = maybe_claim_controller(true, &p(1000), &lookup).unwrap();
         assert_eq!(
             r.unwrap(),
             ControllerWrites {
@@ -243,7 +287,19 @@ mod tests {
     fn claim_with_unknown_user_errors_orphaned() {
         use crate::controller::testing::Fixed;
         let lookup = Fixed::new(&[]);
-        let r = maybe_claim_controller(true, 1000, &lookup);
+        let r = maybe_claim_controller(true, &p(1000), &lookup);
+        assert!(matches!(r, Err(HelperError::ControllerOrphaned)));
+    }
+
+    #[test]
+    fn claim_with_windows_principal_errors_orphaned() {
+        use crate::controller::testing::Fixed;
+        let lookup = Fixed::new(&[(1000, "alice")]);
+        let r = maybe_claim_controller(
+            true,
+            &CallerPrincipal::WindowsSid("S-1-5-21-0".into()),
+            &lookup,
+        );
         assert!(matches!(r, Err(HelperError::ControllerOrphaned)));
     }
 }

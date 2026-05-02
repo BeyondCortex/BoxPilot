@@ -48,7 +48,9 @@ pub async fn resolve_version(
 }
 
 pub fn tarball_filename(version: &str, arch: &str) -> String {
-    format!("sing-box-{version}-linux-{arch}.tar.gz")
+    use boxpilot_platform::linux::core_assets::LinuxCoreAssetNaming;
+    use boxpilot_platform::traits::core_assets::CoreAssetNaming;
+    LinuxCoreAssetNaming.asset_name(version, arch)
 }
 
 pub fn release_url(version: &str, arch: &str) -> String {
@@ -67,7 +69,7 @@ use crate::core::trust::{
     VersionChecker,
 };
 use crate::dispatch::ControllerWrites;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use boxpilot_ipc::{
     CoreInstallRequest, CoreInstallResponse, CoreKind, CoreSource, CoreState, DiscoveredCore,
     InstallSourceJson, ManagedCoreEntry,
@@ -144,6 +146,7 @@ pub async fn install_or_upgrade(
     let stdout = deps
         .version_checker
         .check(&bin_path)
+        .map_err(|e| TrustError::VersionCheckFailed(e.to_string()))
         .map_err(map_trust_err)?;
     let reported = parse_singbox_version_pub(&stdout).ok_or_else(|| HelperError::Ipc {
         message: format!("could not parse version from: {stdout}"),
@@ -282,53 +285,9 @@ fn random_suffix() -> String {
 }
 
 async fn extract_singbox(tarball: &std::path::Path, dest: &std::path::Path) -> HelperResult<()> {
-    let tarball = tarball.to_path_buf();
-    let dest = dest.to_path_buf();
-    // tar/flate2 are sync; do the work on a blocking thread.
-    tokio::task::spawn_blocking(move || -> HelperResult<()> {
-        let f = std::fs::File::open(&tarball).map_err(|e| HelperError::Ipc {
-            message: format!("open tarball: {e}"),
-        })?;
-        let dec = flate2::read::GzDecoder::new(f);
-        let mut ar = tar::Archive::new(dec);
-        for entry in ar.entries().map_err(|e| HelperError::Ipc {
-            message: format!("tar entries: {e}"),
-        })? {
-            let mut entry = entry.map_err(|e| HelperError::Ipc {
-                message: format!("tar entry: {e}"),
-            })?;
-            let is_singbox = entry
-                .path()
-                .map_err(|e| HelperError::Ipc {
-                    message: format!("tar entry path: {e}"),
-                })?
-                .file_name()
-                .map(|n| n == "sing-box")
-                .unwrap_or(false);
-            if is_singbox {
-                let mut out = std::fs::File::create(&dest).map_err(|e| HelperError::Ipc {
-                    message: format!("create binary: {e}"),
-                })?;
-                std::io::copy(&mut entry, &mut out).map_err(|e| HelperError::Ipc {
-                    message: format!("copy binary: {e}"),
-                })?;
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755)).map_err(
-                    |e| HelperError::Ipc {
-                        message: format!("chmod binary: {e}"),
-                    },
-                )?;
-                return Ok(());
-            }
-        }
-        Err(HelperError::Ipc {
-            message: "tarball did not contain a sing-box binary".into(),
-        })
-    })
-    .await
-    .map_err(|e| HelperError::Ipc {
-        message: format!("spawn_blocking join: {e}"),
-    })?
+    use boxpilot_platform::linux::core_assets::TarGzExtractor;
+    use boxpilot_platform::traits::core_assets::CoreArchive;
+    TarGzExtractor.extract(tarball, dest).await
 }
 
 pub(crate) async fn sha256_file_pub(path: &std::path::Path) -> HelperResult<String> {

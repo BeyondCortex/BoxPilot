@@ -7,9 +7,9 @@ use std::sync::Arc;
 pub fn run() {
     init_tracing();
 
+    let paths = boxpilot_platform::Paths::system().expect("read system paths");
     let store = boxpilot_profile::ProfileStore::new(
-        boxpilot_profile::ProfileStorePaths::from_env()
-            .expect("could not resolve profile store path"),
+        boxpilot_profile::ProfileStorePaths::from_paths(&paths),
     );
     let profile_state = profile_cmds::ProfileState {
         store: Arc::new(store),
@@ -18,6 +18,7 @@ pub fn run() {
     };
 
     tauri::Builder::default()
+        .manage(paths)
         .manage(profile_state)
         .invoke_handler(tauri::generate_handler![
             commands::helper_service_status,

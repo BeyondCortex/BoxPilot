@@ -305,19 +305,13 @@ pub async fn profile_prepare_bundle(
     request: PrepareBundleRequest,
 ) -> Result<PrepareBundleResponse, CommandError> {
     let store = state.store.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_bundle(
-            &store,
-            &request.profile_id,
-            &request.core_path,
-            &request.core_version,
-        )
-    })
+    let prepared = prepare_bundle(
+        &store,
+        &request.profile_id,
+        &request.core_path,
+        &request.core_version,
+    )
     .await
-    .map_err(|e| CommandError {
-        code: "join".into(),
-        message: e.to_string(),
-    })?
     .map_err(|e| e.to_cmd())?;
     let resp = PrepareBundleResponse {
         staging_path: prepared.staging.path().to_string_lossy().into_owned(),
@@ -353,15 +347,9 @@ pub async fn profile_check(
     // clone it now for the second call.
     let core_path_for_check = core_path.clone();
     let store = state.store.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_bundle(&store, &profile_id, &core_path, "best-effort")
-    })
-    .await
-    .map_err(|e| CommandError {
-        code: "join".into(),
-        message: e.to_string(),
-    })?
-    .map_err(|e| e.to_cmd())?;
+    let prepared = prepare_bundle(&store, &profile_id, &core_path, "best-effort")
+        .await
+        .map_err(|e| e.to_cmd())?;
 
     let core_path_buf = std::path::PathBuf::from(core_path_for_check);
     let staging = prepared.staging.path().to_path_buf();
@@ -411,54 +399,24 @@ pub async fn profile_activate(
         verify_window_secs,
     } = request;
     let store = state.store.clone();
-    let prepared = tauri::async_runtime::spawn_blocking(move || {
-        prepare_bundle(&store, &profile_id, &core_path, &core_version)
-    })
-    .await
-    .map_err(|e| CommandError {
-        code: "join".into(),
-        message: e.to_string(),
-    })?
-    .map_err(|e| e.to_cmd())?;
+    let prepared = prepare_bundle(&store, &profile_id, &core_path, &core_version)
+        .await
+        .map_err(|e| e.to_cmd())?;
 
     let req = boxpilot_ipc::ActivateBundleRequest {
         verify_window_secs,
         expected_total_bytes: Some(prepared.tar_size),
     };
-    let req_json = serde_json::to_string(&req).map_err(|e| CommandError {
-        code: "encode".into(),
-        message: e.to_string(),
-    })?;
 
-    let conn = zbus::Connection::system().await.map_err(|e| CommandError {
-        code: "dbus_connect".into(),
-        message: e.to_string(),
-    })?;
-    let proxy = zbus::Proxy::new(
-        &conn,
-        "app.boxpilot.Helper",
-        "/app/boxpilot/Helper",
-        "app.boxpilot.Helper1",
-    )
-    .await
-    .map_err(|e| CommandError {
-        code: "dbus_proxy".into(),
-        message: e.to_string(),
-    })?;
-
-    let fd_z: zbus::zvariant::OwnedFd = prepared.memfd.into();
-    let resp_json: String = proxy
-        .call("ProfileActivateBundle", &(req_json, fd_z))
+    // PR 11b: the AuxStream travels through the typed `HelperClient`
+    // wrapper now — no more raw `zbus::Proxy` handling on the GUI side.
+    let client = crate::helper_client::HelperClient::connect()
         .await
-        .map_err(|e| CommandError {
-            code: "dbus_call".into(),
-            message: e.to_string(),
-        })?;
-    let resp: boxpilot_ipc::ActivateBundleResponse =
-        serde_json::from_str(&resp_json).map_err(|e| CommandError {
-            code: "decode".into(),
-            message: e.to_string(),
-        })?;
+        .map_err(CommandError::from)?;
+    let resp = client
+        .profile_activate_bundle(&req, prepared.stream)
+        .await
+        .map_err(CommandError::from)?;
     let outcome = match resp.outcome {
         boxpilot_ipc::ActivateOutcome::Active => "active",
         boxpilot_ipc::ActivateOutcome::RolledBack => "rolled_back",

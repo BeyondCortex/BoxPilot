@@ -5,7 +5,7 @@
 //! consistent or self-recoverable state.
 
 use crate::dispatch::ControllerWrites;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use boxpilot_ipc::{BoxpilotConfig, CoreState, HelperError, HelperResult, InstallState};
 use std::path::PathBuf;
 

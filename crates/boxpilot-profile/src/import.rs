@@ -289,6 +289,7 @@ mod tests {
     use super::*;
     use crate::store::ProfileStorePaths;
     use pretty_assertions::assert_eq;
+    #[cfg(target_os = "linux")]
     use std::os::unix::fs::PermissionsExt;
 
     fn fixture() -> (tempfile::TempDir, ProfileStore) {
@@ -311,6 +312,7 @@ mod tests {
         assert_ne!(new_profile_id("same", t1), new_profile_id("same", t2));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn import_local_file_writes_layout_and_perms() {
         let (tmp, s) = fixture();
@@ -373,6 +375,7 @@ mod tests {
         assert_eq!(std::fs::read(assets.join("rules/r1.srs")).unwrap(), b"SRS");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn import_local_dir_rejects_symlink_inside() {
         let (tmp, s) = fixture();

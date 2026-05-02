@@ -26,6 +26,7 @@ pub const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// `working_dir`. Caller is responsible for permissions: `core_path` is
 /// expected to be world-executable (managed cores live under
 /// `/var/lib/boxpilot/cores/` with `0755`).
+#[cfg(target_os = "linux")]
 pub fn run_singbox_check(core_path: &Path, working_dir: &Path) -> Result<CheckOutput, CheckError> {
     use std::io::Read;
     use std::os::unix::process::CommandExt;
@@ -94,7 +95,23 @@ pub fn run_singbox_check(core_path: &Path, working_dir: &Path) -> Result<CheckOu
     })
 }
 
-#[cfg(test)]
+/// Per COQ14: sing-box check on Windows is short-circuited in
+/// Sub-project #1. The real JobObject-based implementation arrives in
+/// Sub-project #2; until then we return a successful CheckOutput so the
+/// activation pipeline does not block on this step.
+#[cfg(target_os = "windows")]
+pub fn run_singbox_check(
+    _core_path: &Path,
+    _working_dir: &Path,
+) -> Result<CheckOutput, CheckError> {
+    Ok(CheckOutput {
+        success: true,
+        stdout: "sing-box check skipped on Windows in Sub-project #1".to_string(),
+        stderr: String::new(),
+    })
+}
+
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

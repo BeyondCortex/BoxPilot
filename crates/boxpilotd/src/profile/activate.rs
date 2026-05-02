@@ -7,7 +7,7 @@
 use crate::core::commit::{ActiveFields, PreviousFields, StateCommit, TomlUpdates};
 use crate::dispatch::ControllerWrites;
 use crate::lock;
-use crate::paths::Paths;
+use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
 use crate::profile::gc;
 use crate::profile::recovery;
@@ -69,7 +69,11 @@ pub async fn activate_bundle(
         })?;
     let temp_staging = staging_root.join(&nonce);
 
-    let report = unpack_into(fd, &temp_staging, req.expected_total_bytes)?;
+    // Until PR 11a inverts the IPC layer, the dispatcher hands us a raw
+    // `OwnedFd` from zbus; wrap it in `AuxStream::from_owned_fd` so the
+    // unpacker can stay platform-neutral.
+    let aux = boxpilot_platform::AuxStream::from_owned_fd(fd);
+    let report = unpack_into(aux, &temp_staging, req.expected_total_bytes).await?;
     let activation_id = report.manifest.activation_id.clone();
     let staging_path = deps.paths.staging_subdir(&activation_id);
     if staging_path.exists() {

@@ -258,3 +258,91 @@ mod auth_tests {
         }
     }
 }
+
+pub mod wire {
+    use super::HelperMethod;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AuxShape {
+        None,
+        Required,
+    }
+
+    impl HelperMethod {
+        pub fn wire_id(self) -> u32 {
+            match self {
+                HelperMethod::ServiceStatus => 0x0001,
+                HelperMethod::ServiceStart => 0x0002,
+                HelperMethod::ServiceStop => 0x0003,
+                HelperMethod::ServiceRestart => 0x0004,
+                HelperMethod::ServiceEnable => 0x0005,
+                HelperMethod::ServiceDisable => 0x0006,
+                HelperMethod::ServiceInstallManaged => 0x0007,
+                HelperMethod::ServiceLogs => 0x0008,
+                HelperMethod::ProfileActivateBundle => 0x0010,
+                HelperMethod::ProfileRollbackRelease => 0x0011,
+                HelperMethod::CoreDiscover => 0x0020,
+                HelperMethod::CoreInstallManaged => 0x0021,
+                HelperMethod::CoreUpgradeManaged => 0x0022,
+                HelperMethod::CoreRollbackManaged => 0x0023,
+                HelperMethod::CoreAdopt => 0x0024,
+                HelperMethod::LegacyObserveService => 0x0030,
+                HelperMethod::LegacyMigrateService => 0x0031,
+                HelperMethod::ControllerTransfer => 0x0040,
+                HelperMethod::DiagnosticsExportRedacted => 0x0050,
+                HelperMethod::HomeStatus => 0x0060,
+            }
+        }
+
+        pub fn from_wire_id(id: u32) -> Option<HelperMethod> {
+            HelperMethod::ALL.iter().copied().find(|m| m.wire_id() == id)
+        }
+
+        pub fn aux_shape(self) -> AuxShape {
+            match self {
+                HelperMethod::ProfileActivateBundle => AuxShape::Required,
+                _ => AuxShape::None,
+            }
+        }
+
+        pub fn aux_size_cap(self) -> u64 {
+            match self {
+                HelperMethod::ProfileActivateBundle => crate::BUNDLE_MAX_TOTAL_BYTES as u64,
+                _ => 0,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn wire_ids_round_trip() {
+            for m in HelperMethod::ALL {
+                let id = m.wire_id();
+                assert_eq!(HelperMethod::from_wire_id(id), Some(m), "method {m:?}");
+            }
+        }
+
+        #[test]
+        fn aux_shape_required_only_for_activate() {
+            for m in HelperMethod::ALL {
+                let expected = if m == HelperMethod::ProfileActivateBundle {
+                    AuxShape::Required
+                } else {
+                    AuxShape::None
+                };
+                assert_eq!(m.aux_shape(), expected, "method {m:?}");
+            }
+        }
+
+        #[test]
+        fn wire_ids_are_unique() {
+            let mut seen = std::collections::HashSet::new();
+            for m in HelperMethod::ALL {
+                assert!(seen.insert(m.wire_id()), "duplicate wire id for {m:?}");
+            }
+        }
+    }
+}
