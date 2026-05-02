@@ -1,0 +1,27 @@
+name: windows-check
+on:
+  pull_request:
+  push:
+    branches: [main, "feat/windows-support"]
+
+jobs:
+  cargo-check-windows-gnu:
+    name: cargo check (x86_64-pc-windows-gnu)
+    runs-on: ubuntu-latest
+    # Allow-fail through PR 10 per spec COQ13. Promoted to a required check
+    # at PR 11a (boxpilot-profile/bundle.rs no longer uses nix::memfd by
+    # then). Switched to x86_64-pc-windows-msvc on a windows-latest runner
+    # at PR 14.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-gnu
+      - name: Install mingw-w64 (provides x86_64-w64-mingw32-gcc as the GNU linker)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mingw-w64
+      - name: cargo check --target x86_64-pc-windows-gnu --workspace
+        run: cargo check --target x86_64-pc-windows-gnu --workspace
