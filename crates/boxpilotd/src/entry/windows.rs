@@ -190,8 +190,6 @@ fn build_helper_context_windows(paths: boxpilot_platform::Paths) -> Result<Arc<H
         Arc::new(ProcessVersionChecker),
         Arc::new(crate::profile::checker::ProcessChecker),
         Arc::new(crate::profile::verifier::DefaultVerifier),
-        Arc::new(crate::legacy::observe::StdFsFragmentReader),
-        Arc::new(crate::legacy::migrate::StdConfigReader),
         active,
         current_pointer,
         Arc::new(AclFsPermissions),

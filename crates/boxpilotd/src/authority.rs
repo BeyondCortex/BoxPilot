@@ -5,7 +5,12 @@
 //! shuttle that the iface methods write into immediately before calling
 //! `dispatch::authorize`. `DBusAuthority` reads it back via the
 //! `SubjectProvider` trait when assembling the polkit subject.
+//!
+//! `ZbusSubject` is always present (even on Windows) so `HelperContext`
+//! can hold it platform-neutrally; the `SubjectProvider` impl is
+//! Linux-only because polkit is Linux-only.
 
+#[cfg(target_os = "linux")]
 pub use boxpilot_platform::linux::authority::DBusAuthority;
 pub use boxpilot_platform::traits::authority::{Authority, CallerPrincipal};
 
@@ -24,6 +29,9 @@ use std::sync::{Arc, RwLock};
 /// any awaits, so the value seen by `current_sender()` always belongs to a
 /// recent in-flight call. Tightening this to a per-call `tokio::task_local`
 /// is tracked as a follow-up.
+///
+/// Always present even on Windows (where the field is unused) so
+/// `HelperContext` stays platform-neutral.
 #[derive(Default)]
 pub struct ZbusSubject {
     inner: Arc<RwLock<Option<String>>>,
@@ -39,6 +47,7 @@ impl ZbusSubject {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl boxpilot_platform::linux::authority::SubjectProvider for ZbusSubject {
     fn current_sender(&self) -> Option<String> {
         self.inner.read().unwrap().clone()

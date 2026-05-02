@@ -37,7 +37,9 @@ pub struct HelperContext {
     pub version_checker: Arc<dyn VersionChecker>,
     pub checker: Arc<dyn SingboxChecker>,
     pub verifier: Arc<dyn ServiceVerifier>,
+    #[cfg(target_os = "linux")]
     pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+    #[cfg(target_os = "linux")]
     pub config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
     /// PR 8: platform-neutral atomic active-release pointer. Linux uses
     /// `SymlinkActivePointer`; Windows uses `MarkerFileActivePointer`.
@@ -72,7 +74,7 @@ pub struct HelperContext {
 }
 
 impl HelperContext {
-    #[allow(clippy::too_many_arguments)] // all 16 args are distinct trait deps; a builder would be overkill
+    #[allow(clippy::too_many_arguments)] // all deps are distinct trait objects; a builder would be overkill
     pub fn new(
         paths: Paths,
         callers: Arc<dyn CallerResolver>,
@@ -87,7 +89,9 @@ impl HelperContext {
         version_checker: Arc<dyn VersionChecker>,
         checker: Arc<dyn SingboxChecker>,
         verifier: Arc<dyn ServiceVerifier>,
+        #[cfg(target_os = "linux")]
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
+        #[cfg(target_os = "linux")]
         config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
         active: Arc<dyn ActivePointer>,
         current_pointer: Arc<dyn CurrentPointer>,
@@ -108,7 +112,9 @@ impl HelperContext {
             version_checker,
             checker,
             verifier,
+            #[cfg(target_os = "linux")]
             fs_fragment_reader,
+            #[cfg(target_os = "linux")]
             config_reader,
             active,
             current_pointer,
@@ -214,7 +220,9 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            #[cfg(target_os = "linux")]
             Arc::new(NoFragments),
+            #[cfg(target_os = "linux")]
             Arc::new(NoConfig),
             active,
             current_pointer,
@@ -271,7 +279,9 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            #[cfg(target_os = "linux")]
             Arc::new(NoFragments),
+            #[cfg(target_os = "linux")]
             Arc::new(NoConfig),
             active,
             current_pointer,
@@ -332,7 +342,9 @@ pub mod testing {
             Arc::new(crate::profile::verifier::testing::ScriptedVerifier::new(
                 vec![],
             )),
+            #[cfg(target_os = "linux")]
             Arc::new(NoFragments),
+            #[cfg(target_os = "linux")]
             Arc::new(NoConfig),
             active,
             current_pointer,
@@ -344,8 +356,10 @@ pub mod testing {
     /// A `FragmentReader` that pretends every fragment is missing — used
     /// by tests that don't care about ExecStart parsing. Returns
     /// `ErrorKind::NotFound` for every read.
+    #[cfg(target_os = "linux")]
     pub struct NoFragments;
 
+    #[cfg(target_os = "linux")]
     impl crate::legacy::observe::FragmentReader for NoFragments {
         fn read_to_string(&self, _path: &std::path::Path) -> std::io::Result<String> {
             Err(std::io::Error::new(
@@ -358,8 +372,10 @@ pub mod testing {
     /// A `ConfigReader` that always returns `NotFound` — used by tests
     /// whose flow doesn't reach the legacy.migrate_service path. Returning
     /// errors instead of empty Vecs avoids tests masking real failures.
+    #[cfg(target_os = "linux")]
     pub struct NoConfig;
 
+    #[cfg(target_os = "linux")]
     impl crate::legacy::migrate::ConfigReader for NoConfig {
         fn read_file(&self, _path: &std::path::Path) -> std::io::Result<Vec<u8>> {
             Err(std::io::Error::new(

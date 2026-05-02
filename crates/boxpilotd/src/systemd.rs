@@ -6,8 +6,14 @@
 //! The old names (`Systemd`, `JournalReader`) are kept as backwards-compat
 //! aliases so the rest of `boxpilotd` compiles unchanged. They are scheduled
 //! for removal in Sub-project #2's trait redesign.
+//!
+//! Platform-specific concrete impls (`DBusSystemd`, `JournalctlProcess`) are
+//! gated to Linux; the traits themselves are cross-platform so `HelperContext`
+//! can hold `Arc<dyn Systemd>` on all targets.
 
+#[cfg(target_os = "linux")]
 pub use boxpilot_platform::linux::logs::JournalctlProcess;
+#[cfg(target_os = "linux")]
 pub use boxpilot_platform::linux::service::DBusSystemd;
 pub use boxpilot_platform::traits::logs::{JournalReader, LogReader};
 pub use boxpilot_platform::traits::service::{ServiceManager, Systemd};
