@@ -2779,3 +2779,641 @@ cargo check --target x86_64-pc-windows-gnu --workspace || true          # still 
 ```
 
 ---
+
+# PR 6: `FileLock` trait
+
+**Size:** S · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/lock.rs`, `boxpilotd/src/lock.rs` (re-export shell). **Linux non-regression:** existing `flock(2)` semantics preserved.
+
+## Task 6.1: Define + impl
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/lock.rs`, `linux/lock.rs`, `windows/lock.rs`, `fakes/lock.rs`
+- Modify: `crates/boxpilotd/src/lock.rs`
+
+- [ ] **Step 1: Trait**
+
+`crates/boxpilot-platform/src/traits/lock.rs`:
+
+```rust
+//! Global advisory lock used by every mutating helper verb. Linux uses
+//! `flock(2)` on `/run/boxpilot/lock` (tmpfs auto-clears on reboot).
+//! Windows uses `LockFileEx` on `%ProgramData%\BoxPilot\run\lock` —
+//! Windows handle scoping is inherently process-bounded so a crashed
+//! helper releases its lock automatically too.
+
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+
+pub trait FileLock: Send + Sync {
+    type Guard: Send + Sync;
+
+    /// Acquire an exclusive lock. Returns `HelperError::Busy` if another
+    /// process holds it. Drops automatically when the returned guard
+    /// is dropped.
+    fn try_acquire(&self, path: &Path) -> Result<Self::Guard, HelperError>;
+}
+```
+
+- [ ] **Step 2: Linux impl (wrapper around existing fs2 logic)**
+
+`crates/boxpilot-platform/src/linux/lock.rs`:
+
+Move the body of `boxpilotd::lock` here. Keep the existing `LockGuard` type. The `FileLock` trait above is shaped so callers can stay generic; the existing `LockGuard` is its `Guard` associated type.
+
+```rust
+use crate::traits::lock::FileLock;
+use boxpilot_ipc::HelperError;
+use fs2::FileExt;
+use std::fs::File;
+use std::path::Path;
+
+pub struct FlockFileLock;
+
+pub struct LockGuard {
+    file: File,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+impl FileLock for FlockFileLock {
+    type Guard = LockGuard;
+    fn try_acquire(&self, path: &Path) -> Result<LockGuard, HelperError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| HelperError::Ipc {
+                message: format!("create lock parent dir: {e}"),
+            })?;
+        }
+        let file = File::create(path).map_err(|e| HelperError::Ipc {
+            message: format!("create lock file: {e}"),
+        })?;
+        file.try_lock_exclusive().map_err(|_| HelperError::Busy)?;
+        Ok(LockGuard { file })
+    }
+}
+```
+
+- [ ] **Step 3: Windows impl (LockFileEx — real, not stub; per spec §5 trait inventory)**
+
+`crates/boxpilot-platform/src/windows/lock.rs`:
+
+```rust
+use crate::traits::lock::FileLock;
+use boxpilot_ipc::HelperError;
+use std::fs::File;
+use std::os::windows::io::AsRawHandle;
+use std::path::Path;
+use windows_sys::Win32::Storage::FileSystem::{
+    LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
+};
+use windows_sys::Win32::System::IO::OVERLAPPED;
+
+pub struct LockFileExLock;
+
+pub struct LockGuard {
+    file: File,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let mut o: OVERLAPPED = std::mem::zeroed();
+            UnlockFileEx(self.file.as_raw_handle() as _, 0, u32::MAX, u32::MAX, &mut o);
+        }
+    }
+}
+
+impl FileLock for LockFileExLock {
+    type Guard = LockGuard;
+    fn try_acquire(&self, path: &Path) -> Result<LockGuard, HelperError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| HelperError::Ipc {
+                message: format!("create lock parent dir: {e}"),
+            })?;
+        }
+        let file = File::create(path).map_err(|e| HelperError::Ipc {
+            message: format!("create lock file: {e}"),
+        })?;
+        unsafe {
+            let mut o: OVERLAPPED = std::mem::zeroed();
+            let ok = LockFileEx(
+                file.as_raw_handle() as _,
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &mut o,
+            );
+            if ok == 0 {
+                return Err(HelperError::Busy);
+            }
+        }
+        Ok(LockGuard { file })
+    }
+}
+```
+
+- [ ] **Step 4: Fake (in-memory mutex per path)**
+
+`crates/boxpilot-platform/src/fakes/lock.rs`:
+
+```rust
+use crate::traits::lock::FileLock;
+use boxpilot_ipc::HelperError;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+#[derive(Default)]
+pub struct MemoryFileLock;
+
+pub struct LockGuard(MutexGuard<'static, ()>);
+
+static REGISTRY: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn registry() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+impl FileLock for MemoryFileLock {
+    type Guard = LockGuard;
+    fn try_acquire(&self, path: &Path) -> Result<LockGuard, HelperError> {
+        let m = registry()
+            .lock()
+            .unwrap()
+            .entry(path.to_path_buf())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        // Leak the mutex to get 'static — tests are short-lived; tracked.
+        let leaked: &'static Mutex<()> = Box::leak(Box::new((*m).clone()));
+        let guard = leaked.try_lock().map_err(|_| HelperError::Busy)?;
+        Ok(LockGuard(guard))
+    }
+}
+```
+
+- [ ] **Step 5: Wire mods + replace `boxpilotd/src/lock.rs`**
+
+`crates/boxpilotd/src/lock.rs`:
+
+```rust
+//! Re-export shell. Production impl in
+//! `boxpilot_platform::linux::lock::FlockFileLock`.
+
+pub use boxpilot_platform::linux::lock::{FlockFileLock, LockGuard};
+pub use boxpilot_platform::traits::lock::FileLock;
+
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+
+/// Convenience wrapper preserving the existing call signature
+/// (`lock::try_acquire(&path)`). Internally constructs a stack-local
+/// `FlockFileLock` and calls into it.
+pub fn try_acquire(path: &Path) -> Result<LockGuard, HelperError> {
+    FlockFileLock.try_acquire(path)
+}
+```
+
+- [ ] **Step 6: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/lock.rs
+git commit -m "feat(platform): FileLock trait + Linux flock + Windows LockFileEx + fake"
+```
+
+---
+
+## PR 6 smoke
+
+```bash
+cargo test --workspace
+cargo check --target x86_64-pc-windows-gnu --workspace || true
+```
+
+---
+
+# PR 7: `TrustChecker` trait
+
+**Size:** S · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/trust.rs`, `boxpilotd/src/core/trust.rs`. **Linux non-regression:** existing trust check (uid + mode + parent dirs + setuid + symlink walk + version probe) preserved bit-for-bit.
+
+The existing `boxpilotd::core::trust::trust_check_path(...)` is a free function; we wrap it behind a trait so a Windows ACL-based impl can plug in later (Sub-project #2).
+
+## Task 7.1: Define + Linux impl + fake
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/trust.rs`, `linux/trust.rs`, `windows/trust.rs`, `fakes/trust.rs`
+- Modify: `crates/boxpilotd/src/core/trust.rs` — extract free function into trait method
+
+- [ ] **Step 1: Trait**
+
+`crates/boxpilot-platform/src/traits/trust.rs`:
+
+```rust
+//! Spec §6.5 trust check, abstracted so Windows ACL semantics can plug in
+//! later. Linux: uid + mode bits + parent-dir walk + setuid + symlink walk
+//! + version probe. Windows (Sub-project #2): NTFS ACL + owner-SID +
+//! parent-dir-not-writable.
+
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+
+#[async_trait]
+pub trait TrustChecker: Send + Sync {
+    /// Returns Ok(()) if `path` (and every parent) passes trust checks.
+    /// `allowed_prefixes` are absolute roots under which trusted binaries
+    /// may live (per platform).
+    async fn check(
+        &self,
+        path: &Path,
+        allowed_prefixes: &[&Path],
+    ) -> Result<(), HelperError>;
+}
+```
+
+- [ ] **Step 2: Linux impl**
+
+`crates/boxpilot-platform/src/linux/trust.rs`:
+
+Wrap the existing free function `boxpilotd::core::trust::trust_check_path(...)` as a struct + trait impl. The new impl holds whatever dependencies the free function needs (`FsMetadataProvider`, `VersionChecker`).
+
+```rust
+use crate::traits::trust::TrustChecker;
+use crate::traits::fs_meta::FsMetadataProvider;
+use crate::traits::version::VersionChecker;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+use std::sync::Arc;
+
+pub struct LinuxTrustChecker {
+    pub fs: Arc<dyn FsMetadataProvider>,
+    pub version_checker: Arc<dyn VersionChecker>,
+}
+
+#[async_trait]
+impl TrustChecker for LinuxTrustChecker {
+    async fn check(
+        &self,
+        path: &Path,
+        allowed_prefixes: &[&Path],
+    ) -> Result<(), HelperError> {
+        // Body: copy from boxpilotd::core::trust::trust_check_path verbatim,
+        // adapting `&dyn FsMetadataProvider` parameters to `&*self.fs`.
+        // The ~150-line check sequence stays unchanged.
+        todo!("paste boxpilotd::core::trust::trust_check_path body, adapt deps to self fields");
+    }
+}
+```
+
+- [ ] **Step 3: Fill `todo!()` with the existing function body**
+
+Open `crates/boxpilotd/src/core/trust.rs`, find `trust_check_path` (or similarly-named), and copy its body into Step 2's `check` impl. Adjust:
+- Function-parameter `fs: &dyn FsMetadataProvider` → use `&*self.fs`.
+- Function-parameter `version_checker: &dyn VersionChecker` → use `&*self.version_checker`.
+
+- [ ] **Step 4: Windows stub**
+
+`crates/boxpilot-platform/src/windows/trust.rs`:
+
+```rust
+use crate::traits::trust::TrustChecker;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+
+pub struct WindowsTrustChecker;
+
+#[async_trait]
+impl TrustChecker for WindowsTrustChecker {
+    async fn check(
+        &self,
+        _path: &Path,
+        _allowed_prefixes: &[&Path],
+    ) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+}
+```
+
+- [ ] **Step 5: Fake**
+
+`crates/boxpilot-platform/src/fakes/trust.rs`:
+
+```rust
+use crate::traits::trust::TrustChecker;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::Path;
+
+pub struct AlwaysTrust;
+
+#[async_trait]
+impl TrustChecker for AlwaysTrust {
+    async fn check(&self, _: &Path, _: &[&Path]) -> Result<(), HelperError> {
+        Ok(())
+    }
+}
+
+pub struct AlwaysReject {
+    pub reason: HelperError,
+}
+
+#[async_trait]
+impl TrustChecker for AlwaysReject {
+    async fn check(&self, _: &Path, _: &[&Path]) -> Result<(), HelperError> {
+        Err(self.reason.clone())
+    }
+}
+```
+
+- [ ] **Step 6: Wire mods + retire the boxpilotd free function**
+
+In `crates/boxpilotd/src/core/trust.rs`, replace `trust_check_path` with a thin wrapper calling the new trait, OR delete it and update each caller to construct `LinuxTrustChecker` and call `check`. The latter is cleaner; one-time refactor.
+
+Run: `git grep -n "trust_check_path" crates/boxpilotd/src`
+For each call site, replace with:
+
+```rust
+let checker = boxpilot_platform::linux::trust::LinuxTrustChecker {
+    fs: Arc::clone(&ctx.fs_meta),
+    version_checker: Arc::clone(&ctx.version_checker),
+};
+checker.check(path, &allowed_prefixes).await?;
+```
+
+- [ ] **Step 7: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src/core/trust.rs
+git commit -m "feat(platform): TrustChecker trait + Linux impl wraps existing trust_check_path"
+```
+
+---
+
+## PR 7 smoke
+
+```bash
+cargo test --workspace
+git grep "trust_check_path" crates/boxpilotd/src    # zero matches expected (or only re-export comment)
+cargo check --target x86_64-pc-windows-gnu --workspace || true
+```
+
+---
+
+# PR 8: `ActivePointer` trait
+
+**Size:** S · **Touches:** `boxpilot-platform/src/{traits,linux,windows,fakes}/active.rs`, `boxpilotd/src/profile/release.rs` (refactored), `boxpilotd/src/profile/{activate,recovery,rollback}.rs` test fixtures (per Round 6/6.5).
+
+Wraps Linux's symlink + `rename(2)` and Windows's marker JSON + `MoveFileEx` (designed; impl deferred). Per spec §5.3.
+
+## Task 8.1: Define + Linux impl + fake
+
+**Files:**
+- Create: `crates/boxpilot-platform/src/traits/active.rs`, `linux/active.rs`, `windows/active.rs`, `fakes/active.rs`
+
+- [ ] **Step 1: Trait**
+
+`crates/boxpilot-platform/src/traits/active.rs`:
+
+```rust
+//! Atomic "active release" pointer. Linux: symlink with rename(2). Windows:
+//! marker JSON file with MoveFileEx(MOVEFILE_REPLACE_EXISTING). Per spec §5.3.
+
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::PathBuf;
+
+#[async_trait]
+pub trait ActivePointer: Send + Sync {
+    /// Read the currently active release id, or None if none is active.
+    async fn read(&self) -> Result<Option<String>, HelperError>;
+
+    /// Atomically set the active release to `release_id`.
+    async fn set(&self, release_id: &str) -> Result<(), HelperError>;
+
+    /// Resolve the active pointer to its on-disk release directory.
+    /// Returns None if not set; HelperError if pointer is corrupted (Linux:
+    /// dangling symlink; Windows: marker file references nonexistent dir).
+    async fn active_resolved(&self) -> Result<Option<PathBuf>, HelperError>;
+
+    /// Compute the full path of the release dir for `release_id`. Pure
+    /// path manipulation (does not check existence).
+    fn release_dir(&self, release_id: &str) -> PathBuf;
+}
+```
+
+- [ ] **Step 2: Linux impl (wrap existing logic)**
+
+`crates/boxpilot-platform/src/linux/active.rs`:
+
+```rust
+use crate::traits::active::ActivePointer;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::os::unix::fs::symlink;
+use std::path::{Path, PathBuf};
+
+pub struct SymlinkActivePointer {
+    pub active: PathBuf,        // /etc/boxpilot/active
+    pub releases_dir: PathBuf,  // /etc/boxpilot/releases
+}
+
+#[async_trait]
+impl ActivePointer for SymlinkActivePointer {
+    async fn read(&self) -> Result<Option<String>, HelperError> {
+        match tokio::fs::read_link(&self.active).await {
+            Ok(target) => Ok(target
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(HelperError::Ipc {
+                message: format!("read active symlink: {e}"),
+            }),
+        }
+    }
+
+    async fn set(&self, release_id: &str) -> Result<(), HelperError> {
+        let new_target = self.releases_dir.join(release_id);
+        let new_link = self.active.with_extension("new");
+        // Best-effort cleanup of any previous .new before symlinking.
+        let _ = tokio::fs::remove_file(&new_link).await;
+        let new_link_inner = new_link.clone();
+        let new_target_inner = new_target.clone();
+        tokio::task::spawn_blocking(move || symlink(&new_target_inner, &new_link_inner))
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("spawn symlink: {e}"),
+            })?
+            .map_err(|e| HelperError::Ipc {
+                message: format!("symlink active.new: {e}"),
+            })?;
+        tokio::fs::rename(&new_link, &self.active)
+            .await
+            .map_err(|e| HelperError::Ipc {
+                message: format!("rename active.new -> active: {e}"),
+            })
+    }
+
+    async fn active_resolved(&self) -> Result<Option<PathBuf>, HelperError> {
+        match tokio::fs::read_link(&self.active).await {
+            Ok(target) => Ok(Some(target)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(HelperError::Ipc {
+                message: format!("active_resolved: {e}"),
+            }),
+        }
+    }
+
+    fn release_dir(&self, release_id: &str) -> PathBuf {
+        self.releases_dir.join(release_id)
+    }
+}
+```
+
+- [ ] **Step 3: Windows stub (designed; not implemented in Sub-project #1)**
+
+`crates/boxpilot-platform/src/windows/active.rs`:
+
+```rust
+use crate::traits::active::ActivePointer;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::PathBuf;
+
+pub struct MarkerFileActivePointer {
+    pub marker: PathBuf,        // %ProgramData%\BoxPilot\active.json
+    pub releases_dir: PathBuf,  // %ProgramData%\BoxPilot\releases
+}
+
+#[async_trait]
+impl ActivePointer for MarkerFileActivePointer {
+    async fn read(&self) -> Result<Option<String>, HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn set(&self, _: &str) -> Result<(), HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    async fn active_resolved(&self) -> Result<Option<PathBuf>, HelperError> {
+        Err(HelperError::NotImplemented)
+    }
+    fn release_dir(&self, release_id: &str) -> PathBuf {
+        self.releases_dir.join(release_id)
+    }
+}
+```
+
+- [ ] **Step 4: Fake (in-memory state)**
+
+`crates/boxpilot-platform/src/fakes/active.rs`:
+
+```rust
+use crate::traits::active::ActivePointer;
+use async_trait::async_trait;
+use boxpilot_ipc::HelperError;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+pub struct InMemoryActive {
+    pub releases_dir: PathBuf,
+    state: Mutex<Option<String>>,
+}
+
+impl InMemoryActive {
+    pub fn under(releases_dir: PathBuf) -> Self {
+        Self {
+            releases_dir,
+            state: Mutex::new(None),
+        }
+    }
+}
+
+#[async_trait]
+impl ActivePointer for InMemoryActive {
+    async fn read(&self) -> Result<Option<String>, HelperError> {
+        Ok(self.state.lock().unwrap().clone())
+    }
+    async fn set(&self, release_id: &str) -> Result<(), HelperError> {
+        *self.state.lock().unwrap() = Some(release_id.to_string());
+        Ok(())
+    }
+    async fn active_resolved(&self) -> Result<Option<PathBuf>, HelperError> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|id| self.releases_dir.join(id)))
+    }
+    fn release_dir(&self, release_id: &str) -> PathBuf {
+        self.releases_dir.join(release_id)
+    }
+}
+```
+
+- [ ] **Step 5: Wire mods**
+
+Add `pub mod active;` to `traits/`, `linux/`, `windows/`, `fakes/`.
+
+- [ ] **Step 6: Replace usage in `boxpilotd::profile::release`**
+
+The existing code uses raw `std::os::unix::fs::symlink` + `std::fs::rename`. Remove the `use std::os::unix::fs::symlink;` line at the top, and refactor the public functions in `release.rs` (e.g., `swing_active_to`, `read_active`, etc.) to take `&dyn ActivePointer` from the caller's `HelperContext` instead of doing raw fs.
+
+This is the largest part of PR 8. Pattern:
+- Add `pub active: Arc<dyn boxpilot_platform::traits::active::ActivePointer>` to `HelperContext`.
+- In `main.rs`, construct `Arc::new(SymlinkActivePointer { active: paths.active_symlink(), releases_dir: paths.releases_dir() })`.
+- Each function in `release.rs` that previously took `&Paths` now takes `&dyn ActivePointer` (or borrows it from a passed-in context).
+- Internal helpers that did `symlink(&target, &active)` directly become `active.set(release_id).await?`.
+
+- [ ] **Step 7: Migrate test fixtures using `std::os::unix::fs::symlink` (per Round 6/6.5)**
+
+For each occurrence in `boxpilotd/src/profile/{activate,recovery,rollback}.rs`, `iface.rs:1208`, `diagnostics/mod.rs:203`:
+
+- If the symlink is setting up the "active" pointer for a test, replace with:
+
+```rust
+let active = boxpilot_platform::fakes::active::InMemoryActive::under(paths.releases_dir());
+active.set("rel-1").await.unwrap();
+// pass `&active` into the function under test instead of `&paths`.
+```
+
+- If the symlink is testing a corruption/invalid scenario, wrap in `#[cfg(target_os = "linux")]` (the test is exercising Linux-specific symlink semantics).
+
+- [ ] **Step 8: Run tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add crates/boxpilot-platform/src crates/boxpilotd/src
+git commit -m "feat(platform): ActivePointer trait + Linux symlink impl + Windows stub + fake"
+```
+
+---
+
+## PR 8 smoke
+
+```bash
+cargo test --workspace
+git grep "use std::os::unix::fs::symlink" crates/boxpilotd/src
+# Expected: only inside #[cfg(target_os = "linux")] test-fixture blocks
+cargo check --target x86_64-pc-windows-gnu --workspace || true
+```
+
+---
