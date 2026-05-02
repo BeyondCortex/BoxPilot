@@ -5709,3 +5709,604 @@ cargo build --target x86_64-pc-windows-gnu -p boxpilot-platform           # buil
 PR description body should call out: implements 6 Windows traits real (`Env`, `Paths` already from PR 2, `FileLock` from PR 6, `IpcServer`+`IpcClient`, `Authority` AlwaysAllow, `FsPermissions`). All other Windows impls remain `unimplemented!()` stubs per spec §5 trait inventory.
 
 ---
+
+# PR 13: `boxpilotd.exe` Windows Service entry + tracing-appender file sink
+
+**Size:** M · **Touches:** `boxpilotd/src/main.rs`, `boxpilotd/src/entry/{mod,linux,windows}.rs` (NEW), `boxpilotd/Cargo.toml` (Windows-only deps).
+
+Wires the Windows IpcServer from PR 12 into a Windows Service entry-point. Per spec §6.
+
+## Task 13.1: Split `boxpilotd::main` into `entry::linux::run` and `entry::windows::run`
+
+**Files:**
+- Create: `crates/boxpilotd/src/entry/{mod,linux,windows}.rs`
+- Modify: `crates/boxpilotd/src/main.rs` — becomes a 4-line dispatcher
+
+- [ ] **Step 1: Move existing `main` body into `entry/linux.rs`**
+
+```rust
+//! Linux entry: tokio runtime + zbus connection + signal-driven shutdown.
+//! This is the body that previously lived in `main()`.
+
+#![cfg(target_os = "linux")]
+
+// ... (paste the body of the existing main(), minus init_tracing() and
+// minus the cfg-gated platform check, into this function:
+pub async fn run() -> anyhow::Result<()> {
+    // existing body verbatim
+}
+```
+
+- [ ] **Step 2: Write `entry/windows.rs`**
+
+```rust
+//! Windows entry: registers as Windows Service via service_dispatcher,
+//! runs the Named Pipe IpcServer under SCM lifecycle. Per spec §6 + COQ5.
+
+#![cfg(target_os = "windows")]
+
+use crate::context::HelperContext;
+use crate::dispatch_handler::DispatchHandler;
+use anyhow::Context;
+use boxpilot_platform::traits::ipc::{HelperDispatch, IpcServer};
+use boxpilot_platform::windows::ipc::NamedPipeIpcServer;
+use std::ffi::OsString;
+use std::sync::Arc;
+use std::time::Duration;
+use windows_service::service::{
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
+    ServiceType,
+};
+use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+
+const SERVICE_NAME: &str = "boxpilotd";
+const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
+pub fn run() -> anyhow::Result<()> {
+    // Console-mode escape hatch for development:
+    //   set BOXPILOTD_CONSOLE=1 && boxpilotd.exe
+    // bypasses SCM and runs an inline tokio runtime.
+    if std::env::var("BOXPILOTD_CONSOLE").is_ok() {
+        return run_console();
+    }
+    windows_service::service_dispatcher::start(SERVICE_NAME, ffi_service_main)
+        .context("service_dispatcher::start")?;
+    Ok(())
+}
+
+fn run_console() -> anyhow::Result<()> {
+    // Same boot path as run_under_scm but with stdout tracing instead of
+    // file-only.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+    runtime.block_on(async {
+        run_async(true).await
+    })
+}
+
+windows_service::define_windows_service!(ffi_service_main, service_main);
+
+fn service_main(_args: Vec<OsString>) {
+    if let Err(e) = run_under_scm() {
+        // SCM has already taken over; best-effort log to the file sink.
+        tracing::error!("service entry failed: {e:?}");
+    }
+}
+
+fn run_under_scm() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime")?;
+    runtime.block_on(async {
+        run_async(false).await
+    })
+}
+
+async fn run_async(console_mode: bool) -> anyhow::Result<()> {
+    // Step 1 (per spec §6 / COQ5): initialize tracing-appender BEFORE any
+    // SCM interaction so failures emit log entries.
+    let paths = boxpilot_platform::Paths::system().context("Paths::system")?;
+    let logs_dir = paths.system_root_join("logs"); // helper added in PR 13
+    std::fs::create_dir_all(&logs_dir).context("create logs dir")?;
+    let file_appender = tracing_appender::rolling::daily(&logs_dir, "boxpilotd.log");
+    let (nb, _guard) = tracing_appender::non_blocking(file_appender);
+    let subscriber = if console_mode {
+        tracing_subscriber::fmt()
+            .with_writer(std::io::stdout)
+            .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("BOXPILOTD_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("boxpilotd=info")))
+            .finish()
+    } else {
+        tracing_subscriber::fmt()
+            .with_writer(nb)
+            .with_env_filter(tracing_subscriber::EnvFilter::try_from_env("BOXPILOTD_LOG")
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("boxpilotd=info")))
+            .finish()
+    };
+    let _ = tracing::subscriber::set_global_default(subscriber);
+
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "boxpilotd starting on Windows");
+
+    // Step 2: warn that Authority is AlwaysAllow (handled inside
+    // AlwaysAllowAuthority::new_with_warn() — invoked when constructing
+    // HelperContext below).
+
+    // Step 3: register SCM control handler.
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let stop_for_handler = Arc::clone(&stop);
+    let status_handle = if !console_mode {
+        let h = service_control_handler::register(SERVICE_NAME, move |control| {
+            match control {
+                ServiceControl::Stop | ServiceControl::Shutdown => {
+                    stop_for_handler.notify_one();
+                    ServiceControlHandlerResult::NoError
+                }
+                ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+                _ => ServiceControlHandlerResult::NotImplemented,
+            }
+        })
+        .context("register service control handler")?;
+        let running = ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Running,
+            controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        };
+        h.set_service_status(running).context("set RUNNING")?;
+        Some(h)
+    } else {
+        None
+    };
+
+    // Step 4: build HelperContext (real impls per PR 12 stubs).
+    let ctx = build_helper_context_windows(paths).await?;
+    let dispatch: Arc<dyn HelperDispatch> = Arc::new(DispatchHandler::new(Arc::new(ctx)));
+
+    // Step 5: spawn the IpcServer; block on stop signal.
+    let server = NamedPipeIpcServer { stop: Arc::clone(&stop) };
+    let server_handle = tokio::spawn({
+        let dispatch = Arc::clone(&dispatch);
+        async move {
+            if let Err(e) = server.run(dispatch).await {
+                tracing::error!("ipc server: {e:?}");
+            }
+        }
+    });
+
+    stop.notified().await;
+    tracing::info!("stop signal received");
+
+    if let Some(h) = status_handle {
+        let stopped = ServiceStatus {
+            service_type: SERVICE_TYPE,
+            current_state: ServiceState::Stopped,
+            controls_accepted: ServiceControlAccept::empty(),
+            exit_code: ServiceExitCode::Win32(0),
+            checkpoint: 0,
+            wait_hint: Duration::default(),
+            process_id: None,
+        };
+        let _ = h.set_service_status(stopped);
+    }
+    server_handle.abort();
+    Ok(())
+}
+
+async fn build_helper_context_windows(paths: boxpilot_platform::Paths) -> anyhow::Result<HelperContext> {
+    use boxpilot_platform::fakes::*;
+    use boxpilot_platform::windows::*;
+    use std::sync::Arc;
+
+    // Per spec §5 trait inventory: Windows real impls in PR 12 are
+    // EnvProvider, Paths, FileLock, IpcServer/Client, Authority, FsPermissions.
+    // All other traits stub via fakes that return errors on call.
+
+    let authority = Arc::new(authority::AlwaysAllowAuthority::new_with_warn());
+
+    // For traits that don't have real Windows impls yet, use the
+    // fake implementations — they return errors so dispatch returns
+    // NotImplemented to callers, satisfying AC5.
+    Ok(HelperContext {
+        paths,
+        callers: Arc::new(crate::credentials::testing::FixedResolver::with(&[])), // unused on Windows
+        authority,
+        systemd: Arc::new(boxpilot_platform::windows::service::ScmServiceManager),
+        journal: Arc::new(boxpilot_platform::windows::logs::EventLogReader),
+        user_lookup: Arc::new(boxpilot_platform::windows::user_lookup::PasswdLookup),
+        github: ctx_for_github_stub(), // existing stub or fake from boxpilotd
+        downloader: ctx_for_downloader_stub(),
+        fs_meta: Arc::new(boxpilot_platform::windows::fs_meta::StdFsMetadataProvider),
+        version_checker: Arc::new(boxpilot_platform::windows::version::ProcessVersionChecker),
+        checker: Arc::new(crate::profile::checker::ProcessChecker), // already cfg-split per COQ14
+        verifier: Arc::new(crate::profile::verifier::DefaultVerifier),
+        fs_fragment_reader: Arc::new(crate::legacy::observe::StdFsFragmentReader),
+        config_reader: Arc::new(crate::legacy::migrate::StdConfigReader),
+        state_schema_mismatch: None,
+        authority_subject: Arc::new(crate::authority::ZbusSubject::new()),
+    })
+}
+
+fn ctx_for_github_stub() -> Arc<dyn boxpilot_platform::traits::version::VersionChecker> {
+    Arc::new(boxpilot_platform::windows::version::ProcessVersionChecker)
+}
+
+fn ctx_for_downloader_stub() -> Arc<dyn boxpilot_platform::traits::version::VersionChecker> {
+    Arc::new(boxpilot_platform::windows::version::ProcessVersionChecker)
+}
+```
+
+(Note: the `build_helper_context_windows` body shows the full shape but actual field names may differ slightly from the existing `HelperContext`; the executor pastes-in/copies-from the Linux entry's HelperContext build. Helper-context fields that don't exist yet on Windows side use the matching `fake::*` or `windows::*::Stub`.)
+
+- [ ] **Step 3: Add `system_root_join` helper to `Paths`**
+
+In `crates/boxpilot-platform/src/paths.rs`, append:
+
+```rust
+impl Paths {
+    /// Join `child` to `system_root`. Useful for ad-hoc paths under
+    /// `%ProgramData%\BoxPilot\` that don't have a dedicated method.
+    pub fn system_root_join(&self, child: &str) -> std::path::PathBuf {
+        self.system_root.join(child)
+    }
+}
+```
+
+- [ ] **Step 4: Slim `boxpilotd/src/main.rs`**
+
+```rust
+mod authority;
+mod context;
+mod controller;
+mod core;
+mod credentials;
+mod diagnostics;
+mod dispatch;
+mod dispatch_handler;
+mod entry;
+mod handlers;
+mod iface;
+mod legacy;
+mod lock;
+mod profile;
+mod service;
+mod systemd;
+
+#[cfg(target_os = "linux")]
+fn main() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(entry::linux::run())
+}
+
+#[cfg(target_os = "windows")]
+fn main() -> anyhow::Result<()> {
+    entry::windows::run()
+}
+
+// BUS_NAME / OBJECT_PATH constants (used by Linux iface.rs). Public so
+// the BUS_NAME guard test (PR 4) can reach them.
+pub const BUS_NAME: &str = "app.boxpilot.Helper";
+pub const OBJECT_PATH: &str = "/app/boxpilot/Helper";
+```
+
+- [ ] **Step 5: Update `boxpilotd/Cargo.toml`**
+
+```toml
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-service = "0.7"
+tracing-appender = { workspace = true }
+```
+
+- [ ] **Step 6: Run Linux tests**
+
+Run: `cargo test --workspace`
+Expected: green.
+
+- [ ] **Step 7: Run Windows compile**
+
+Run: `cargo check --target x86_64-pc-windows-gnu --workspace`
+Expected: clean.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add crates/boxpilotd/src/main.rs crates/boxpilotd/src/entry crates/boxpilotd/Cargo.toml crates/boxpilot-platform/src/paths.rs
+git commit -m "feat(boxpilotd): Windows Service entry via service_dispatcher + tracing file sink"
+```
+
+---
+
+## PR 13 smoke
+
+```bash
+cargo test --workspace                                                    # Linux non-regression
+cargo check --target x86_64-pc-windows-gnu --workspace                    # required gate
+ls crates/boxpilotd/src/entry/                                            # mod.rs, linux.rs, windows.rs
+```
+
+---
+
+# PR 14: Enable Windows GitHub Actions runner + switch to MSVC target
+
+**Size:** S · **Touches:** `.github/workflows/windows-check.yml`. **Linux non-regression:** zero.
+
+## Task 14.1: Update CI to use windows-latest with MSVC
+
+**Files:**
+- Modify: `.github/workflows/windows-check.yml`
+
+- [ ] **Step 1: Replace the workflow**
+
+```yaml
+name: windows-check
+on:
+  pull_request:
+  push:
+    branches: [main, "feat/windows-support"]
+
+jobs:
+  cargo-check-windows-msvc:
+    name: cargo check (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc
+      - name: cargo check --target x86_64-pc-windows-msvc --workspace
+        run: cargo check --target x86_64-pc-windows-msvc --workspace
+      - name: cargo test --workspace (helper-side fakes; no real SCM/IPC tests)
+        run: cargo test --workspace --target x86_64-pc-windows-msvc --no-fail-fast
+```
+
+- [ ] **Step 2: Verify the workflow file lints**
+
+Run: `gh workflow view windows-check.yml || true`
+(Ignore exit code if `gh` isn't installed locally; CI runs the check.)
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add .github/workflows/windows-check.yml
+git commit -m "ci: switch Windows compile-check to MSVC on windows-latest runner"
+```
+
+---
+
+## PR 14 smoke
+
+```bash
+cargo check --target x86_64-pc-windows-gnu --workspace                    # local sanity (still passes for free)
+gh pr create ...                                                           # CI now runs MSVC + tests
+# CI run should include "cargo check (x86_64-pc-windows-msvc)" green check.
+```
+
+---
+
+# PR 14b: `boxpilotctl` debug bin (per COQ6)
+
+**Size:** XS · **Touches:** `crates/boxpilotd/src/bin/boxpilotctl.rs` (NEW).
+
+## Task 14b.1: Write the debug client
+
+**Files:**
+- Create: `crates/boxpilotd/src/bin/boxpilotctl.rs`
+
+- [ ] **Step 1: Write the bin**
+
+```rust
+//! Debug IPC client for both Linux (D-Bus) and Windows (Named Pipe). Used
+//! for AC5 verification per spec COQ6.
+//!
+//! Usage:
+//!   boxpilotctl <method.dotted.name> [<json-body>]
+//!
+//! Examples:
+//!   boxpilotctl service.status
+//!   boxpilotctl core.install_managed '{"version":"1.10.3","arch":"x86_64"}'
+
+use boxpilot_ipc::HelperMethod;
+use boxpilot_platform::traits::bundle_aux::AuxStream;
+use boxpilot_platform::traits::ipc::IpcClient;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() < 2 {
+        eprintln!("usage: boxpilotctl <method> [<json-body>]");
+        eprintln!();
+        eprintln!("methods:");
+        for m in HelperMethod::ALL {
+            eprintln!("  {}", m.as_logical());
+        }
+        std::process::exit(2);
+    }
+
+    let method_str = &args[1];
+    let method = HelperMethod::ALL
+        .iter()
+        .copied()
+        .find(|m| m.as_logical() == method_str.as_str())
+        .ok_or_else(|| anyhow::anyhow!("unknown method: {}", method_str))?;
+    let body = args.get(2).cloned().unwrap_or_default().into_bytes();
+
+    let client: Arc<dyn IpcClient> = connect_platform().await?;
+
+    match client.call(method, body, AuxStream::none()).await {
+        Ok(resp) => {
+            println!("{}", String::from_utf8_lossy(&resp));
+        }
+        Err(e) => {
+            eprintln!("error: {e:?}");
+            std::process::exit(1);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+async fn connect_platform() -> anyhow::Result<Arc<dyn IpcClient>> {
+    let c = boxpilot_platform::linux::ipc::ZbusIpcClient::connect_system().await?;
+    Ok(Arc::new(c))
+}
+
+#[cfg(target_os = "windows")]
+async fn connect_platform() -> anyhow::Result<Arc<dyn IpcClient>> {
+    let c = boxpilot_platform::windows::ipc::NamedPipeIpcClient::connect()?;
+    Ok(Arc::new(c))
+}
+```
+
+- [ ] **Step 2: Build on both platforms**
+
+Run: `cargo build -p boxpilotd --bin boxpilotctl`
+Expected: clean Linux build.
+
+Run: `cargo check --target x86_64-pc-windows-gnu -p boxpilotd --bin boxpilotctl`
+Expected: clean.
+
+- [ ] **Step 3: Smoke on Linux (manual)**
+
+After installing the helper:
+
+```bash
+sudo systemctl start boxpilot-helper.service  # or whatever activates D-Bus auto-activation
+target/debug/boxpilotctl service.status
+# Expected output: JSON (e.g., {"unit_name":"boxpilot-sing-box.service",...})
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add crates/boxpilotd/src/bin/boxpilotctl.rs
+git commit -m "feat(boxpilotd): boxpilotctl debug bin for AC5 verification (per COQ6)"
+```
+
+---
+
+## PR 14b smoke
+
+```bash
+cargo build -p boxpilotd --bin boxpilotctl                                # Linux build
+cargo check --target x86_64-pc-windows-msvc -p boxpilotd --bin boxpilotctl  # Windows build (CI runs)
+```
+
+---
+
+# PR 15: Spec doc updates + Sub-project handoff
+
+**Size:** XS · **Touches:** `docs/superpowers/specs/2026-04-27-boxpilot-linux-design.md` (note revision), `README.md` (add Windows status).
+
+## Task 15.1: Amend Linux v1.0 spec § 1
+
+**Files:**
+- Modify: `docs/superpowers/specs/2026-04-27-boxpilot-linux-design.md`
+
+- [ ] **Step 1: Append a §1.1 reference**
+
+In `docs/superpowers/specs/2026-04-27-boxpilot-linux-design.md`, after §1 Product Positioning:
+
+```markdown
+### 1.1 Cross-platform note
+
+Effective 2026-05-01, Linux-specific implementation details described in
+this spec are abstracted behind traits in the `boxpilot-platform` crate.
+The Windows port is tracked under
+`docs/superpowers/specs/2026-05-01-boxpilot-platform-abstraction-design.md`
+(Sub-project #1 of three) plus the to-be-written specs for Sub-projects #2
+and #3. **Linux user-visible behavior is unchanged.**
+```
+
+- [ ] **Step 2: Update README.md**
+
+Find the "Status" section and add:
+
+```markdown
+**Windows port:** in progress on `feat/windows-support`. Sub-project #1
+(platform abstraction) lands the trait surface and a Windows minimum-boot
+helper service. Real Windows verbs and installer arrive in Sub-projects
+#2 and #3.
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add docs/superpowers/specs/2026-04-27-boxpilot-linux-design.md README.md
+git commit -m "docs: cross-reference platform abstraction spec from Linux v1.0 design"
+```
+
+---
+
+## PR 15 smoke
+
+Just `cargo test --workspace` and a quick visual review of the rendered docs.
+
+---
+
+# Self-review (per writing-plans skill)
+
+After 16 PRs, this is the spec-coverage check.
+
+**Spec section coverage:**
+
+| Spec section                                           | Plan covers in                             |
+|--------------------------------------------------------|--------------------------------------------|
+| §1 Positioning                                          | Plan header + PR 15 (cross-ref)            |
+| §2 Goals/non-goals                                      | Plan "Out of Scope" section                |
+| §3 AC1-AC7                                              | Per-PR smoke + workspace-wide tests at PR 11a (AC3 gate flip), PR 12 (AC4 readiness), PR 13 (AC5 wiring), PR 14 (AC4 CI), PR 14b (AC5 client) |
+| §4 Crate structure                                      | Plan "File Structure" + PRs 1, 13         |
+| §5 Trait inventory                                      | PRs 2-10                                   |
+| §5.1 Paths                                              | PR 2                                       |
+| §5.2 Bundle byte transfer (AuxStream)                   | PR 10                                      |
+| §5.3 ActivePointer                                      | PR 8                                       |
+| §5.4 IpcServer / Authority                              | PRs 4, 11a, 12                             |
+| §5.4.1 Wire format                                      | PR 11a (additive accessors), PR 12 (impl)  |
+| §6 boxpilotd binary structure                           | PR 13                                      |
+| §7 Windows path layout + ACL                            | PRs 2 (paths), 12 (FsPermissions), 13 (logs dir) |
+| §8 PR sequencing                                        | This entire plan                           |
+| §9 Risks                                                | Inline notes per PR                        |
+| §10 Future Sub-projects                                 | "Out of Scope" section                     |
+| §11 References                                          | n/a (spec-only)                            |
+| **COQ1+COQ2** (BundleClient/Server dropped + AuxStream) | PR 10                                      |
+| **COQ3** (Windows Authority = AlwaysAllow)              | PR 12 task 12.1                            |
+| **COQ4** (ServiceManager unchanged surface)             | PR 5                                       |
+| **COQ5** (tracing-appender file sink)                   | PR 13 + PR 1 (workspace dep)               |
+| **COQ6** (boxpilotctl debug bin)                        | PR 14b                                     |
+| **COQ7** (tokio net + io-util)                          | PR 1                                       |
+| **COQ8** (AuxStream opaque struct)                      | PR 10 task 10.1                            |
+| **COQ9** (wire format)                                  | PR 11a + PR 12                             |
+| **COQ10** (CallerResolver dropped)                      | PR 12 (absorbed into Windows IpcServer); Linux survives in `boxpilotd::credentials` until PR 11a inversion makes it dead code |
+| **COQ11** (dispatch::authorize takes principal)         | PR 4                                       |
+| **COQ12** (FsPermissions trait)                         | PR 3 task 3.4 + 3.5                        |
+| **COQ13** (Windows compile gate timing)                 | PR 1 (allow-fail), PR 11a (gate flip), PR 14 (MSVC) |
+| **COQ14** (check.rs Windows stub)                       | PR 9 task 9.2                              |
+| **COQ15** (PR 11 split into 11a + 11b)                  | PRs 11a + 11b                              |
+| **COQ16** (ProfileStorePaths::from_paths)               | PR 2 task 2.4                              |
+| **COQ17** (cosmetic: NotImplemented naming, etc.)       | Folded into PR 4 (BUS_NAME guard) and per-PR notes |
+
+**Placeholder scan:** zero `TBD` / `TODO` (intra-task) / `implement later` matches in plan body. Verified: `grep -n "TODO\|TBD\|XXX" docs/superpowers/plans/2026-05-01-boxpilot-platform-abstraction.md`.
+
+**Type consistency:** `AuxStream` introduced in PR 10 with public API `none()` / `from_async_read()` / `#[cfg(target_os = "linux")] from_owned_fd()` — used consistently in PRs 11a, 11b, 12, 13, 14b. `CallerPrincipal::LinuxUid(u32)` / `WindowsSid(String)` — consistent. `HelperMethod::wire_id()` introduced in PR 11a — used in PR 12 (Named Pipe header parse).
+
+**Spec gaps found in self-review:** none.
+
+---
+
+## Execution handoff
+
+Plan complete and saved to `docs/superpowers/plans/2026-05-01-boxpilot-platform-abstraction.md`. Two execution options:
+
+1. **Subagent-Driven (recommended)** — fresh subagent per PR, review between PRs, fast iteration. Pairs naturally with the per-PR commit cadence.
+
+2. **Inline Execution** — execute tasks in this session using `superpowers:executing-plans`, batch execution with checkpoints.
