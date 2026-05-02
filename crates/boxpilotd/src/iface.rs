@@ -15,6 +15,17 @@ use std::sync::Arc;
 use tracing::{instrument, warn};
 use zbus::interface;
 
+/// Well-known D-Bus name the helper claims at startup. Lives here (with
+/// the interface impl) rather than in `main.rs` so it's reachable from
+/// `#[cfg(test)] mod tests` for the wire-name guard test below.
+///
+/// **Frozen by the .deb** — see `dbus_wire_names_are_frozen` test.
+pub const BUS_NAME: &str = "app.boxpilot.Helper";
+
+/// Object path the helper exports the interface at. Same freeze constraint
+/// as `BUS_NAME` — Tauri's `HelperProxy` hardcodes it as `default_path`.
+pub const OBJECT_PATH: &str = "/app/boxpilot/Helper";
+
 pub struct Helper {
     ctx: Arc<HelperContext>,
 }
@@ -907,6 +918,27 @@ mod tests {
     use crate::systemd::testing::{RecordedCall, RecordingSystemd};
     use boxpilot_ipc::UnitState;
     use tempfile::tempdir;
+
+    /// Guard test (per COQ17 / Round 4 finding 4.8): D-Bus wire names are
+    /// part of the .deb-shipped polkit + dbus service files. Changing them
+    /// without a corresponding deb postinst migration breaks already-installed
+    /// users.
+    #[test]
+    fn dbus_wire_names_are_frozen() {
+        assert_eq!(
+            super::BUS_NAME,
+            "app.boxpilot.Helper",
+            "Bus name change requires deb postinst migration of \
+             /usr/share/dbus-1/system-services/app.boxpilot.Helper.service \
+             and the polkit policy file"
+        );
+        assert_eq!(
+            super::OBJECT_PATH,
+            "/app/boxpilot/Helper",
+            "Object path change requires updating Tauri's HelperProxy default_path \
+             (boxpilot-tauri/src/helper_client.rs)"
+        );
+    }
 
     #[tokio::test]
     async fn service_status_passes_through_unit_not_found() {

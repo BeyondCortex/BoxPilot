@@ -23,8 +23,7 @@ use crate::core::download::ReqwestDownloader;
 use crate::core::github::ReqwestGithubClient;
 use crate::core::trust::{ProcessVersionChecker, StdFsMetadataProvider};
 
-const BUS_NAME: &str = "app.boxpilot.Helper";
-const OBJECT_PATH: &str = "/app/boxpilot/Helper";
+use crate::iface::{BUS_NAME, OBJECT_PATH};
 
 /// Spec §7.6: validate `install-state.json`'s `schema_version` against the
 /// compiled-in `INSTALL_STATE_SCHEMA_VERSION`. Returns `Some(got)` only on
