@@ -22,7 +22,12 @@ pub async fn handle(
         serde_json::from_slice(&body).map_err(|e| HelperError::Ipc {
             message: format!("decode: {e}"),
         })?;
-    let _call = dispatch::authorize(&ctx, &principal, HelperMethod::LegacyMigrateService).await?;
+    let call = dispatch::authorize(&ctx, &principal, HelperMethod::LegacyMigrateService).await?;
+    let controller = dispatch::maybe_claim_controller(
+        call.will_claim_controller,
+        &call.principal,
+        &*ctx.user_lookup,
+    )?;
     let cfg = ctx.load_config().await?;
     let prep = crate::legacy::migrate::PrepareDeps {
         systemd: &*ctx.systemd,
@@ -36,6 +41,7 @@ pub async fn handle(
         now_iso: || chrono::Utc::now().format("%Y-%m-%dT%H-%M-%SZ").to_string(),
     };
     let resp = crate::legacy::migrate::run(&cfg, req, &prep, &cut).await?;
+    dispatch::commit_controller_claim(&ctx.paths, controller).await?;
     serde_json::to_vec(&resp).map_err(|e| HelperError::Ipc {
         message: format!("encode: {e}"),
     })
