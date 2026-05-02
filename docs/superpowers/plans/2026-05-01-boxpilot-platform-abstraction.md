@@ -1263,9 +1263,12 @@ In `crates/boxpilot-profile/src/store.rs`, find the existing `from_env()` impl a
 impl ProfileStorePaths {
     /// Build from a `boxpilot_platform::Paths`. This is the production
     /// constructor used by Tauri command handlers (per spec §5.1 / COQ16).
+    /// `root` becomes `paths.user_root()` so the existing `profiles_dir()`
+    /// (`root.join("profiles")`), `remotes_json()`, and `ui_state_json()`
+    /// methods continue to resolve to the spec §5.6 layout.
     pub fn from_paths(paths: &boxpilot_platform::Paths) -> Self {
         Self {
-            root: paths.user_profiles_dir(),
+            root: paths.user_root().to_path_buf(),
         }
     }
 
@@ -1749,7 +1752,29 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Windows impl (real — needed for `%LocalAppData%\BoxPilot\` ACLing)**
+- [ ] **Step 3: Windows impl (no-op stub for Sub-project #1; real ACL impl in PR 12 / Sub-project #2)**
+
+The Sub-project #1 implementation lands as a no-op stub with a `tracing::debug!` line. The original plan body (below) proposed an inline `SetNamedSecurityInfoW` call with `pDacl=NULL`, but per Win32 docs that grants Everyone full access (security inversion). PR 12's "Windows real impls" scope owns the proper implementation: build an explicit DACL via `SetEntriesInAclW` with one ACE for the current-user SID (`OpenProcessToken` + `GetTokenInformation(TokenUser)`), then `LocalFree` the descriptor returned by `GetNamedSecurityInfoW`.
+
+`crates/boxpilot-platform/src/windows/fs_perms.rs` (Sub-project #1 stub):
+
+```rust
+use crate::traits::fs_perms::{FsPermissions, PathKind};
+use async_trait::async_trait;
+use std::path::Path;
+
+pub struct AclFsPermissions;
+
+#[async_trait]
+impl FsPermissions for AclFsPermissions {
+    async fn restrict_to_owner(&self, path: &Path, kind: PathKind) -> std::io::Result<()> {
+        tracing::debug!(?path, ?kind, "FsPermissions stub: real ACL impl pending");
+        Ok(())
+    }
+}
+```
+
+(The original NULL-DACL impl below is preserved for historical reference but should NOT be applied. Skip to step 4.)
 
 `crates/boxpilot-platform/src/windows/fs_perms.rs`:
 

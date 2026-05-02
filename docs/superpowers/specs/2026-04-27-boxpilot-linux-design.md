@@ -20,6 +20,15 @@ Confirmed stack:
 - Privileged helper: root-owned `boxpilotd` service exposed through a controlled local IPC/D-Bus interface and guarded by polkit
 - Target sing-box: SagerNet sing-box ≥ 1.10 (required for `auto_redirect` and the v1.0 TUN control set; older versions are detected and surfaced as compatibility warnings rather than silently downgrading features)
 
+### 1.1 Cross-platform note
+
+Effective 2026-05-01, Linux-specific implementation details described in
+this spec are abstracted behind traits in the `boxpilot-platform` crate.
+The Windows port is tracked under
+`docs/superpowers/specs/2026-05-01-boxpilot-platform-abstraction-design.md`
+(Sub-project #1 of three) plus the to-be-written specs for Sub-projects #2
+and #3. **Linux user-visible behavior is unchanged.**
+
 ## 2. Scope
 
 ### In scope for Linux v1.0

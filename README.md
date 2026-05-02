@@ -21,6 +21,11 @@ v0.1.0 — first packaged release. Plans #1–#9 complete:
 | 8 | diagnostics export with redaction | ✅ |
 | 9 | `.deb` packaging + GUI auto-launch | ✅ |
 
+**Windows port:** in progress on `feat/windows-support`. Sub-project #1
+(platform abstraction) lands the trait surface and a Windows minimum-boot
+helper service. Real Windows verbs and installer arrive in Sub-projects
+#2 and #3.
+
 ## Install (Debian / Ubuntu)
 
 Download the latest `.deb` from the GitHub Releases page, then:
