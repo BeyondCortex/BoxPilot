@@ -145,6 +145,10 @@ async fn main() -> Result<()> {
     let config_reader = Arc::new(crate::legacy::migrate::StdConfigReader);
     let journal = Arc::new(crate::systemd::JournalctlProcess);
     let authority_subject = Arc::new(authority::ZbusSubject::new());
+    let active = Arc::new(boxpilot_platform::linux::active::SymlinkActivePointer {
+        active: paths.active_symlink(),
+        releases_dir: paths.releases_dir(),
+    });
     let ctx = Arc::new(context::HelperContext::new(
         paths,
         Arc::new(credentials::DBusCallerResolver::new(conn.clone())),
@@ -164,6 +168,7 @@ async fn main() -> Result<()> {
         Arc::new(crate::profile::verifier::DefaultVerifier),
         fragment_reader,
         config_reader,
+        active,
         state_schema_mismatch,
     ));
 

@@ -8,6 +8,7 @@ use crate::core::download::Downloader;
 use crate::core::github::GithubClient;
 use crate::core::trust::{FsMetadataProvider, VersionChecker};
 use crate::credentials::CallerResolver;
+use boxpilot_platform::traits::active::ActivePointer;
 use boxpilot_platform::Paths;
 use crate::profile::checker::SingboxChecker;
 use crate::profile::verifier::ServiceVerifier;
@@ -36,6 +37,13 @@ pub struct HelperContext {
     pub verifier: Arc<dyn ServiceVerifier>,
     pub fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
     pub config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
+    /// PR 8: platform-neutral atomic active-release pointer. Linux uses
+    /// `SymlinkActivePointer`; Windows uses `MarkerFileActivePointer`.
+    /// Currently unused by activate/rollback (which still call the free
+    /// functions in `profile::release`); plumbing it here so PR 9+ and
+    /// future refactors don't have to thread it through `HelperContext::new`.
+    #[allow(dead_code)]
+    pub active: Arc<dyn ActivePointer>,
     /// Set when `install-state.json` parsed at startup with a
     /// `schema_version` other than the compiled-in
     /// `INSTALL_STATE_SCHEMA_VERSION` (spec §7.6). `dispatch::authorize`
@@ -69,6 +77,7 @@ impl HelperContext {
         verifier: Arc<dyn ServiceVerifier>,
         fs_fragment_reader: Arc<dyn crate::legacy::observe::FragmentReader>,
         config_reader: Arc<dyn crate::legacy::migrate::ConfigReader>,
+        active: Arc<dyn ActivePointer>,
         state_schema_mismatch: Option<u32>,
     ) -> Self {
         Self {
@@ -87,6 +96,7 @@ impl HelperContext {
             verifier,
             fs_fragment_reader,
             config_reader,
+            active,
             state_schema_mismatch,
         }
     }
@@ -163,6 +173,9 @@ pub mod testing {
             crate::core::trust::version_testing::FixedVersionChecker::ok("sing-box version 1.10.0"),
         );
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
+        let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
+            paths.releases_dir(),
+        ));
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -185,6 +198,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            active,
             None,
         )
     }
@@ -212,6 +226,9 @@ pub mod testing {
             Vec::new(),
         ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines: Vec::new() });
+        let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
+            paths.releases_dir(),
+        ));
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -234,6 +251,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            active,
             None,
         )
     }
@@ -261,6 +279,9 @@ pub mod testing {
             Vec::new(),
         ));
         let journal = Arc::new(crate::systemd::testing::FixedJournal { lines });
+        let active = Arc::new(boxpilot_platform::fakes::active::InMemoryActive::under(
+            paths.releases_dir(),
+        ));
         HelperContext::new(
             paths,
             Arc::new(FixedResolver::with(callers)),
@@ -287,6 +308,7 @@ pub mod testing {
             )),
             Arc::new(NoFragments),
             Arc::new(NoConfig),
+            active,
             None,
         )
     }

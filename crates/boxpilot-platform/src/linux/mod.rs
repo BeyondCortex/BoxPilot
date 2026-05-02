@@ -3,6 +3,7 @@
 
 #![cfg(target_os = "linux")]
 
+pub mod active;
 pub mod authority;
 pub mod env;
 pub mod fs_meta;

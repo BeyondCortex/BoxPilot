@@ -12,6 +12,7 @@
 //! - PR 10: `AuxStream` (struct, not trait)
 //! - PR 11a: `IpcServer`, `IpcConnection`, `IpcClient`, `HelperDispatch`
 
+pub mod active;
 pub mod authority;
 pub mod env;
 pub mod fs_meta;
