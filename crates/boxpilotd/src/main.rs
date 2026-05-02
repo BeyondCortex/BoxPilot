@@ -7,7 +7,6 @@ mod authority;
 mod context;
 mod controller;
 mod core;
-#[cfg(target_os = "linux")]
 mod credentials;
 mod diagnostics;
 mod dispatch;
